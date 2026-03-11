@@ -18,6 +18,7 @@ use Bitrix24\SDK\Application\Contracts\Bitrix24Accounts\Exceptions\Bitrix24Accou
 use Bitrix24\SDK\Application\Contracts\Bitrix24Accounts\Repository\Bitrix24AccountRepositoryInterface;
 use Bitrix24\SDK\Core\Contracts\Events\EventInterface;
 use Bitrix24\SDK\Core\Credentials\ApplicationProfile;
+use Bitrix24\SDK\Core\Credentials\DefaultOAuthServerUrl;
 use Bitrix24\SDK\Core\Exceptions\InvalidArgumentException;
 use Bitrix24\SDK\Core\Exceptions\UnknownScopeCodeException;
 use Bitrix24\SDK\Core\Exceptions\WrongConfigurationException;
@@ -43,6 +44,7 @@ readonly class Bitrix24ServiceBuilderFactory
             $this->getApplicationProfile(),
             $frontendPayload->authToken,
             $frontendPayload->domain,
+            DefaultOAuthServerUrl::default(),
         );
     }
 
@@ -56,6 +58,7 @@ readonly class Bitrix24ServiceBuilderFactory
             $this->getApplicationProfile(),
             $b24Event->getAuth()->authToken,
             $b24Event->getAuth()->domain,
+            DefaultOAuthServerUrl::default(),
         );
     }
 
@@ -90,6 +93,7 @@ readonly class Bitrix24ServiceBuilderFactory
             // load auth tokens from a database
             $b24Account->getAuthToken(),
             $b24Account->getDomainUrl(),
+            DefaultOAuthServerUrl::default(),
         );
     }
 

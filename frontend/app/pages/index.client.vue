@@ -17,6 +17,8 @@ let $b24: null | B24Frame = null
 const apiStore = useApiStore()
 const route = useRoute()
 const { track } = useTelemetry()
+const config = useRuntimeConfig()
+const isTelemetryEnabled = computed(() => String(config.public.telemetryEnabled) === 'true')
 // endregion ////
 
 // region Actions ////
@@ -84,6 +86,13 @@ onMounted(async () => {
       <template #footer>
         <B24Button label="getEnums" loading-auto @click="getEnums" />
         <B24Button label="getItems" loading-auto @click="getItems" />
+        <B24Button
+          v-if="isTelemetryEnabled"
+          :label="$t('page.index.action.telemetry_test')"
+          color="air-secondary"
+          loading-auto
+          @click="$router.push('/telemetry-test')"
+        />
       </template>
     </B24Card>
   </div>

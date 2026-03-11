@@ -179,7 +179,7 @@ security-tests:
 # Telemetry Testing
 .PHONY: test-telemetry
 test-telemetry: ## Run all telemetry tests
-	COMPOSE_PROFILES=php-cli $(DOCKER_COMPOSE) run --workdir /var/www php-cli vendor/bin/phpunit --configuration phpunit.xml.dist
+	COMPOSE_PROFILES=php-cli $(DOCKER_COMPOSE) run --workdir /var/www php-cli vendor/bin/phpunit --configuration phpunit.xml.dist --testsuite telemetry-all
 
 .PHONY: test-telemetry-null
 test-telemetry-null: ## Run NullTelemetryService tests

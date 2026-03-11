@@ -69,9 +69,9 @@ services:
   cloudpub:
     profiles: ["cloudpub"]
     container_name: cloudpubFront
-    #image: cloudpub/cloudpub:latest
+    image: cloudpub/cloudpub:latest
     # for arm64 proc
-    image: cloudpub/cloudpub:latest-arm64
+    #image: cloudpub/cloudpub:latest-arm64
     restart: unless-stopped
     env_file: .env
     environment:
@@ -104,6 +104,8 @@ services:
       - "8000"
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./backends/php/:/var/www
       - ./logs/php:/var/log/php

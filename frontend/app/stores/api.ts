@@ -62,6 +62,20 @@ export const useApiStore = defineStore(
       })
     }
 
+    const telemetryTest = async (): Promise<{
+      status: string
+      fired_events: string[]
+      fired_count: number
+      session_id: string
+      portal_domain: string
+    }> => {
+      return await $api('/api/telemetry/test', {
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
     const getToken = async (data: Record<string, any>): Promise<{ token: string }> => {
       return await $api('/api/getToken', {
         method: 'POST',
@@ -113,7 +127,8 @@ export const useApiStore = defineStore(
       init,
       getEnum,
       getList,
-      postInstall
+      postInstall,
+      telemetryTest,
     }
   }
 )

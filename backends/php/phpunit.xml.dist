@@ -10,7 +10,7 @@
     <php>
         <env name="KERNEL_CLASS" value="App\Kernel"/>
         <env name="APP_ENV" value="test"/>
-        <env name="TELEMETRY_ENABLED" value="false"/>
+        <env name="TELEMETRY_ENABLED" value="false" force="true"/>
         <env name="DATABASE_URL" value="postgresql://test:test@localhost:5432/test_db?serverVersion=17&amp;charset=utf8"/>
         <env name="DEFAULT_URI" value="http://localhost"/>
         <env name="OTEL_EXPORTER_OTLP_ENDPOINT" value="http://localhost:4318"/>
