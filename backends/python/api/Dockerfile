@@ -3,8 +3,9 @@ FROM python:3.11-slim AS base
 
 WORKDIR /var/www/api
 
-# Install system dependencies for PostgreSQL and migrations
+# Install system dependencies for database clients and migrations
 RUN apt-get update && apt-get install -y \
+    default-mysql-client \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 

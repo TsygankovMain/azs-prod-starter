@@ -322,16 +322,50 @@ esac
 
 print_success "Выбран бэкенд: $BACKEND"
 
-# Обновляем SERVER_HOST в .env (для внутреннего взаимодействия контейнеров)
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS
-    sed -i '' "s|SERVER_HOST='http://api-some:8000'|SERVER_HOST='$SERVER_HOST'|" .env
+# 3. Выбор СУБД
+print_header "🗄 Выбор СУБД"
+echo "Выберите СУБД:"
+echo "1) PostgreSQL (по умолчанию)"
+echo "2) MySQL"
+echo ""
+read -p "Введите номер (1-2) [1]: " DB_CHOICE
+DB_CHOICE=${DB_CHOICE:-1}
+
+case $DB_CHOICE in
+    2)
+        DB_TYPE="mysql"
+        DB_PORT="3306"
+        DATABASE_URL="mysql://${DB_USER:-appuser}:${DB_PASSWORD:-apppass}@database:3306/${DB_NAME:-appdb}?serverVersion=8.4&charset=utf8mb4"
+        ;;
+    *)
+        DB_TYPE="postgresql"
+        DB_PORT="5432"
+        DATABASE_URL="postgresql://${DB_USER:-appuser}:${DB_PASSWORD:-apppass}@database:5432/${DB_NAME:-appdb}?serverVersion=17&charset=utf8"
+        ;;
+esac
+
+# 4. Подбираем CloudPub image/platform под архитектуру хоста
+HOST_ARCH="$(uname -m)"
+if [ "$HOST_ARCH" = "arm64" ] || [ "$HOST_ARCH" = "aarch64" ]; then
+    CLOUDPUB_IMAGE="cloudpub/cloudpub:latest-arm64"
+    CLOUDPUB_PLATFORM="linux/arm64"
 else
-    # Linux
-    sed -i "s|SERVER_HOST='http://api-some:8000'|SERVER_HOST='$SERVER_HOST'|" .env
+    CLOUDPUB_IMAGE="cloudpub/cloudpub:latest"
+    CLOUDPUB_PLATFORM="linux/amd64"
 fi
 
+# Обновляем переменные окружения в .env
+set_env_var "SERVER_HOST" "'$SERVER_HOST'"
+set_env_var "DB_TYPE" "$DB_TYPE"
+set_env_var "DB_PORT" "$DB_PORT"
+set_env_var "DATABASE_URL" "$DATABASE_URL"
+set_env_var "CLOUDPUB_IMAGE" "$CLOUDPUB_IMAGE"
+set_env_var "CLOUDPUB_PLATFORM" "$CLOUDPUB_PLATFORM"
+
 print_success "SERVER_HOST обновлен в .env: $SERVER_HOST"
+print_success "Выбрана СУБД: $DB_TYPE"
+print_success "DATABASE_URL обновлен в .env"
+print_success "CloudPub image/platform: $CLOUDPUB_IMAGE / $CLOUDPUB_PLATFORM"
 
 print_header "🐇 Настройка RabbitMQ"
 read -p "Включить RabbitMQ для фоновых задач? (y/N, по умолчанию n): " RABBITMQ_TOGGLE
@@ -457,23 +491,22 @@ print_header "🐳 Двухэтапный запуск Docker контейнер
 # Создаем временный файл для сохранения вывода
 TEMP_OUTPUT="/tmp/docker_output_$$"
 
-# Сначала очищаем все контейнеры и сети для чистого старта
-print_warning "Очистка предыдущих контейнеров и сетей..."
-docker-compose down --remove-orphans --volumes > /dev/null 2>&1 || true
-docker container rm -f $(docker container ls -aq --filter "name=b24-ai-starter\|frontend\|cloudpub") > /dev/null 2>&1 || true
-# Более агрессивная очистка сетей
-docker network rm b24-ai-starter_internal-net > /dev/null 2>&1 || true
-docker network prune -f > /dev/null 2>&1 || true
-docker volume prune -f > /dev/null 2>&1 || true
-sleep 5  # Даём больше времени Docker'у для полной очистки
+# Безопасная очистка только ресурсов текущего проекта (по подтверждению)
+print_warning "Подготовка окружения перед запуском."
+echo "Будут затронуты только ресурсы текущего compose-проекта (контейнеры/volume/сеть)."
+read -p "Выполнить очистку ресурсов текущего проекта? (y/N, по умолчанию n): " RUN_PROJECT_CLEANUP
+RUN_PROJECT_CLEANUP=${RUN_PROJECT_CLEANUP:-n}
 
-# Дополнительно удаляем стандартные контейнеры, если они зависли с прошлого запуска
-for stuck_container in frontend cloudpubFront; do
-    if docker ps -a --format '{{.Names}}' | grep -qx "$stuck_container"; then
-        print_warning "Удаляем зависший контейнер $stuck_container..."
-        docker rm -f "$stuck_container" > /dev/null 2>&1 || true
-    fi
-done
+if [[ "$RUN_PROJECT_CLEANUP" =~ ^[Yy]$ ]]; then
+    print_warning "Очищаем только ресурсы текущего проекта..."
+    docker compose down --remove-orphans --volumes > /dev/null 2>&1 || true
+    PROJECT_NETWORK="$(basename "$WORKDIR")_internal-net"
+    docker network rm "$PROJECT_NETWORK" > /dev/null 2>&1 || true
+    sleep 2
+    print_success "Очистка ресурсов текущего проекта завершена"
+else
+    print_warning "Очистка пропущена: продолжаем без удаления ресурсов"
+fi
 
 # ЭТАП 1: Запускаем только CloudPub и минимальный frontend для получения домена
 print_header "🌐 ЭТАП 1: Получение CloudPub домена"

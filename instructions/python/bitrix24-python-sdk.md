@@ -29,7 +29,7 @@ starter-kit/
 │   ├── python/            # Django + b24pysdk
 │   └── node/              # Express + Node.js
 ├── infrastructure/
-│   └── database/          # PostgreSQL (init.sql)
+│   └── database/          # PostgreSQL/MySQL init scripts
 ├── instructions/          # Инструкции для ИИ агентов
 └── logs/                   # Логи вне контейнеров
 ```
@@ -47,11 +47,11 @@ starter-kit/
 **Backend (на выбор):**
 - **PHP**: Symfony 7, Doctrine ORM, PHP SDK для Bitrix24
 - **Python**: Django, b24pysdk
-- **Node.js**: Express, pg (PostgreSQL), JWT
+- **Node.js**: Express, PostgreSQL/MySQL, JWT
 
 **Infrastructure:**
 - Docker & Docker Compose
-- PostgreSQL 17
+- PostgreSQL 17 / MySQL 8.4
 - Cloudpub (ngrok-like) для туннелирования
 - Nginx (production)
 
@@ -169,10 +169,17 @@ make dev-node
 - База данных автоматически инициализируется
 - Cloudpub создает публичный HTTPS URL
 
-**Примечание для macOS:**
-Если возникают проблемы с запуском `cloudpub` на ARM64 Mac, убедитесь, что в `docker-compose.yml` для сервиса `cloudpub` указано:
-```yaml
-platform: linux/amd64
+**Примечание по CloudPub и архитектуре:**
+Для сервиса `cloudpub` используйте переменные окружения, а не хардкод в `docker-compose.yml`:
+```env
+CLOUDPUB_IMAGE=cloudpub/cloudpub:latest
+CLOUDPUB_PLATFORM=linux/amd64
+```
+
+Для ARM64 можно задать:
+```env
+CLOUDPUB_IMAGE=cloudpub/cloudpub:latest-arm64
+CLOUDPUB_PLATFORM=linux/arm64
 ```
 
 ### Шаг 4: Получение публичного URL

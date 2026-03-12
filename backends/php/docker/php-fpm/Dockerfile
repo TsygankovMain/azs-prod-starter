@@ -7,12 +7,14 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     libicu-dev \
     libpq-dev \
+    default-mysql-client \
     postgresql-client \
     && docker-php-ext-install \
       zip \
       intl \
       bcmath \
       sockets \
+      pdo_mysql \
       pdo_pgsql \
       pgsql
 

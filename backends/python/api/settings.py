@@ -3,6 +3,11 @@ from urllib.parse import urlparse
 
 from config import config
 
+if config.db_type == "mysql":
+    import pymysql
+
+    pymysql.install_as_MySQLdb()
+
 BASE_DIR = Path(__file__).resolve().parent
 
 SECRET_KEY = config.jwt_secret
@@ -68,7 +73,7 @@ ASGI_APPLICATION = "asgi.application"
 
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql_psycopg2",
+        "ENGINE": "django.db.backends.mysql" if config.db_type == "mysql" else "django.db.backends.postgresql_psycopg2",
         "NAME": config.db_name,
         "USER": config.db_user,
         "PASSWORD": config.db_password,

@@ -111,12 +111,15 @@ dev-front:
 ## PHP
 dev-php:
 	@echo "Starting dev php"
-	@ENABLE_RABBITMQ_VALUE=$$(grep -E '^ENABLE_RABBITMQ=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	@DB_TYPE_VALUE=$$(grep -E '^DB_TYPE=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	if [ -z "$$DB_TYPE_VALUE" ]; then DB_TYPE_VALUE=postgresql; fi; \
+	if [ "$$DB_TYPE_VALUE" = "mysql" ]; then DB_PROFILE="db-mysql"; else DB_PROFILE="db-postgres"; fi; \
+	ENABLE_RABBITMQ_VALUE=$$(grep -E '^ENABLE_RABBITMQ=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
 	if [ -z "$$ENABLE_RABBITMQ_VALUE" ]; then ENABLE_RABBITMQ_VALUE=0; fi; \
 	if [ "$$ENABLE_RABBITMQ_VALUE" = "1" ]; then \
-	  PROFILES="frontend,php,cloudpub,queue"; \
+	  PROFILES="frontend,php,cloudpub,queue,$$DB_PROFILE"; \
 	else \
-	  PROFILES="frontend,php,cloudpub"; \
+	  PROFILES="frontend,php,cloudpub,$$DB_PROFILE"; \
 	fi; \
 	COMPOSE_PROFILES=$$PROFILES $(DOCKER_COMPOSE) --env-file .env up --build
 
@@ -297,47 +300,74 @@ dev-php-init-database: dev-php-db-drop dev-php-db-create dev-php-db-migrate
 
 .PHONY: dev-php-db-create dev-php-db-drop dev-php-db-migrate dev-php-db-migrate-create dev-php-db-schema-update dev-php-db-schema-validate
 dev-php-db-create:
-	COMPOSE_PROFILES=php-cli $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console doctrine:database:create --if-not-exists
+	@DB_TYPE_VALUE=$$(grep -E '^DB_TYPE=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	if [ -z "$$DB_TYPE_VALUE" ]; then DB_TYPE_VALUE=postgresql; fi; \
+	if [ "$$DB_TYPE_VALUE" = "mysql" ]; then DB_PROFILE="db-mysql"; else DB_PROFILE="db-postgres"; fi; \
+	COMPOSE_PROFILES=php-cli,$$DB_PROFILE $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console doctrine:database:create --if-not-exists
 
 dev-php-db-drop:
-	COMPOSE_PROFILES=php-cli $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console doctrine:database:drop --force --if-exists
+	@DB_TYPE_VALUE=$$(grep -E '^DB_TYPE=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	if [ -z "$$DB_TYPE_VALUE" ]; then DB_TYPE_VALUE=postgresql; fi; \
+	if [ "$$DB_TYPE_VALUE" = "mysql" ]; then DB_PROFILE="db-mysql"; else DB_PROFILE="db-postgres"; fi; \
+	COMPOSE_PROFILES=php-cli,$$DB_PROFILE $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console doctrine:database:drop --force --if-exists
 
 dev-php-db-migrate:
-	COMPOSE_PROFILES=php-cli $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console doctrine:migrations:migrate --no-interaction
+	@DB_TYPE_VALUE=$$(grep -E '^DB_TYPE=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	if [ -z "$$DB_TYPE_VALUE" ]; then DB_TYPE_VALUE=postgresql; fi; \
+	if [ "$$DB_TYPE_VALUE" = "mysql" ]; then DB_PROFILE="db-mysql"; else DB_PROFILE="db-postgres"; fi; \
+	COMPOSE_PROFILES=php-cli,$$DB_PROFILE $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console doctrine:migrations:migrate --no-interaction
 
 dev-php-db-migrate-create:
-	COMPOSE_PROFILES=php-cli $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console make:migration --no-interaction
+	@DB_TYPE_VALUE=$$(grep -E '^DB_TYPE=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	if [ -z "$$DB_TYPE_VALUE" ]; then DB_TYPE_VALUE=postgresql; fi; \
+	if [ "$$DB_TYPE_VALUE" = "mysql" ]; then DB_PROFILE="db-mysql"; else DB_PROFILE="db-postgres"; fi; \
+	COMPOSE_PROFILES=php-cli,$$DB_PROFILE $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console make:migration --no-interaction
 
 dev-php-db-migrate-status:
-	COMPOSE_PROFILES=php-cli $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console doctrine:migrations:status
+	@DB_TYPE_VALUE=$$(grep -E '^DB_TYPE=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	if [ -z "$$DB_TYPE_VALUE" ]; then DB_TYPE_VALUE=postgresql; fi; \
+	if [ "$$DB_TYPE_VALUE" = "mysql" ]; then DB_PROFILE="db-mysql"; else DB_PROFILE="db-postgres"; fi; \
+	COMPOSE_PROFILES=php-cli,$$DB_PROFILE $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console doctrine:migrations:status
 
 dev-php-db-schema-update:
-	COMPOSE_PROFILES=php-cli $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console doctrine:schema:update --force
+	@DB_TYPE_VALUE=$$(grep -E '^DB_TYPE=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	if [ -z "$$DB_TYPE_VALUE" ]; then DB_TYPE_VALUE=postgresql; fi; \
+	if [ "$$DB_TYPE_VALUE" = "mysql" ]; then DB_PROFILE="db-mysql"; else DB_PROFILE="db-postgres"; fi; \
+	COMPOSE_PROFILES=php-cli,$$DB_PROFILE $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console doctrine:schema:update --force
 
 dev-php-db-schema-validate:
-	COMPOSE_PROFILES=php-cli $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console doctrine:schema:validate
+	@DB_TYPE_VALUE=$$(grep -E '^DB_TYPE=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	if [ -z "$$DB_TYPE_VALUE" ]; then DB_TYPE_VALUE=postgresql; fi; \
+	if [ "$$DB_TYPE_VALUE" = "mysql" ]; then DB_PROFILE="db-mysql"; else DB_PROFILE="db-postgres"; fi; \
+	COMPOSE_PROFILES=php-cli,$$DB_PROFILE $(DOCKER_COMPOSE) run --rm --workdir /var/www php-cli php bin/console doctrine:schema:validate
 
 ## Python
 dev-python:
 	@echo "Starting dev python"
-	@ENABLE_RABBITMQ_VALUE=$$(grep -E '^ENABLE_RABBITMQ=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	@DB_TYPE_VALUE=$$(grep -E '^DB_TYPE=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	if [ -z "$$DB_TYPE_VALUE" ]; then DB_TYPE_VALUE=postgresql; fi; \
+	if [ "$$DB_TYPE_VALUE" = "mysql" ]; then DB_PROFILE="db-mysql"; else DB_PROFILE="db-postgres"; fi; \
+	ENABLE_RABBITMQ_VALUE=$$(grep -E '^ENABLE_RABBITMQ=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
 	if [ -z "$$ENABLE_RABBITMQ_VALUE" ]; then ENABLE_RABBITMQ_VALUE=0; fi; \
 	if [ "$$ENABLE_RABBITMQ_VALUE" = "1" ]; then \
-	  PROFILES="frontend,python,cloudpub,queue"; \
+	  PROFILES="frontend,python,cloudpub,queue,$$DB_PROFILE"; \
 	else \
-	  PROFILES="frontend,python,cloudpub"; \
+	  PROFILES="frontend,python,cloudpub,$$DB_PROFILE"; \
 	fi; \
 	COMPOSE_PROFILES=$$PROFILES $(DOCKER_COMPOSE) --env-file .env up --build
 
 ## NodeJs
 dev-node:
 	@echo "Starting dev node"
-	@ENABLE_RABBITMQ_VALUE=$$(grep -E '^ENABLE_RABBITMQ=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	@DB_TYPE_VALUE=$$(grep -E '^DB_TYPE=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	if [ -z "$$DB_TYPE_VALUE" ]; then DB_TYPE_VALUE=postgresql; fi; \
+	if [ "$$DB_TYPE_VALUE" = "mysql" ]; then DB_PROFILE="db-mysql"; else DB_PROFILE="db-postgres"; fi; \
+	ENABLE_RABBITMQ_VALUE=$$(grep -E '^ENABLE_RABBITMQ=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
 	if [ -z "$$ENABLE_RABBITMQ_VALUE" ]; then ENABLE_RABBITMQ_VALUE=0; fi; \
 	if [ "$$ENABLE_RABBITMQ_VALUE" = "1" ]; then \
-	  PROFILES="frontend,node,cloudpub,queue"; \
+	  PROFILES="frontend,node,cloudpub,queue,$$DB_PROFILE"; \
 	else \
-	  PROFILES="frontend,node,cloudpub"; \
+	  PROFILES="frontend,node,cloudpub,$$DB_PROFILE"; \
 	fi; \
 	COMPOSE_PROFILES=$$PROFILES $(DOCKER_COMPOSE) --env-file .env up --build
 
@@ -399,7 +429,19 @@ logs-nginxproxy:
 
 # Database operations
 db-backup:
-	$(DOCKER_COMPOSE) exec database pg_dump -U appuser appdb > backup_$(shell date +%Y%m%d_%H%M%S).sql
+	@DB_TYPE_VALUE=$$(grep -E '^DB_TYPE=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	if [ -z "$$DB_TYPE_VALUE" ]; then DB_TYPE_VALUE=postgresql; fi; \
+	if [ "$$DB_TYPE_VALUE" = "mysql" ]; then \
+	  COMPOSE_PROFILES=db-mysql $(DOCKER_COMPOSE) exec -T database-mysql sh -lc "exec mysqldump -u\"$${DB_USER:-appuser}\" -p\"$${DB_PASSWORD:-apppass}\" \"$${DB_NAME:-appdb}\"" > backup_$(shell date +%Y%m%d_%H%M%S).sql; \
+	else \
+	  COMPOSE_PROFILES=db-postgres $(DOCKER_COMPOSE) exec -T database-postgres pg_dump -U $${DB_USER:-appuser} $${DB_NAME:-appdb} > backup_$(shell date +%Y%m%d_%H%M%S).sql; \
+	fi
 
 db-restore:
-	$(DOCKER_COMPOSE) exec -T database psql -U appuser appdb < $(file)
+	@DB_TYPE_VALUE=$$(grep -E '^DB_TYPE=' .env 2>/dev/null | tail -n1 | cut -d= -f2); \
+	if [ -z "$$DB_TYPE_VALUE" ]; then DB_TYPE_VALUE=postgresql; fi; \
+	if [ "$$DB_TYPE_VALUE" = "mysql" ]; then \
+	  COMPOSE_PROFILES=db-mysql $(DOCKER_COMPOSE) exec -T database-mysql sh -lc "exec mysql -u\"$${DB_USER:-appuser}\" -p\"$${DB_PASSWORD:-apppass}\" \"$${DB_NAME:-appdb}\"" < $(file); \
+	else \
+	  COMPOSE_PROFILES=db-postgres $(DOCKER_COMPOSE) exec -T database-postgres psql -U $${DB_USER:-appuser} $${DB_NAME:-appdb} < $(file); \
+	fi
