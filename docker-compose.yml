@@ -81,9 +81,12 @@ services:
     environment:
       NUXT_PUBLIC_APP_URL: ${VIRTUAL_HOST}
       NUXT_PUBLIC_API_URL: ${VIRTUAL_HOST}
+      NUXT_PUBLIC_TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-false}
       HTTP: frontend:3000
     expose:
       - '3000'
+    # ports:
+    #  - "127.0.0.1:3000:3000"
     volumes:
       - ./frontend:/app
     networks:
@@ -127,6 +130,8 @@ services:
       - "8000"
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./backends/php/:/var/www
       - ./logs/php:/var/log/php
