@@ -30,7 +30,7 @@ parameters:
 #### 1. simple-ui (по умолчанию)
 **Назначение**: UI-centric приложения (b24-ai-starter-ru)  
 **Профили**: LifecycleProfile + UIProfile  
-**Атрибуты**: ~59 атрибутов
+**Атрибуты**: 72 (Lifecycle: 27, UI: 45)
 - Lifecycle события (установка, обновление, удаление)
 - UI взаимодействия (кнопки, формы, экраны)
 
@@ -42,8 +42,8 @@ OTEL_TELEMETRY_PROFILE=simple-ui
 #### 2. integration-sync
 **Назначение**: Интеграционные приложения с синхронизацией  
 **Профили**: LifecycleProfile + UIProfile + IntegrationProfile  
-**Исключения**: `initial_sync.*`  
-**Атрибуты**: ~85 атрибутов
+**Исключения**: `initial_sync.*` (4 атрибута)  
+**Атрибуты**: 102 (Lifecycle: 27, UI: 45, Integration: 34, минус 4 initial_sync.*)
 
 Подходит для приложений которые выполняют регулярную синхронизацию, но не имеют initial setup процесса.
 
@@ -55,7 +55,7 @@ OTEL_TELEMETRY_PROFILE=integration-sync
 #### 3. integration-with-migration
 **Назначение**: Интеграции с initial setup процессом  
 **Профили**: LifecycleProfile + UIProfile + IntegrationProfile  
-**Атрибуты**: ~93 атрибута (полный IntegrationProfile)
+**Атрибуты**: 106 (Lifecycle: 27, UI: 45, Integration: 34, включая initial_sync.*)
 
 Включает все integration атрибуты, включая initial_sync.
 
@@ -66,15 +66,13 @@ OTEL_TELEMETRY_PROFILE=integration-with-migration
 
 #### 4. migrator-light
 **Назначение**: Миграторы с минимальным UI  
-**Профили**: LifecycleProfile + UIProfile (minimal) + MigrationProfile  
+**Профили**: LifecycleProfile + UIProfile + MigrationProfile (= IntegrationProfile + migration-атрибуты)  
 **Исключения**: 
-- `ui.screen.*`
-- `ui.widget.*`
-- `ui.form.*`
-- `session.*`
-- `external.*`
+- `session.*` — выключает `session.id`, `session.start_time`, `session.duration_ms` (3 атрибута)
+- `external.*` — выключает 7 `external.*` атрибутов
+- `ui.screen.*`, `ui.widget.*`, `ui.form.*` — **не совпадают** ни с одним атрибутом ([UIProfile называет их](../../../backends/php/src/Service/Telemetry/Profiles/UIProfile.php) `screen.*`, `widget.*`, `form.*` без префикса `ui.`)
 
-**Атрибуты**: ~135 атрибутов
+**Атрибуты**: 171 (Lifecycle: 27 + UI: 45 вкл. отфильтрованных + Migration: 109, минус 10)
 
 Оптимизирован для миграторов где UI используется только для запуска и мониторинга.
 
@@ -86,7 +84,7 @@ OTEL_TELEMETRY_PROFILE=migrator-light
 #### 5. migrator-advanced
 **Назначение**: Миграторы с полной RFC-compliant телеметрией  
 **Профили**: LifecycleProfile + UIProfile + MigrationProfile  
-**Атрибуты**: ~159 атрибутов (все migration атрибуты)
+**Атрибуты**: 181 (Lifecycle: 27 + UI: 45 + Migration: 109)
 
 Полный набор атрибутов для соответствия RFC requirements.
 
@@ -97,8 +95,8 @@ OTEL_TELEMETRY_PROFILE=migrator-advanced
 
 #### 6. development
 **Назначение**: Разработка и отладка  
-**Профили**: Все профили  
-**Атрибуты**: ~193 атрибута
+**Профили**: LifecycleProfile + UIProfile + IntegrationProfile + MigrationProfile  
+**Атрибуты**: 181 (та же, что и migrator-advanced — IntegrationProfile дедуплицируется, т.к. MigrationProfile уже включает все атрибуты IntegrationProfile через наследование)
 
 **⚠️ ВНИМАНИЕ**: Только для development окружения!
 
@@ -212,7 +210,7 @@ OTEL_TELEMETRY_PROFILE=my-custom-profile
 3. Очистите кэш:
 
 ```bash
-make clear-cache  # или rm -rf var/cache/*
+rm -rf var/cache/
 ```
 
 ## Проверка конфигурации

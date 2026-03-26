@@ -30,7 +30,7 @@
 
 ```bash
 # Проверить переменную окружения в контейнере
-docker compose exec php-fpm env | grep TELEMETRY
+docker compose exec api-php env | grep TELEMETRY
 # Ожидаемый вывод:
 # TELEMETRY_ENABLED=true
 # OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
@@ -40,7 +40,7 @@ docker compose exec php-fpm env | grep TELEMETRY
 
 ```bash
 # В PHP контейнере
-docker compose run --rm php-fpm php bin/console debug:container App\\Service\\Telemetry\\TelemetryInterface
+docker compose run --rm api-php php bin/console debug:container App\\Service\\Telemetry\\TelemetryInterface
 ```
 
 Ожидаемый вывод при включённой телеметрии:
@@ -54,7 +54,7 @@ Class        App\Service\Telemetry\RealTelemetryService
 **Шаг 3: проверить логи**
 
 ```bash
-docker compose logs php-fpm 2>&1 | grep -i telemetry | tail -20
+docker compose logs api-php 2>&1 | grep -i telemetry | tail -20
 docker compose logs otel-collector     | tail -20
 ```
 
@@ -94,7 +94,7 @@ curl -s -o /dev/null -w '%{http_code}' http://localhost:4318/v1/traces
 # Ожидается: 200 или 405 (метод не поддерживается — это нормально)
 
 # Проверить с PHP-контейнера
-docker compose exec php-fpm curl -s http://otel-collector:4318/v1/traces
+docker compose exec api-php curl -s http://otel-collector:4318/v1/traces
 # Должен вернуть ответ, а не "Connection refused"
 
 # Проверить, экспортируется ли порт
@@ -210,7 +210,7 @@ $this->telemetry->trackEvent('event', [
 
 ```bash
 # Проверить активный профиль
-docker compose exec php-fpm php bin/console debug:container --parameter=telemetry.active_profile
+docker compose exec api-php php bin/console debug:container --parameter=telemetry.active_profile
 ```
 
 Если видите `development` — переключите на `simple-ui`:
@@ -228,10 +228,10 @@ parameters:
 
 ```bash
 # Очистить кэш
-docker compose exec php-fpm php bin/console cache:clear
+docker compose exec api-php php bin/console cache:clear
 
 # Проверить файл конфигурации
-docker compose exec php-fpm php bin/console lint:yaml config/packages/telemetry.yaml
+docker compose exec api-php php bin/console lint:yaml config/packages/telemetry.yaml
 ```
 
 ### `Class "App\Service\Telemetry\Profiles\XxxProfile" not found`
@@ -410,7 +410,7 @@ exporters:
 
 ```bash
 # Открыть Grafana
-open http://localhost:3000
+open http://localhost:3001
 # Логин: admin / admin (по умолчанию)
 # Dashboard: OTel Traces
 ```
@@ -444,15 +444,14 @@ docker compose logs otel-collector | grep -i "trace\|error" | tail -20
 # С хоста
 curl -s -o /dev/null -w '%{http_code}' http://localhost:4318/v1/traces
 # С PHP-контейнера
-docker compose exec php-fpm curl -s http://otel-collector:4318/v1/traces
+docker compose exec api-php curl -s http://otel-collector:4318/v1/traces
 ```
 
 **Шаг 3: проверить таблицу в ClickHouse**
 
 ```bash
 docker compose exec clickhouse clickhouse-client \
-  --user telemetry_user --password changeme_secure_password \
-  --query "SELECT count(), max(Timestamp) FROM telemetry.otel_traces"
+  --user telemetry_user --password changeme \
 ```
 
 **Шаг 4: убедиться что используется `trackOperation()`, а не `trackEvent()`**
@@ -478,7 +477,7 @@ $this->telemetry->trackEvent('my_event', ['duration_ms' => 100]);
 
 ```bash
 docker compose exec clickhouse clickhouse-client \
-  --user telemetry_user --password changeme_secure_password \
+  --user telemetry_user --password changeme \
   < backends/php/../../../b24-ai-starter-otel/clickhouse/schema/04_otel_traces.sql
 ```
 
@@ -488,13 +487,13 @@ docker compose exec clickhouse clickhouse-client \
 
 ### Q: Телеметрия влияет на логи Monolog?
 
-**A**: Да, но минимально. `MonologOTelHandler` отправляет лог-записи уровня WARNING и выше в OTel Collector параллельно с основными логами. Это не заменяет файловые логи — данные дублируются.
+**A**: Да, но минимально. `MonologOTelHandler` отправляет лог-записи уровня INFO и выше в OTel Collector параллельно с основными логами (уровень задан в `config/services.yaml`: `Level::Info`). Это не заменяет файловые логи — данные дублируются.
 
 ### Q: Как сбросить все spans если что-то зависло?
 
 ```bash
 # Перезапустить PHP-FPM (сбросит буферы)
-docker compose restart php-fpm
+docker compose restart api-php
 
 # Перезапустить коллектор
 docker compose restart otel-collector
@@ -565,7 +564,7 @@ $service = new MyService(new NullTelemetryService());
 $this->telemetry->shutdown();
 ```
 
-Или зарегистрировать через `register_shutdown_function` в `TelemetryFactory` — это уже сделано для HTTP-запросов через `kernel.terminate`.
+Или вызов `shutdown()` можно зарегистрировать явно в конце обработки, если нужна гарантированная отправка. Для PHP-FPM стандартный жизненный цикл процесса сам сбрасывает буферы при завершении запроса.
 
 ---
 
@@ -573,29 +572,29 @@ $this->telemetry->shutdown();
 
 ```bash
 # 1. Включена ли телеметрия?
-docker compose exec php-fpm env | grep TELEMETRY_ENABLED
+docker compose exec api-php env | grep TELEMETRY_ENABLED
 
 # 2. Какой класс используется?
-docker compose exec php-fpm php bin/console debug:container App\\Service\\Telemetry\\TelemetryInterface
+docker compose exec api-php php bin/console debug:container App\\Service\\Telemetry\\TelemetryInterface
 
 # 3. Доступен ли коллектор?
-docker compose exec php-fpm curl -s http://otel-collector:4318/v1/traces
+docker compose exec api-php curl -s http://otel-collector:4318/v1/traces
 
 # 4. Есть ли данные в ClickHouse?
 docker compose exec clickhouse clickhouse-client \
-  --user telemetry_user --password changeme_secure_password \
+  --user telemetry_user --password changeme \
   --query "SELECT count() FROM telemetry.otel_logs"
 
 # 4b. Есть ли трейсы (spans из trackOperation)?
 docker compose exec clickhouse clickhouse-client \
-  --user telemetry_user --password changeme_secure_password \
+  --user telemetry_user --password changeme \
   --query "SELECT count() FROM telemetry.otel_traces"
 
 # 5. Какой активный профиль?
-docker compose exec php-fpm php bin/console debug:container --parameter=telemetry.active_profile
+docker compose exec api-php php bin/console debug:container --parameter=telemetry.active_profile
 
 # 6. Ошибки в логах PHP?
-docker compose logs php-fpm 2>&1 | grep -i "telemetry\|otel\|otlp" | tail -20
+docker compose logs api-php 2>&1 | grep -i "telemetry\|otel\|otlp" | tail -20
 
 # 7. Запустить тесты телеметрии
 make test-telemetry

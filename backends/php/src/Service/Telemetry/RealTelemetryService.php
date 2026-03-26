@@ -75,9 +75,14 @@ final class RealTelemetryService implements TelemetryInterface
             // блокирует на emit() внутри Docker при host.docker.internal.
             // NativeHttpClient использует обычные PHP streams — надёжно и синхронно.
             $psr18Client = new Psr18Client(new NativeHttpClient(['timeout' => 5]));
+
+            // Заголовки авторизации из OTEL_EXPORTER_OTLP_HEADERS (формат: "key=value,key2=value2")
+            $otlpHeaders = $this->parseOtlpHeaders();
+
             $transport = (new PsrTransportFactory($psr18Client))->create(
                 $this->config->getEndpoint().'/v1/logs',
                 'application/json',
+                $otlpHeaders,
             );
 
             $logsExporter = new LogsExporter($transport);
@@ -91,6 +96,7 @@ final class RealTelemetryService implements TelemetryInterface
             $tracesTransport = (new PsrTransportFactory($psr18Client))->create(
                 $this->config->getEndpoint().'/v1/traces',
                 'application/json',
+                $otlpHeaders,
             );
 
             $this->tracerProvider = TracerProvider::builder()
@@ -318,5 +324,35 @@ final class RealTelemetryService implements TelemetryInterface
         }
 
         return $result;
+    }
+
+    /**
+     * Разбирает OTEL_EXPORTER_OTLP_HEADERS в массив заголовков.
+     *
+     * Формат переменной: "key1=value1,key2=value2"
+     * Пример: "Authorization=Bearer mytoken"
+     *
+     * @return array<string, string>
+     */
+    private function parseOtlpHeaders(): array
+    {
+        $headersEnv = getenv('OTEL_EXPORTER_OTLP_HEADERS');
+        if (false === $headersEnv || '' === $headersEnv) {
+            return [];
+        }
+
+        $headers = [];
+        foreach (explode(',', $headersEnv) as $pair) {
+            $eqPos = strpos($pair, '=');
+            if (false !== $eqPos) {
+                $key = trim(substr($pair, 0, $eqPos));
+                $value = trim(substr($pair, $eqPos + 1));
+                if ('' !== $key) {
+                    $headers[$key] = $value;
+                }
+            }
+        }
+
+        return $headers;
     }
 }

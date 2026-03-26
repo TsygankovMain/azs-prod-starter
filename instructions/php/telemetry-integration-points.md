@@ -14,28 +14,31 @@
 
 | Атрибут                | Источник                                        |
 |------------------------|-------------------------------------------------|
-| `app.version`          | `$b24ApplicationInfo->VERSION`                  |
-| `app.status`           | `$b24ApplicationStatus` (free/trial/paid/local) |
-| `portal.license_family` | `$b24PortalLicenseFamily`                       |
-| `portal.users_count`   | `$b24PortalUsersCount`                          |
+| `app.version`          | `(string) $b24ApplicationInfo->VERSION`         |
+| `app.status`           | `$b24ApplicationStatus->getStatusCode()` (free/trial/paid/local) |
+| `portal.license_family` | `$b24PortalLicenseFamily` \*                   |
+| `portal.users_count`   | `(string) $b24PortalUsersCount` \*              |
 | `portal.member_id`     | `$frontendPayload->memberId`                    |
 | `portal.domain`        | `$frontendPayload->domain`                      |
-| `installer.user_id`    | `$b24CurrentUserProfile->ID`                    |
-| `installer.is_admin`   | `$b24CurrentUserProfile->ADMIN` (bool→string)   |
+| `installer.user_id`    | `(string) $b24CurrentUserProfile->ID` \*        |
+| `installer.is_admin`   | `$b24CurrentUserProfile->ADMIN` (bool→string) \* |
+
+> \* Атрибуты `portal.license_family`, `portal.users_count`, `installer.user_id`, `installer.is_admin` отсутствуют в `LifecycleProfile` и `UIProfile`, поэтому при использовании профиля `simple-ui` они **фильтруются** `AttributeGroupManager` и не попадают в OTel Collector.
 
 ---
 
 ### `app_install_failed`
 **Где**: `AppLifecycleController::install()` — catch блок  
 **Когда**: Ошибка при установке  
-**Атрибуты**: `error.message`, `portal.member_id`, `portal.domain`
+**Реализация**: `trackError($throwable, [...])` → `otel_logs` с `telemetry.channel = 'support'`  
+**Атрибуты**: `error.category = 'app_install_failed'`, `portal.member_id`, `portal.domain`
 
 ---
 
 ### `event_subscription_registered`
 **Где**: `AppLifecycleController::install()` — после bindEventHandlers  
 **Когда**: Успешная регистрация обработчиков событий  
-**Атрибуты**: `portal.member_id`, `portal.domain`, `registration.handler_url`, `registration.events_count`
+**Атрибуты**: `portal.member_id`, `portal.domain`, `registration.handler_url`, `registration.events_count` (всегда `'2'` — OnApplicationInstall + OnApplicationUninstall)
 
 ---
 
@@ -56,28 +59,30 @@
 ## 2. UI события
 
 ### `app_opened`
-**Где**: `ApiController::getList()`, `ApiController::getEnum()`  
+**Где**: `ApiController::getList()`  
 **Когда**: Пользователь открывает виджет / приложение  
 **Атрибуты**:
 
-| Атрибут              | Источник                            |
+| Атрибут              | Источник                                            |
 |----------------------|-------------------------------------|
 | `ui.endpoint`        | строка маршрута                     |
 | `ui.method`          | HTTP метод                          |
-| `session.id`         | `TelemetryRequestSubscriber`        |
-| `portal.member_id`   | JWT payload из `jwt_payload`        |
-| `portal.domain`      | JWT payload из `jwt_payload`        |
+| `session.id`         | `SessionContextTrait::getSessionId($request)` |
+| `portal.member_id`   | `SessionContextTrait::getMemberIdFromRequest($request)` |
+| `portal.domain`      | `SessionContextTrait::getDomainFromRequest($request)` |
 
----
-
-### `api_health_check`
-**Где**: `ApiController::health()`  
-**Когда**: Health check вызов (мониторинг)  
-**Атрибуты**: `ui.endpoint`, `ui.method`, `session.id`
+> **Примечание**: `getList()` также дополнительно отправляет `api_list_called` с атрибутами `endpoint`, `method`, `timestamp` (остаток от Sprint 1).
 
 ---
 
 ## 3. Action события
+
+### `b24_event_action_initiated`
+**Где**: `B24EventsController::processEvent()` — OnCrmContactAdd  
+**Когда**: Начало обработки события Bitrix24  
+**Атрибуты**: `action.name`, `action.type`, `action.status = 'initiated'`, `b24.event_code`, `portal.member_id`
+
+---
 
 ### `b24_event_processed`
 **Где**: `B24EventsController::processEvent()` — OnCrmContactAdd  
@@ -89,9 +94,9 @@
 | `action.name`          | `'process_crm_contact_add'`   |
 | `action.type`          | `'b24_event_handler'`         |
 | `action.status`        | `'completed'`                 |
-| `action.duration_ms`   | замер через `hrtime()`        |
-| `b24.event_code`       | `OnCrmContactAdd::CODE`       |
-| `b24.contact_id`       | `$b24Contact->ID`             |
+| `action.duration_ms`   | `(string)` замер через `hrtime()` |
+| `b24.event`            | `OnCrmContactAdd::CODE`       |
+| `b24.entity`           | `'contact'`                   |
 | `portal.member_id`     | из event auth                 |
 
 ---
@@ -99,7 +104,8 @@
 ### `b24_event_processing_failed`
 **Где**: `B24EventsController::processEvent()` — catch блок  
 **Когда**: Ошибка при обработке события  
-**Атрибуты**: `action.name`, `action.status = 'failed'`, `error.message`, `portal.member_id`
+**Реализация**: `trackError($throwable, [...])` → `otel_logs` с `telemetry.channel = 'support'`  
+**Атрибуты**: `error.category = 'b24_event_processing_failed'`, `action.name = 'process_crm_event'`, `action.status = 'failed'`
 
 ---
 
@@ -113,9 +119,9 @@
 |----------------------|---------------------------|
 | `api.provider`       | `'bitrix24'`              |
 | `api.method`         | `'crm.contact.get'`       |
-| `api.duration_ms`    | замер через `hrtime()`    |
+| `api.duration_ms`    | `(string)` замер через `hrtime()` |
 | `api.status`         | `'success'` / `'error'`   |
-| `portal.domain`      | из account                |
+| `portal.domain`      | `$b24Account->getDomainUrl()` |
 
 > **Рекомендация**: Для вызовов API предпочтительно использовать `trackOperation()` (см. раздел 7) — он автоматически замеряет время и записывает данные в `otel_traces` с точными `StartTime`/`EndTime`/`Duration`.
 
@@ -129,10 +135,11 @@
 **Реализация**: `trackError($exception, ['error.category' => ..., 'request.path' => ...])`
 
 **Категории**:
-- `validation_error` — `InvalidArgumentException`
-- `auth_error` — исключения JWT/auth
-- `not_found` — `EntityNotFoundException`
-- `api_error` — ошибки Bitrix24 SDK
+- `validation_error` — `InvalidArgumentException` или классы с `validation`/`constraint` в названии
+- `auth_error` — классы с `auth`/`unauthorized`/`forbidden`/`jwt` в названии
+- `not_found` — `NotFoundHttpException`
+- `api_error` — `Bitrix24\SDK\Core\Exceptions\BaseException`
+- `domain_error` — `\DomainException`
 - `internal_error` — всё остальное
 
 ---
@@ -190,27 +197,10 @@ $contact = $this->telemetry->trackOperation(
 ```
 otel_traces
 ├── SpanName     = 'bitrix24.crm.contact.get'
-├── ServiceName  = 'b24-ai-starter-ru'
+├── ServiceName  = значение OTEL_SERVICE_NAME (по умолчанию 'b24-app')
 ├── Duration     = 142000000  (наносекунды → 142 мс)
 ├── StatusCode   = 'OK' / 'ERROR'
 ├── SpanAttributes['portal.member_id'] = '...'
 ├── TraceId      = '...'  (связывает spans одного запроса)
 └── ParentSpanId = '...'  (иерархия вложенных spans)
 ```
-
----
-
-## Приоритеты реализации
-
-| Приоритет | Событие / метод                     | Таблица ClickHouse | Sprint |
-|-----------|-------------------------------------|---------------------|--------|
-| P1        | `app_installed`                     | `otel_logs`         | 5.2    |
-| P1        | `app_install_finalized`             | `otel_logs`         | 5.2    |
-| P1        | `app_uninstalled`                   | `otel_logs`         | 5.2    |
-| P1        | `session.id` propagation            | `otel_logs`         | 5.7    |
-| P2        | `app_opened`                        | `otel_logs`         | 5.3    |
-| P2        | `b24_event_processed`               | `otel_logs`         | 5.4    |
-| P2        | `bitrix_api_call` / `trackOperation`| `otel_traces`       | 5.5    |
-| P2        | error tracking                      | `otel_logs`         | 5.6    |
-| P3        | `event_subscription_registered`     | `otel_logs`         | 5.2    |
-| P3        | AI/external API `trackOperation()`  | `otel_traces`       | —      |

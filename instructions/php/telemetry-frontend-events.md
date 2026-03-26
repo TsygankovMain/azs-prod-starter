@@ -97,9 +97,11 @@ parameters:
   telemetry.frontend_event_whitelist:
     - 'page_view'
     - 'ui_button_click'
+    - 'ui_select_change'
     - 'ui_form_submit'
     - 'ui_error'
     - 'app_frame_loaded'
+    - 'b24_api_call'
 ```
 
 **Расширение whitelist** — просто добавьте новое имя в список:
@@ -108,9 +110,11 @@ parameters:
   telemetry.frontend_event_whitelist:
     - 'page_view'
     - 'ui_button_click'
+    - 'ui_select_change'
     - 'ui_form_submit'
     - 'ui_error'
     - 'app_frame_loaded'
+    - 'b24_api_call'
     - 'crm_deal_opened'     # ← добавить своё событие
     - 'crm_deal_saved'
 ```
@@ -199,17 +203,17 @@ PHP автоматически добавляет к каждому событи
 |---|---|
 | `event.source` | `"frontend"` (всегда) |
 | `session.id` | `X-Session-ID` заголовок или `telemetry_session_id` request attribute |
-| `portal.member_id` | JWT payload → `jwt_member_id` |
-| `portal.domain` | JWT payload → `jwt_domain` |
+| `portal.member_id` | Request attribute `jwt_member_id` (устанавливается `JwtAuthenticationListener`) |
+| `portal.domain` | Request attribute `jwt_domain` (устанавливается `JwtAuthenticationListener`) |
 | `client.timestamp_ms` | `client_timestamp_ms` из тела запроса (если указан) |
 
 В ClickHouse события фронтенда легко выделить по фильтру:
 
 ```sql
 SELECT *
-FROM telemetry.otel_traces
-WHERE SpanAttributes['event.source'] = 'frontend'
-  AND SpanName = 'page_view'
+FROM telemetry.otel_logs
+WHERE LogAttributes['event.source'] = 'frontend'
+  AND LogAttributes['event.name'] = 'page_view'
 ORDER BY Timestamp DESC
 LIMIT 100
 ```
@@ -235,11 +239,11 @@ make test-telemetry-frontend-events
 cd ../b24-ai-starter-otel && make up
 
 # 2. Запустить E2E-тест
-cd ../b24-ai-starter-ru && make test-telemetry-frontend-e2e
+cd ../ai-ru-full && make test-telemetry-frontend-e2e
 ```
 
 E2E-тест проверяет:
-1. Событие `page_view` появляется в ClickHouse (`telemetry.otel_traces`) в течение 12 секунд
+1. Событие `page_view` появляется в ClickHouse (`telemetry.otel_logs`) в течение 12 секунд
 2. Заблокированное (не в whitelist) событие → 400 → в ClickHouse ничего нет
 3. Без JWT → 401 → в ClickHouse ничего нет
 

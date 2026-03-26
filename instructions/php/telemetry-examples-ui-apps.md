@@ -40,7 +40,7 @@
     → action_completed (action.name=create_record)
 
 [Bitrix24 присылает OnCrmLeadAdd]
-    → b24_event_processed (b24.event_code=OnCrmLeadAdd)
+    → b24_event_processed (b24.event=OnCrmLeadAdd)
 ```
 
 ### Реализация
@@ -52,6 +52,7 @@ declare(strict_types=1);
 
 namespace App\Controller;
 
+use App\Service\Telemetry\SessionContextTrait;
 use App\Service\Telemetry\TelemetryInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -63,6 +64,8 @@ use Symfony\Component\Routing\Attribute\Route;
  */
 final class CrmWidgetController extends AbstractController
 {
+    use SessionContextTrait;
+
     public function __construct(
         private readonly TelemetryInterface $telemetry,
         private readonly \Bitrix24\SDK\Services\ServiceBuilder $serviceBuilder,
@@ -74,14 +77,13 @@ final class CrmWidgetController extends AbstractController
     #[Route('/widget/crm/leads', methods: ['GET'])]
     public function getLeads(Request $request): JsonResponse
     {
-        $sessionId   = $request->attributes->get('telemetry_session_id');
-        $memberId    = $request->attributes->get('portal_member_id');
-        $domain      = $request->attributes->get('portal_domain');
+        $sessionId = $this->getSessionId($request);
+        $memberId  = $this->getMemberIdFromRequest($request);
+        $domain    = $this->getDomainFromRequest($request);
 
         // Событие открытия виджета
         $this->telemetry->trackEvent('app_opened', [
-            'ui.endpoint'      => '/widget/crm/leads',
-            'ui.method'        => 'GET',
+            'ui.path'          => '/widget/crm/leads',
             'session.id'       => $sessionId,
             'portal.member_id' => $memberId,
             'portal.domain'    => $domain,
@@ -90,7 +92,7 @@ final class CrmWidgetController extends AbstractController
         // Вызов Bitrix24 API с замером времени
         $apiStart = hrtime(true);
         try {
-            $leads = $this->serviceBuilder->getCRMScope()->lead()->list([], [], [], 50)->getLeads();
+            $leads = $this->serviceBuilder->getCRMScope()->lead()->list([], [], [], 0)->getLeads();
             $apiDurationMs = (int) round((hrtime(true) - $apiStart) / 1_000_000);
 
             $this->telemetry->trackEvent('bitrix_api_call', [
@@ -118,9 +120,9 @@ final class CrmWidgetController extends AbstractController
     #[Route('/widget/crm/leads', methods: ['POST'])]
     public function createLead(Request $request): JsonResponse
     {
-        $sessionId   = $request->attributes->get('telemetry_session_id');
-        $memberId    = $request->attributes->get('portal_member_id');
-        $domain      = $request->attributes->get('portal_domain');
+        $sessionId = $this->getSessionId($request);
+        $memberId  = $this->getMemberIdFromRequest($request);
+        $domain    = $this->getDomainFromRequest($request);
 
         $actionStart = hrtime(true);
 
@@ -160,7 +162,7 @@ final class CrmWidgetController extends AbstractController
                 'action.duration_ms' => $totalDurationMs,
                 'session.id'         => $sessionId,
                 'portal.member_id'   => $memberId,
-                'b24.lead_id'        => (string) $result->getId(),
+                'b24.contact_id'     => (string) $result->getId(),
             ]);
 
             return $this->json(['id' => $result->getId()], 201);
@@ -198,8 +200,9 @@ try {
         'action.type'        => 'b24_event_handler',
         'action.status'      => 'completed',
         'action.duration_ms' => $durationMs,
-        'b24.event_code'     => 'OnCrmLeadAdd',
-        'b24.lead_id'        => (string) $leadId,
+        'b24.event'          => 'OnCrmLeadAdd',
+        'b24.entity'         => 'lead',
+        'b24.contact_id'     => (string) $leadId,
         'portal.member_id'   => $memberId,
     ]);
 } catch (\Throwable $e) {
@@ -500,6 +503,7 @@ declare(strict_types=1);
 
 namespace App\Controller;
 
+use App\Service\Telemetry\SessionContextTrait;
 use App\Service\Telemetry\TelemetryInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -511,6 +515,8 @@ use Symfony\Component\Routing\Attribute\Route;
  */
 final class DealCardController extends AbstractController
 {
+    use SessionContextTrait;
+
     public function __construct(
         private readonly TelemetryInterface $telemetry,
         private readonly \Bitrix24\SDK\Services\ServiceBuilder $serviceBuilder,
@@ -523,15 +529,14 @@ final class DealCardController extends AbstractController
     #[Route('/placement/deal-card', methods: ['GET'])]
     public function loadDealCard(Request $request): JsonResponse
     {
-        $sessionId   = $request->attributes->get('telemetry_session_id');
-        $memberId    = $request->attributes->get('portal_member_id');
-        $domain      = $request->attributes->get('portal_domain');
+        $sessionId = $this->getSessionId($request);
+        $memberId  = $this->getMemberIdFromRequest($request);
+        $domain    = $this->getDomainFromRequest($request);
         $dealId      = (int) $request->query->get('deal_id');
 
         // Placement загружен
         $this->telemetry->trackEvent('app_opened', [
-            'ui.endpoint'      => '/placement/deal-card',
-            'ui.method'        => 'GET',
+            'ui.path'          => '/placement/deal-card',
             'session.id'       => $sessionId,
             'portal.member_id' => $memberId,
             'portal.domain'    => $domain,
@@ -540,7 +545,7 @@ final class DealCardController extends AbstractController
         // Загружаем данные сделки
         $apiStart = hrtime(true);
         try {
-            $deal = $this->serviceBuilder->getCRMScope()->deal()->get($dealId)->getDeal();
+            $deal = $this->serviceBuilder->getCRMScope()->deal()->get($dealId)->deal();
             $apiDurationMs = (int) round((hrtime(true) - $apiStart) / 1_000_000);
 
             $this->telemetry->trackEvent('bitrix_api_call', [
@@ -568,9 +573,9 @@ final class DealCardController extends AbstractController
     #[Route('/placement/deal-card/sync', methods: ['POST'])]
     public function syncDeal(Request $request): JsonResponse
     {
-        $sessionId   = $request->attributes->get('telemetry_session_id');
-        $memberId    = $request->attributes->get('portal_member_id');
-        $domain      = $request->attributes->get('portal_domain');
+        $sessionId = $this->getSessionId($request);
+        $memberId  = $this->getMemberIdFromRequest($request);
+        $domain    = $this->getDomainFromRequest($request);
         $dealId      = (int) $request->toArray()['deal_id'];
 
         $actionStart = hrtime(true);
@@ -585,7 +590,7 @@ final class DealCardController extends AbstractController
         try {
             // Шаг 1: получить данные сделки
             $apiStart = hrtime(true);
-            $deal = $this->serviceBuilder->getCRMScope()->deal()->get($dealId)->getDeal();
+            $deal = $this->serviceBuilder->getCRMScope()->deal()->get($dealId)->deal();
             $this->telemetry->trackEvent('bitrix_api_call', [
                 'api.provider'    => 'bitrix24',
                 'api.method'      => 'crm.deal.get',
@@ -700,11 +705,12 @@ try {
 
 | Категория          | Тип ошибки                          |
 |--------------------|-------------------------------------|
-| `validation_error` | Неверные входные данные             |
-| `auth_error`       | Ошибки JWT/авторизации              |
-| `not_found`        | EntityNotFoundException              |
-| `api_error`        | Ошибки Bitrix24 SDK / внешних API   |
-| `internal_error`   | Всё остальное                       |
+| `validation_error` | Неверные входные данные (`\InvalidArgumentException`)  |
+| `auth_error`       | Ошибки JWT/авторизации                                 |
+| `not_found`        | Маршрут или ресурс не найден (`NotFoundHttpException`) |
+| `domain_error`     | Бизнес-правила (`\DomainException`)                    |
+| `api_error`        | Ошибки Bitrix24 SDK / внешних API (`BaseException`)    |
+| `internal_error`   | Всё остальное                                          |
 
 ---
 
