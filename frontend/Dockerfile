@@ -2,7 +2,7 @@
 FROM node:20-slim AS dev
 RUN apt-get update && apt-get install -y openssl
 WORKDIR /app
-RUN corepack enable
+RUN npm install -g pnpm@9
 # Note: Code will be mounted as volume in dev mode
 # No COPY . ./ here to avoid overwriting mounted volume
 EXPOSE 3000
@@ -13,7 +13,7 @@ CMD ["sh", "-c", "pnpm install --frozen-lockfile \
 FROM node:20-alpine AS builder
 RUN apk add --no-cache openssl
 WORKDIR /app
-RUN corepack enable
+RUN npm install -g pnpm@9
 COPY .npmrc package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY . ./

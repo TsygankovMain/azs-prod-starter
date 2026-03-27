@@ -18,6 +18,7 @@ use Bitrix24\SDK\Application\Contracts\Bitrix24Accounts\Exceptions\Bitrix24Accou
 use Bitrix24\SDK\Application\Contracts\Bitrix24Accounts\Repository\Bitrix24AccountRepositoryInterface;
 use Bitrix24\SDK\Core\Contracts\Events\EventInterface;
 use Bitrix24\SDK\Core\Credentials\ApplicationProfile;
+use Bitrix24\SDK\Core\Credentials\DefaultOAuthServerUrl;
 use Bitrix24\SDK\Core\Exceptions\InvalidArgumentException;
 use Bitrix24\SDK\Core\Exceptions\UnknownScopeCodeException;
 use Bitrix24\SDK\Core\Exceptions\WrongConfigurationException;
@@ -39,10 +40,11 @@ readonly class Bitrix24ServiceBuilderFactory
 
     public function createFromFrontendPayload(FrontendPayload $frontendPayload): ServiceBuilder
     {
-        return new ServiceBuilderFactory($this->eventDispatcher, $this->logger)->init(
+        return (new ServiceBuilderFactory($this->eventDispatcher, $this->logger))->init(
             $this->getApplicationProfile(),
             $frontendPayload->authToken,
             $frontendPayload->domain,
+            DefaultOAuthServerUrl::default(),
         );
     }
 
@@ -52,10 +54,11 @@ readonly class Bitrix24ServiceBuilderFactory
      */
     public function createFromIncomingEvent(EventInterface $b24Event): ServiceBuilder
     {
-        return new ServiceBuilderFactory($this->eventDispatcher, $this->logger)->init(
+        return (new ServiceBuilderFactory($this->eventDispatcher, $this->logger))->init(
             $this->getApplicationProfile(),
             $b24Event->getAuth()->authToken,
             $b24Event->getAuth()->domain,
+            DefaultOAuthServerUrl::default(),
         );
     }
 
@@ -82,14 +85,15 @@ readonly class Bitrix24ServiceBuilderFactory
 
         $b24Account = $b24Accounts[0];
 
-        return new ServiceBuilderFactory(
+        return (new ServiceBuilderFactory(
             $this->eventDispatcher,
             $this->logger,
-        )->init(
+        ))->init(
             $this->getApplicationProfile(),
             // load auth tokens from a database
             $b24Account->getAuthToken(),
             $b24Account->getDomainUrl(),
+            DefaultOAuthServerUrl::default(),
         );
     }
 
