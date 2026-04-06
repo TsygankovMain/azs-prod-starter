@@ -316,13 +316,13 @@ import RocketIcon from '@bitrix24/b24icons-vue/main/RocketIcon'
 ### Макеты (Layouts)
 
 **Правила размещения контента в B24SidebarLayout**
-- Компоненты страницы рендерятся внутри <slot> компонента B24SidebarLayout через активный layout.
-- Размещайте контент непосредственно в slot — без дополнительных обёрток для центрирования (flex items-center justify-center, min-h-screen, min-h-dvh, max-w-* контейнеры).
+- Компоненты страницы рендерятся внутри `<slot>` компонента `B24SidebarLayout` через активный `layout`.
+- Размещайте контент непосредственно в `slot` — без дополнительных обёрток для центрирования (`flex items-center justify-center`, `min-h-screen`, `min-h-dvh`, `max-w-*` контейнеры).
 - Layout уже обеспечивает корректные отступы, фон и поведение прокрутки.
-- Используйте B24Card (или другие компоненты B24) напрямую как корневой элемент шаблона страницы.
-- Для состояний загрузки используйте B24Skeleton вместо скрытия всей страницы.
-- ❌ Неправильно: <div class="flex items-center justify-center min-h-screen"><B24Card class="max-w-md">…</B24Card></div>
-- ✅ Правильно: <B24Card>…</B24Card> (или <div class="flex flex-col gap-4 p-6"><B24Card>…</B24Card></div> для страниц с несколькими карточками)
+- Используйте `B24Card` (или другие компоненты B24) напрямую как корневой элемент шаблона страницы.
+- Для состояний загрузки используйте `B24Skeleton` вместо скрытия всей страницы.
+- ❌ Неправильно: `<div class="flex items-center justify-center min-h-screen"><B24Card class="max-w-md">…</B24Card></div>`
+- ✅ Правильно: `<B24Card>…</B24Card>` (или `<div class="flex flex-col gap-4 p-6"><B24Card>…</B24Card></div> `для страниц с несколькими карточками)
 
 **B24SidebarLayout** — основной layout с боковой панелью  
 📖 [Исходный код](https://github.com/bitrix24/b24ui/blob/main/src/runtime/components/SidebarLayout.vue)  
