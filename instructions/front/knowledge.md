@@ -315,6 +315,12 @@ import RocketIcon from '@bitrix24/b24icons-vue/main/RocketIcon'
 
 ### Макеты (Layouts)
 
+**B24SidebarLayout** — основной layout с боковой панелью  
+📖 [Исходный код](https://github.com/bitrix24/b24ui/blob/main/src/runtime/components/SidebarLayout.vue)  
+📖 [Theme](https://github.com/bitrix24/b24ui/blob/main/src/theme/sidebar-layout.ts)
+
+Этот компонент УЖЕ используется в качестве основы базовой страницы в шаблоне layouts/defeult.vue проекта. Если страница приложения создается на базе этого шаблона, НЕЛЬЗЯ использовать B24SidebarLayout внутри страницы повторно.
+
 **Правила размещения контента в B24SidebarLayout**
 - Компоненты страницы рендерятся внутри `<slot>` компонента `B24SidebarLayout` через активный `layout`.
 - Размещайте контент непосредственно в `slot` — без дополнительных обёрток для центрирования (`flex items-center justify-center`, `min-h-screen`, `min-h-dvh`, `max-w-*` контейнеры).
@@ -323,12 +329,6 @@ import RocketIcon from '@bitrix24/b24icons-vue/main/RocketIcon'
 - Для состояний загрузки используйте `B24Skeleton` вместо скрытия всей страницы.
 - ❌ Неправильно: `<div class="flex items-center justify-center min-h-screen"><B24Card class="max-w-md">…</B24Card></div>`
 - ✅ Правильно: `<B24Card>…</B24Card>` (или `<div class="flex flex-col gap-4 p-6"><B24Card>…</B24Card></div> `для страниц с несколькими карточками)
-
-**B24SidebarLayout** — основной layout с боковой панелью  
-📖 [Исходный код](https://github.com/bitrix24/b24ui/blob/main/src/runtime/components/SidebarLayout.vue)  
-📖 [Theme](https://github.com/bitrix24/b24ui/blob/main/src/theme/sidebar-layout.ts)
-
-Этот компонент УЖЕ используется в качестве основы базовой страницы в шаблоне layouts/defeult.vue проекта. Если страница приложения создается на базе этого шаблона, НЕЛЬЗЯ использовать B24SidebarLayout внутри страницы повторно.
 
 Связанные компоненты:
 - **B24Sidebar** — [исходный код](https://github.com/bitrix24/b24ui/blob/main/src/runtime/components/Sidebar.vue)
