@@ -1,5 +1,6 @@
 Django
 psycopg2-binary
+PyMySQL
 django-cors-headers
 PyJWT
 gunicorn

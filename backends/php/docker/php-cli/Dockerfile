@@ -35,12 +35,13 @@ EOF
 RUN <<EOF
   apt-get update
   apt-get install --no-install-recommends --no-install-suggests -q -y \
-          unzip
+          unzip \
+          default-mysql-client
   apt-get clean
   rm -rf /var/lib/apt/lists/*
 EOF
 
-RUN install-php-extensions amqp bcmath excimer intl pcntl opcache yaml zip pdo_pgsql pgsql sockets
+RUN install-php-extensions amqp bcmath excimer intl pcntl opcache yaml zip pdo_pgsql pdo_mysql pgsql sockets
 
 WORKDIR /var/www
 

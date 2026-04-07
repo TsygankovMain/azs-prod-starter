@@ -13,8 +13,10 @@ declare(strict_types=1);
 
 namespace App\Bitrix24Core\Controller;
 
+use App\Service\Telemetry\TelemetryInterface;
 use Bitrix24\Lib\ApplicationInstallations;
 use Bitrix24\Lib\Bitrix24Accounts\ValueObjects\Domain;
+use Bitrix24\SDK\Application\ApplicationStatus;
 use Bitrix24\SDK\Application\Requests\Events\OnApplicationInstall\OnApplicationInstall;
 use Bitrix24\SDK\Application\Requests\Events\OnApplicationUninstall\OnApplicationUninstall;
 use Bitrix24\SDK\Core\Exceptions\InvalidArgumentException;
@@ -23,7 +25,6 @@ use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
-use Throwable;
 
 final readonly class AppLifecycleEventController
 {
@@ -31,6 +32,7 @@ final readonly class AppLifecycleEventController
         private ApplicationInstallations\UseCase\OnAppInstall\Handler $onAppInstallHandler,
         private RemoteEventsFactory $remoteEventsFactory,
         private LoggerInterface $logger,
+        private TelemetryInterface $telemetry,
     ) {
     }
 
@@ -64,14 +66,26 @@ final readonly class AppLifecycleEventController
                             new Domain($b24Event->getAuth()->domain),
                             $b24Event->getAuth()->application_token,
                             // todo fix command arguments, see https://github.com/mesilov/bitrix24-php-lib/issues/64
-                            'L',
+                            new ApplicationStatus('L'),
                         ),
                     );
+
+                    // Telemetry: installation finalized (application token received)
+                    $this->telemetry->trackEvent('app_install_finalized', [
+                        'portal.member_id' => $b24Event->getAuth()->member_id,
+                        'portal.domain' => $b24Event->getAuth()->domain,
+                    ]);
 
                     break;
                 case OnApplicationUninstall::CODE:
                     $this->logger->debug('AppLifecycleEventController.process.uninstall', [
                         'status' => 'processed',
+                    ]);
+
+                    // Telemetry: app uninstalled
+                    $this->telemetry->trackEvent('app_uninstalled', [
+                        'portal.member_id' => $b24Event->getAuth()->member_id,
+                        'portal.domain' => $b24Event->getAuth()->domain,
                     ]);
 
                     break;
@@ -90,7 +104,7 @@ final readonly class AppLifecycleEventController
             ]);
 
             return $response;
-        } catch (Throwable $throwable) {
+        } catch (\Throwable $throwable) {
             $this->logger->error('AppLifecycleEventController.error', [
                 'message' => $throwable->getMessage(),
                 'trace' => $throwable->getTraceAsString(),

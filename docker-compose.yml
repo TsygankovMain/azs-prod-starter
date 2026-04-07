@@ -1,13 +1,14 @@
 services:
   # (~) Database
-  database:
+  database-postgres:
+    profiles: ["db-postgres"]
     image: postgres:17-alpine
     environment:
       POSTGRES_DB: ${DB_NAME:-appdb}
       POSTGRES_USER: ${DB_USER:-appuser}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-apppass}
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infrastructure/database/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -18,7 +19,33 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - internal-net
+      internal-net:
+        aliases:
+          - database
+
+  database-mysql:
+    profiles: ["db-mysql"]
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-appdb}
+      MYSQL_USER: ${DB_USER:-appuser}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-apppass}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpass}
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./infrastructure/database/init-mysql.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./logs/mysql:/var/log/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p${DB_ROOT_PASSWORD:-rootpass}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      internal-net:
+        aliases:
+          - database
 
   # (~) RabbitMQ
   rabbitmq:
@@ -54,9 +81,12 @@ services:
     environment:
       NUXT_PUBLIC_APP_URL: ${VIRTUAL_HOST}
       NUXT_PUBLIC_API_URL: ${VIRTUAL_HOST}
+      NUXT_PUBLIC_TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-false}
       HTTP: frontend:3000
     expose:
       - '3000'
+    # ports:
+    #  - "127.0.0.1:3000:3000"
     volumes:
       - ./frontend:/app
     networks:
@@ -66,9 +96,8 @@ services:
   cloudpub:
     profiles: ["cloudpub"]
     container_name: cloudpubFront
-    #image: cloudpub/cloudpub:latest
-    # for arm64 proc
-    image: cloudpub/cloudpub:latest-arm64
+    image: ${CLOUDPUB_IMAGE:-cloudpub/cloudpub:latest}
+    platform: ${CLOUDPUB_PLATFORM:-linux/amd64}
     restart: unless-stopped
     env_file: .env
     environment:
@@ -101,12 +130,18 @@ services:
       - "8000"
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./backends/php/:/var/www
       - ./logs/php:/var/log/php
     depends_on:
-      database:
+      database-postgres:
         condition: service_healthy
+        required: false
+      database-mysql:
+        condition: service_healthy
+        required: false
     networks:
       - internal-net
 
@@ -128,8 +163,12 @@ services:
       - ./backends/php/:/var/www
       - ./logs/php:/var/log/php
     depends_on:
-      database:
+      database-postgres:
         condition: service_healthy
+        required: false
+      database-mysql:
+        condition: service_healthy
+        required: false
     networks:
       - internal-net
     stdin_open: true
@@ -156,7 +195,12 @@ services:
       - ./backends/python:/var/www/api
       - ./logs/python:/var/log/python
     depends_on:
-      - database
+      database-postgres:
+        condition: service_healthy
+        required: false
+      database-mysql:
+        condition: service_healthy
+        required: false
     networks:
       - internal-net
 
@@ -181,7 +225,12 @@ services:
       - ./backends/node/api:/app
       - ./logs/node:/var/log/node
     depends_on:
-      - database
+      database-postgres:
+        condition: service_healthy
+        required: false
+      database-mysql:
+        condition: service_healthy
+        required: false
     networks:
       - internal-net
 
@@ -191,5 +240,6 @@ networks:
 
 volumes:
   postgres_data:
+  mysql_data:
   cloudpub-config:
   rabbitmq_data:

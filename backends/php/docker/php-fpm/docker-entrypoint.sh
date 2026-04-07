@@ -7,18 +7,39 @@ cd /var/www
 
 # Function to wait for database
 wait_for_db() {
-    echo "Waiting for PostgreSQL to be ready..."
-
-    # Extract database connection details from DATABASE_URL
+    DB_TYPE=${DB_TYPE:-postgresql}
     DB_HOST=${DB_HOST:-database}
-    DB_PORT=${DB_PORT:-5432}
+    if [ "$DB_TYPE" = "mysql" ]; then
+        DB_PORT=${DB_PORT:-3306}
+    else
+        DB_PORT=${DB_PORT:-5432}
+    fi
     DB_USER=${DB_USER:-appuser}
     DB_NAME=${DB_NAME:-appdb}
+    DB_PASSWORD=${DB_PASSWORD:-apppass}
 
     MAX_RETRIES=30
     RETRY_COUNT=0
 
-    until PGPASSWORD=${DB_PASSWORD:-apppass} psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c '\q' 2>/dev/null; do
+    if [ "$DB_TYPE" = "mysql" ]; then
+        echo "Waiting for MySQL to be ready..."
+        # MariaDB client inside php-fpm can fail on MySQL self-signed TLS certs.
+        # Disable SSL for readiness ping in local Docker network.
+        until mysqladmin ping -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" --ssl=0 --silent 2>/dev/null; do
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+                echo "ERROR: MySQL is not available after $MAX_RETRIES attempts"
+                exit 1
+            fi
+            echo "MySQL is unavailable - attempt $RETRY_COUNT/$MAX_RETRIES - sleeping"
+            sleep 2
+        done
+        echo "MySQL is ready!"
+        return
+    fi
+
+    echo "Waiting for PostgreSQL to be ready..."
+    until PGPASSWORD=$DB_PASSWORD psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c '\q' 2>/dev/null; do
         RETRY_COUNT=$((RETRY_COUNT + 1))
         if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
             echo "ERROR: PostgreSQL is not available after $MAX_RETRIES attempts"

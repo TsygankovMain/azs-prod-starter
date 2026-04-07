@@ -15,16 +15,22 @@ const { $initializeB24Frame } = useNuxtApp()
 let $b24: null | B24Frame = null
 
 const apiStore = useApiStore()
+const route = useRoute()
+const { track } = useTelemetry()
+const config = useRuntimeConfig()
+const isTelemetryEnabled = computed(() => String(config.public.telemetryEnabled) === 'true')
 // endregion ////
 
 // region Actions ////
 async function getEnums() {
+  track('ui_button_click', { 'ui.button_id': 'get_enums', 'ui.path': route.path })
   const enums = await apiStore.getEnum()
 
   $logger.info(enums)
 }
 
 async function getItems() {
+  track('ui_button_click', { 'ui.button_id': 'get_items', 'ui.path': route.path })
   const items = await apiStore.getList()
 
   $logger.info(items)
@@ -80,6 +86,13 @@ onMounted(async () => {
       <template #footer>
         <B24Button label="getEnums" loading-auto @click="getEnums" />
         <B24Button label="getItems" loading-auto @click="getItems" />
+        <B24Button
+          v-if="isTelemetryEnabled"
+          :label="$t('page.index.action.telemetry_test')"
+          color="air-secondary"
+          loading-auto
+          @click="$router.push('/telemetry-test')"
+        />
       </template>
     </B24Card>
   </div>

@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { Pool } from 'pg';
+import mysql from 'mysql2/promise';
 import jwt from 'jsonwebtoken';
 import verifyToken from './utils/verifyToken.js';
 
@@ -8,13 +9,26 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const pool = new Pool({
-  host: process.env.DB_HOST || 'database',
-  port: process.env.DB_PORT || 5432,
-  database: process.env.DB_NAME || 'appdb',
-  user: process.env.DB_USER || 'appuser',
-  password: process.env.DB_PASSWORD || 'apppass'
-});
+const dbType = (process.env.DB_TYPE || 'postgresql').toLowerCase();
+const defaultDbPort = dbType === 'mysql' ? 3306 : 5432;
+
+const pool = dbType === 'mysql'
+  ? mysql.createPool({
+    host: process.env.DB_HOST || 'database',
+    port: Number(process.env.DB_PORT || defaultDbPort),
+    database: process.env.DB_NAME || 'appdb',
+    user: process.env.DB_USER || 'appuser',
+    password: process.env.DB_PASSWORD || 'apppass',
+    waitForConnections: true,
+    connectionLimit: 10
+  })
+  : new Pool({
+    host: process.env.DB_HOST || 'database',
+    port: Number(process.env.DB_PORT || defaultDbPort),
+    database: process.env.DB_NAME || 'appdb',
+    user: process.env.DB_USER || 'appuser',
+    password: process.env.DB_PASSWORD || 'apppass'
+  });
 
 app.get('/', (req, res) => {
   res.json([
