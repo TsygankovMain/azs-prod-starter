@@ -151,3 +151,30 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-28 22:40 MSK
+
+What happened:
+- Sprint 4 backend foundation was implemented for scheduled report dispatch.
+- Added `/api/jobs/dispatch` endpoint with JWT protection.
+- Added `dispatch_log` table support for PostgreSQL and MySQL with unique key `(slot_key, azs_id)` for idempotency.
+- Added jitter calculation `[-X, +X]` minutes and timeout-based deadline calculation.
+- Added Bitrix REST client abstraction for `crm.item.add` and `im.notify.personal.add`.
+- Added scheduler module based on `node-cron` (enabled only when `SCHEDULER_ENABLED=true`).
+- Added candidate loader from local JSON file for automatic scheduler runs.
+
+Product impact:
+- Backend can now prevent duplicate dispatches per slot/AZS, create report records, and send notifications in one flow.
+- This is API-level functionality; custom product UI is still in progress and separate from starter demo page.
+
+What to check:
+- `POST /api/jobs/dispatch` with candidates should return created/duplicates/failed summary.
+- `dispatch_log` should be created automatically on API start.
+- With valid report settings (`report.entityTypeId`), one candidate creates one report and one notify action.
+
+Next step:
+- Continue Sprint 5: admin mobile capture UI and photo upload flow integration.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.

@@ -5,6 +5,13 @@ import mysql from 'mysql2/promise';
 import jwt from 'jsonwebtoken';
 import verifyToken from './utils/verifyToken.js';
 import createSettingsRouter from './src/settings/settingsRoutes.js';
+import { createFileSettingsStore } from './src/settings/fileSettingsStore.js';
+import createDispatchLogStore from './src/dispatch/dispatchLogStore.js';
+import createBitrixRestClient from './src/dispatch/bitrixRestClient.js';
+import createDispatchService from './src/dispatch/dispatchService.js';
+import createDispatchRouter from './src/dispatch/dispatchRoutes.js';
+import createDispatchScheduler from './src/dispatch/dispatchScheduler.js';
+import { readDispatchCandidates } from './src/dispatch/dispatchCandidatesFileStore.js';
 
 const app = express();
 app.use(cors());
@@ -30,6 +37,15 @@ const pool = dbType === 'mysql'
     user: process.env.DB_USER || 'appuser',
     password: process.env.DB_PASSWORD || 'apppass'
   });
+
+const settingsStore = createFileSettingsStore();
+const dispatchLogStore = createDispatchLogStore({ pool, dbType });
+const bitrixClient = createBitrixRestClient();
+const dispatchService = createDispatchService({
+  dispatchLogStore,
+  settingsStore,
+  bitrixClient
+});
 
 app.get('/', (req, res) => {
   res.json([
@@ -61,7 +77,8 @@ app.get('/api/list', verifyToken, async (req, res) => {
   ]);
 });
 
-app.use('/api/settings', verifyToken, createSettingsRouter());
+app.use('/api/settings', verifyToken, createSettingsRouter({ store: settingsStore }));
+app.use('/api/jobs', verifyToken, createDispatchRouter({ dispatchService }));
 
 app.post('/api/install', async (req, res) => {
   console.log('/api/install', req.body);
@@ -86,4 +103,23 @@ app.post('/api/getToken', async (req, res) => {
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+});
+
+dispatchLogStore.ensureSchema()
+  .then(() => {
+    console.log('dispatch_log schema is ready');
+  })
+  .catch((error) => {
+    console.error('Failed to prepare dispatch_log schema', error);
+  });
+
+const scheduler = createDispatchScheduler({
+  dispatchService,
+  getCandidates: () => readDispatchCandidates(),
+  enabled: String(process.env.SCHEDULER_ENABLED || 'false').toLowerCase() === 'true',
+  cronExpression: process.env.DISPATCH_CRON || '*/5 * * * *'
+});
+
+scheduler.start().catch((error) => {
+  console.error('Failed to start scheduler', error);
 });
