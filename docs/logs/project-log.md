@@ -235,3 +235,29 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-28 23:06 MSK
+
+What happened:
+- Implemented Sprint 7 timeout watcher for overdue reports.
+- Added `POST /api/jobs/timeout` to run expiration pass manually.
+- Added automatic timeout scheduler run support inside job scheduler.
+- Added overdue query in reports store (`deadlineAt < now` and status not DONE/EXPIRED).
+- Added automatic transition to `expired` and optional reviewer notification.
+- Added reviewer dashboard action button "Проверить просрочки".
+
+Product impact:
+- Overdue reports no longer stay in active states indefinitely.
+- Reviewer can force timeout processing on demand from UI.
+
+What to check:
+- Create a report with past deadline, call `/api/jobs/timeout`, verify report status becomes `expired`.
+- Verify summary counters: `total`, `expired`, `failed`, `notified`, `skipped`.
+- With `SCHEDULER_ENABLED=true`, verify periodic timeout processing is running.
+
+Next step:
+- Continue Sprint 8: finalize reviewer dashboard UX and status analytics.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.

@@ -156,6 +156,18 @@ export const useApiStore = defineStore(
       })
     }
 
+    const runTimeoutWatcher = async (limit = 200): Promise<{
+      summary: JsonObject
+    }> => {
+      return await $api('/api/jobs/timeout', {
+        method: 'POST',
+        body: JSON.stringify({ limit }),
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
     const postInstall = async (data: JsonObject): Promise<JsonObject> => {
       return await $api('/api/install', {
         method: 'POST',
@@ -233,6 +245,7 @@ export const useApiStore = defineStore(
       getReportById,
       postInstall,
       createManualReport,
+      runTimeoutWatcher,
       uploadReportPhoto,
       saveSettings,
       telemetryTest,

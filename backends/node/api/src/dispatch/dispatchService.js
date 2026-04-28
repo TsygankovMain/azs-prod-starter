@@ -72,6 +72,7 @@ export const createDispatchService = ({
   dispatchLogStore,
   settingsStore,
   bitrixClient,
+  timeoutWatcher = null,
   nowFn = () => new Date(),
   rng = Math.random,
   logger = console
@@ -196,7 +197,8 @@ export const createDispatchService = ({
 
   return {
     dispatchBatch,
-    dispatchCandidate
+    dispatchCandidate,
+    timeoutWatcher
   };
 };
 

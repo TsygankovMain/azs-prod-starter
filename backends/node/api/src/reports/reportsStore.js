@@ -140,6 +140,20 @@ const createPostgresStore = (pool) => ({
       'UPDATE dispatch_log SET status = $1, updated_at = NOW() WHERE id = $2',
       [status, reportId]
     );
+  },
+
+  async listOverdueReports({ now = new Date(), limit = 200 } = {}) {
+    const result = await pool.query(
+      `SELECT *
+       FROM dispatch_log
+       WHERE deadline_at IS NOT NULL
+         AND deadline_at < $1
+         AND status NOT IN ('done', 'expired')
+       ORDER BY deadline_at ASC
+       LIMIT $2`,
+      [new Date(now), Math.min(Number(limit) || 200, 500)]
+    );
+    return result.rows.map(toViewModel);
   }
 });
 
@@ -257,6 +271,24 @@ const createMysqlStore = (pool) => ({
       'UPDATE dispatch_log SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [status, reportId]
     );
+  },
+
+  async listOverdueReports({ now = new Date(), limit = 200 } = {}) {
+    const dt = new Date(now);
+    const sqlDate = Number.isNaN(dt.getTime())
+      ? new Date().toISOString().slice(0, 19).replace('T', ' ')
+      : dt.toISOString().slice(0, 19).replace('T', ' ');
+    const [rows] = await pool.execute(
+      `SELECT *
+       FROM dispatch_log
+       WHERE deadline_at IS NOT NULL
+         AND deadline_at < ?
+         AND status NOT IN ('done', 'expired')
+       ORDER BY deadline_at ASC
+       LIMIT ?`,
+      [sqlDate, Math.min(Number(limit) || 200, 500)]
+    );
+    return rows.map(toViewModel);
   }
 });
 

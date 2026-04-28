@@ -11,6 +11,7 @@ import createBitrixRestClient from './src/dispatch/bitrixRestClient.js';
 import createDispatchService from './src/dispatch/dispatchService.js';
 import createDispatchRouter from './src/dispatch/dispatchRoutes.js';
 import createDispatchScheduler from './src/dispatch/dispatchScheduler.js';
+import createTimeoutWatcher from './src/dispatch/timeoutWatcher.js';
 import { readDispatchCandidates } from './src/dispatch/dispatchCandidatesFileStore.js';
 import createReportsStore from './src/reports/reportsStore.js';
 import createReportsRouter from './src/reports/reportsRoutes.js';
@@ -44,10 +45,15 @@ const settingsStore = createFileSettingsStore();
 const dispatchLogStore = createDispatchLogStore({ pool, dbType });
 const reportsStore = createReportsStore({ pool, dbType });
 const bitrixClient = createBitrixRestClient();
+const timeoutWatcher = createTimeoutWatcher({
+  reportsStore,
+  bitrixClient
+});
 const dispatchService = createDispatchService({
   dispatchLogStore,
   settingsStore,
-  bitrixClient
+  bitrixClient,
+  timeoutWatcher
 });
 
 app.get('/', (req, res) => {
@@ -135,8 +141,10 @@ reportsStore.ensurePhotoSchema()
 const scheduler = createDispatchScheduler({
   dispatchService,
   getCandidates: () => readDispatchCandidates(),
+  timeoutWatcher,
   enabled: String(process.env.SCHEDULER_ENABLED || 'false').toLowerCase() === 'true',
-  cronExpression: process.env.DISPATCH_CRON || '*/5 * * * *'
+  cronExpression: process.env.DISPATCH_CRON || '*/5 * * * *',
+  timeoutCronExpression: process.env.TIMEOUT_CRON || '*/5 * * * *'
 });
 
 scheduler.start().catch((error) => {

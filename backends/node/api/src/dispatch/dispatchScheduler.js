@@ -1,11 +1,14 @@
 export const createDispatchScheduler = ({
   dispatchService,
   getCandidates,
+  timeoutWatcher = null,
   logger = console,
   enabled = false,
-  cronExpression = '*/5 * * * *'
+  cronExpression = '*/5 * * * *',
+  timeoutCronExpression = '*/5 * * * *'
 }) => {
-  let task = null;
+  let dispatchTask = null;
+  let timeoutTask = null;
 
   const runOnce = async () => {
     const candidates = await getCandidates();
@@ -38,7 +41,7 @@ export const createDispatchScheduler = ({
       return;
     }
 
-    task = cron.schedule(cronExpression, async () => {
+    dispatchTask = cron.schedule(cronExpression, async () => {
       try {
         const result = await runOnce();
         logger.info('dispatchScheduler: run finished', result.summary);
@@ -48,12 +51,28 @@ export const createDispatchScheduler = ({
     });
 
     logger.info('dispatchScheduler: started', { cronExpression });
+
+    if (timeoutWatcher && typeof timeoutWatcher.runOnce === 'function') {
+      timeoutTask = cron.schedule(timeoutCronExpression, async () => {
+        try {
+          const summary = await timeoutWatcher.runOnce();
+          logger.info('timeoutScheduler: run finished', summary);
+        } catch (error) {
+          logger.error('timeoutScheduler: run failed', { error: error.message });
+        }
+      });
+      logger.info('timeoutScheduler: started', { timeoutCronExpression });
+    }
   };
 
   const stop = () => {
-    if (task) {
-      task.stop();
-      task = null;
+    if (dispatchTask) {
+      dispatchTask.stop();
+      dispatchTask = null;
+    }
+    if (timeoutTask) {
+      timeoutTask.stop();
+      timeoutTask = null;
     }
   };
 
@@ -65,4 +84,3 @@ export const createDispatchScheduler = ({
 };
 
 export default createDispatchScheduler;
-

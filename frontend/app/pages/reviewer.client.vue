@@ -30,6 +30,7 @@ const isLoading = ref(false)
 const loadError = ref('')
 const manualError = ref('')
 const manualSuccess = ref('')
+const timeoutMessage = ref('')
 const reports = ref<ReportRow[]>([])
 
 const filters = reactive({
@@ -93,6 +94,18 @@ const createManual = async () => {
   }
 }
 
+const runTimeout = async () => {
+  timeoutMessage.value = ''
+  try {
+    const result = await apiStore.runTimeoutWatcher(200)
+    const summary = result.summary as Record<string, unknown>
+    timeoutMessage.value = `Просрочки обработаны: total=${String(summary.total || 0)}, expired=${String(summary.expired || 0)}`
+    await loadReports()
+  } catch (error) {
+    timeoutMessage.value = error instanceof Error ? error.message : 'Ошибка timeout watcher'
+  }
+}
+
 onMounted(async () => {
   try {
     $b24 = await $initializeB24Frame()
@@ -114,6 +127,7 @@ onMounted(async () => {
           <div class="flex items-center gap-2">
             <B24Badge v-if="isLoading" color="air-secondary">загрузка...</B24Badge>
             <B24Button color="air-secondary" label="Обновить" loading-auto @click="loadReports" />
+            <B24Button color="air-primary-alert" label="Проверить просрочки" loading-auto @click="runTimeout" />
           </div>
         </div>
       </template>
@@ -182,6 +196,12 @@ onMounted(async () => {
       color="air-primary-alert"
       title="Ошибка ручного запуска"
       :description="manualError"
+    />
+    <B24Alert
+      v-if="timeoutMessage"
+      color="air-secondary"
+      title="Timeout watcher"
+      :description="timeoutMessage"
     />
 
     <B24Card>

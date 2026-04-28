@@ -31,8 +31,29 @@ export const createDispatchRouter = ({ dispatchService }) => {
     }
   });
 
+  router.post('/timeout', async (req, res) => {
+    try {
+      if (!dispatchService.timeoutWatcher || typeof dispatchService.timeoutWatcher.runOnce !== 'function') {
+        return res.status(501).json({
+          error: 'timeout_watcher_not_configured',
+          message: 'Timeout watcher is not configured'
+        });
+      }
+
+      const summary = await dispatchService.timeoutWatcher.runOnce({
+        limit: Number(req.body?.limit || 200)
+      });
+
+      return res.json({ summary });
+    } catch (error) {
+      return res.status(500).json({
+        error: 'timeout_failed',
+        message: error.message
+      });
+    }
+  });
+
   return router;
 };
 
 export default createDispatchRouter;
-
