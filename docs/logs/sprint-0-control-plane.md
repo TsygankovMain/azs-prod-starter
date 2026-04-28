@@ -23,7 +23,7 @@ Business result:
 ## Agent Notes
 
 Execution rules:
-- Do not use VibeCode for this project.
+- Use only direct Bitrix24 MCP/REST access for Bitrix24 operations.
 - Use direct Bitrix24 MCP/REST only.
 - Keep PM-readable and agent-readable logs in `docs/logs/`.
 - Commit meaningful checkpoints frequently.

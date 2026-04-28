@@ -13,7 +13,7 @@ Bitrix24 work task:
 - Responsible: 11
 - Status: pending
 - Blocker: direct Bitrix24 MCP credentials exist in Keychain, but MCP startup fails because the saved OAuth token is expired and refresh returns `invalid_client`.
-- Constraint: VibeCode must not be used for this project.
+- Constraint: use only direct Bitrix24 MCP/REST access for Bitrix24 operations.
 
 ## Log Entries
 
