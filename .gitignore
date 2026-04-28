@@ -9,6 +9,7 @@ dist
 # Node dependencies
 node_modules
 .pnpm-store
+backends/node/api/data
 
 # Logs
 *.log
@@ -32,4 +33,3 @@ node_modules
 
 # dev/build outputs
 backend/php/vendor
-

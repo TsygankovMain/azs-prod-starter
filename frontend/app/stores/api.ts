@@ -1,6 +1,8 @@
 import type { B24Frame } from '@bitrix24/b24jssdk'
 import { withoutTrailingSlash } from 'ufo'
 
+type JsonObject = Record<string, unknown>
+
 export const useApiStore = defineStore(
   'api',
   () => {
@@ -55,7 +57,30 @@ export const useApiStore = defineStore(
       })
     }
 
-    const postInstall = async (data: Record<string, any>): Promise<Record<string, any>> => {
+    const getSettings = async (): Promise<{
+      settings: JsonObject
+      defaults: JsonObject
+    }> => {
+      return await $api('/api/settings', {
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
+    const saveSettings = async (settings: JsonObject): Promise<{
+      settings: JsonObject
+    }> => {
+      return await $api('/api/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ settings }),
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
+    const postInstall = async (data: JsonObject): Promise<JsonObject> => {
       return await $api('/api/install', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -76,7 +101,7 @@ export const useApiStore = defineStore(
       })
     }
 
-    const getToken = async (data: Record<string, any>): Promise<{ token: string }> => {
+    const getToken = async (data: JsonObject): Promise<{ token: string }> => {
       return await $api('/api/getToken', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -127,7 +152,9 @@ export const useApiStore = defineStore(
       init,
       getEnum,
       getList,
+      getSettings,
       postInstall,
+      saveSettings,
       telemetryTest,
     }
   }

@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import mysql from 'mysql2/promise';
 import jwt from 'jsonwebtoken';
 import verifyToken from './utils/verifyToken.js';
+import createSettingsRouter from './src/settings/settingsRoutes.js';
 
 const app = express();
 app.use(cors());
@@ -59,6 +60,8 @@ app.get('/api/list', verifyToken, async (req, res) => {
     'element 3'
   ]);
 });
+
+app.use('/api/settings', verifyToken, createSettingsRouter());
 
 app.post('/api/install', async (req, res) => {
   console.log('/api/install', req.body);

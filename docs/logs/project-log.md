@@ -103,3 +103,28 @@ Next step:
 
 Commit/task:
 - Bitrix24 task: 6475.
+
+### 2026-04-28 17:49 MSK
+
+What happened:
+- Sprint 2 settings and smart-process mapping foundation was implemented.
+- Added protected backend endpoint `/api/settings` with JSON file storage for development.
+- Added validation and default settings for AZS smart process, Report smart process, stages, Disk root folder, timeout, jitter, and timezone.
+- Added Nuxt route `/settings` for administrator mapping of entity type IDs, field codes, stage IDs, Disk settings, timeout, and dispatch jitter.
+- Added backend tests for settings merge and validation.
+
+Product impact:
+- The app now has the first product configuration screen needed before Disk, dispatch, and report workflows can be implemented.
+- PM/checker can see which Bitrix24 smart-process IDs and fields must be mapped for the photo-report lifecycle.
+
+What to check:
+- Open `https://simply-staid-mollusk.cloudpub.ru/settings` from the Bitrix24 app context.
+- Verify `/api/settings` requires JWT and returns defaults after authorization.
+- Confirm saved settings are local development data only and are not committed.
+
+Next step:
+- Continue Sprint 3: Disk module and folder/file naming rules.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
