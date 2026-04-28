@@ -206,3 +206,32 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-28 23:00 MSK
+
+What happened:
+- Implemented Sprint 6 backend upload flow `POST /api/reports/:id/photo`.
+- Added `multer` memory upload with size limit 10 MB.
+- Added EXIF check: if EXIF date exists and photo age exceeds configured limit, upload is rejected.
+- Added Disk upload integration via `diskService` and `bitrixRestClient.diskApi`.
+- Added persistence table `report_photo` and report-photo upsert/list operations.
+- Added report status transition:
+  - `in_progress` when part of required photos uploaded
+  - `done` when all required photo codes are uploaded
+- Updated admin mobile page to send real uploads, show per-slot upload state, and refresh report state after upload.
+
+Product impact:
+- Photo capture flow is no longer stub UI; it now sends files to backend and drives report lifecycle.
+- Reviewer can now see status progression caused by actual photo uploads.
+
+What to check:
+- Manual dispatch -> open `/admin/:reportId` -> upload 4 required photos.
+- Confirm API response transitions to `done` on last required photo.
+- Confirm `/api/reports/:id` returns `photos[]` and status `done`.
+
+Next step:
+- Continue Sprint 7 timeout watcher and EXPIRED transition.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.

@@ -29,6 +29,25 @@ const toViewModel = (row) => ({
 });
 
 const createPostgresStore = (pool) => ({
+  async ensurePhotoSchema() {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS report_photo (
+        id BIGSERIAL PRIMARY KEY,
+        report_id BIGINT NOT NULL,
+        photo_code TEXT NOT NULL,
+        file_id BIGINT NULL,
+        file_name TEXT NULL,
+        disk_folder_id BIGINT NULL,
+        uploaded_by BIGINT NOT NULL,
+        exif_at TIMESTAMPTZ NULL,
+        uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(report_id, photo_code)
+      )
+    `);
+  },
+
   async list({ dateFrom, dateTo, status, azsId, limit = 200 } = {}) {
     const where = [];
     const params = [];
@@ -73,10 +92,77 @@ const createPostgresStore = (pool) => ({
       return null;
     }
     return toViewModel(result.rows[0]);
+  },
+
+  async upsertPhoto({
+    reportId,
+    photoCode,
+    fileId,
+    fileName,
+    diskFolderId,
+    uploadedBy,
+    exifAt
+  }) {
+    await pool.query(
+      `INSERT INTO report_photo(report_id, photo_code, file_id, file_name, disk_folder_id, uploaded_by, exif_at)
+       VALUES($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT(report_id, photo_code) DO UPDATE
+       SET file_id = EXCLUDED.file_id,
+           file_name = EXCLUDED.file_name,
+           disk_folder_id = EXCLUDED.disk_folder_id,
+           uploaded_by = EXCLUDED.uploaded_by,
+           exif_at = EXCLUDED.exif_at,
+           uploaded_at = NOW(),
+           updated_at = NOW()`,
+      [reportId, photoCode, fileId, fileName, diskFolderId, uploadedBy, exifAt ?? null]
+    );
+  },
+
+  async listPhotos(reportId) {
+    const result = await pool.query(
+      'SELECT report_id, photo_code, file_id, file_name, disk_folder_id, uploaded_by, exif_at, uploaded_at FROM report_photo WHERE report_id = $1 ORDER BY photo_code ASC',
+      [reportId]
+    );
+    return result.rows.map((row) => ({
+      reportId: Number(row.report_id),
+      photoCode: row.photo_code,
+      fileId: row.file_id ? Number(row.file_id) : null,
+      fileName: row.file_name || null,
+      diskFolderId: row.disk_folder_id ? Number(row.disk_folder_id) : null,
+      uploadedBy: Number(row.uploaded_by),
+      exifAt: normalizeDate(row.exif_at),
+      uploadedAt: normalizeDate(row.uploaded_at)
+    }));
+  },
+
+  async setReportStatus({ reportId, status }) {
+    await pool.query(
+      'UPDATE dispatch_log SET status = $1, updated_at = NOW() WHERE id = $2',
+      [status, reportId]
+    );
   }
 });
 
 const createMysqlStore = (pool) => ({
+  async ensurePhotoSchema() {
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS report_photo (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        report_id BIGINT NOT NULL,
+        photo_code VARCHAR(191) NOT NULL,
+        file_id BIGINT NULL,
+        file_name VARCHAR(255) NULL,
+        disk_folder_id BIGINT NULL,
+        uploaded_by BIGINT NOT NULL,
+        exif_at DATETIME NULL,
+        uploaded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY ux_report_photo_report_code (report_id, photo_code)
+      )
+    `);
+  },
+
   async list({ dateFrom, dateTo, status, azsId, limit = 200 } = {}) {
     const where = [];
     const params = [];
@@ -116,6 +202,61 @@ const createMysqlStore = (pool) => ({
       return null;
     }
     return toViewModel(rows[0]);
+  },
+
+  async upsertPhoto({
+    reportId,
+    photoCode,
+    fileId,
+    fileName,
+    diskFolderId,
+    uploadedBy,
+    exifAt
+  }) {
+    await pool.execute(
+      `INSERT INTO report_photo(report_id, photo_code, file_id, file_name, disk_folder_id, uploaded_by, exif_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         file_id = VALUES(file_id),
+         file_name = VALUES(file_name),
+         disk_folder_id = VALUES(disk_folder_id),
+         uploaded_by = VALUES(uploaded_by),
+         exif_at = VALUES(exif_at),
+         uploaded_at = CURRENT_TIMESTAMP`,
+      [
+        reportId,
+        photoCode,
+        fileId ?? null,
+        fileName ?? null,
+        diskFolderId ?? null,
+        uploadedBy,
+        exifAt ? exifAt.toISOString().slice(0, 19).replace('T', ' ') : null
+      ]
+    );
+  },
+
+  async listPhotos(reportId) {
+    const [rows] = await pool.execute(
+      'SELECT report_id, photo_code, file_id, file_name, disk_folder_id, uploaded_by, exif_at, uploaded_at FROM report_photo WHERE report_id = ? ORDER BY photo_code ASC',
+      [reportId]
+    );
+    return rows.map((row) => ({
+      reportId: Number(row.report_id),
+      photoCode: row.photo_code,
+      fileId: row.file_id ? Number(row.file_id) : null,
+      fileName: row.file_name || null,
+      diskFolderId: row.disk_folder_id ? Number(row.disk_folder_id) : null,
+      uploadedBy: Number(row.uploaded_by),
+      exifAt: normalizeDate(row.exif_at),
+      uploadedAt: normalizeDate(row.uploaded_at)
+    }));
+  },
+
+  async setReportStatus({ reportId, status }) {
+    await pool.execute(
+      'UPDATE dispatch_log SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [status, reportId]
+    );
   }
 });
 
@@ -130,4 +271,3 @@ export const createReportsStore = ({ pool, dbType }) => {
 };
 
 export default createReportsStore;
-

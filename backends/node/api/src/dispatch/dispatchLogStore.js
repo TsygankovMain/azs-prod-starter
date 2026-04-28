@@ -63,7 +63,7 @@ const createPostgresStore = (pool) => {
              deadline_at = $5,
              updated_at = NOW()
          WHERE id = $6`,
-        ['done', reportItemId ?? null, jitterMinutes ?? null, scheduledAt ?? null, deadlineAt ?? null, id]
+        ['new', reportItemId ?? null, jitterMinutes ?? null, scheduledAt ?? null, deadlineAt ?? null, id]
       );
     },
 
@@ -127,7 +127,7 @@ const createMysqlStore = (pool) => {
              scheduled_at = ?,
              deadline_at = ?
          WHERE id = ?`,
-        ['done', reportItemId ?? null, jitterMinutes ?? null, serializeDate(scheduledAt), serializeDate(deadlineAt), id]
+        ['new', reportItemId ?? null, jitterMinutes ?? null, serializeDate(scheduledAt), serializeDate(deadlineAt), id]
       );
     },
 
@@ -156,4 +156,3 @@ export const createDispatchLogStore = ({ pool, dbType }) => {
 };
 
 export default createDispatchLogStore;
-

@@ -15,6 +15,7 @@ type SlotState = {
   key: string
   title: string
   done: boolean
+  uploading: boolean
   fileName: string
   error: string
 }
@@ -33,12 +34,14 @@ let $b24: null | B24Frame = null
 const isLoading = ref(false)
 const loadError = ref('')
 const report = ref<ReportRow | null>(null)
+const saveError = ref('')
+const saveSuccess = ref('')
 
 const photoSlots = reactive<SlotState[]>([
-  { key: 'totem', title: 'Тотем / цена стелы', done: false, fileName: '', error: '' },
-  { key: 'columns', title: 'Топливораздаточные колонки', done: false, fileName: '', error: '' },
-  { key: 'shop', title: 'Торговый зал / касса', done: false, fileName: '', error: '' },
-  { key: 'territory', title: 'Территория АЗС', done: false, fileName: '', error: '' }
+  { key: 'totem', title: 'Тотем / цена стелы', done: false, uploading: false, fileName: '', error: '' },
+  { key: 'columns', title: 'Топливораздаточные колонки', done: false, uploading: false, fileName: '', error: '' },
+  { key: 'shop', title: 'Торговый зал / касса', done: false, uploading: false, fileName: '', error: '' },
+  { key: 'territory', title: 'Территория АЗС', done: false, uploading: false, fileName: '', error: '' }
 ])
 
 const completedCount = computed(() => photoSlots.filter((slot) => slot.done).length)
@@ -56,6 +59,15 @@ const loadReport = async () => {
   try {
     const response = await apiStore.getReportById(id)
     report.value = response.item as ReportRow
+    const uploaded = new Set((response.photos || []).map((photo) => String(photo.photoCode || '').toLowerCase()))
+    for (const slot of photoSlots) {
+      slot.done = uploaded.has(slot.key)
+      if (!slot.done) {
+        slot.fileName = ''
+      }
+      slot.error = ''
+      slot.uploading = false
+    }
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : 'Не удалось загрузить отчёт'
   } finally {
@@ -64,6 +76,8 @@ const loadReport = async () => {
 }
 
 const onPickFile = (event: Event, slot: SlotState) => {
+  saveError.value = ''
+  saveSuccess.value = ''
   slot.error = ''
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -80,8 +94,36 @@ const onPickFile = (event: Event, slot: SlotState) => {
     return
   }
 
-  slot.done = true
-  slot.fileName = file.name
+  const id = Number(route.params.reportId)
+  if (!Number.isFinite(id) || id <= 0) {
+    slot.error = 'Некорректный reportId'
+    return
+  }
+
+  slot.uploading = true
+  apiStore.uploadReportPhoto({
+    reportId: id,
+    photoCode: slot.key,
+    file
+  })
+    .then((response) => {
+      slot.done = true
+      slot.fileName = file.name
+      const status = String((response.item as Record<string, unknown>).status || '')
+      if (status === 'done') {
+        saveSuccess.value = 'Все обязательные фото загружены. Отчёт переведён в DONE.'
+      }
+      return loadReport()
+    })
+    .catch((error) => {
+      slot.done = false
+      slot.fileName = ''
+      slot.error = error instanceof Error ? error.message : 'Не удалось загрузить фото'
+      saveError.value = slot.error
+    })
+    .finally(() => {
+      slot.uploading = false
+    })
 }
 
 onMounted(async () => {
@@ -111,7 +153,7 @@ onMounted(async () => {
       <B24Alert
         color="air-secondary"
         title="Шаг Sprint 5"
-        description="Это рабочий экран мобильного сбора фото. Серверная загрузка в Диск и перевод в DONE будут добавлены в Sprint 6."
+        description="Экран мобильного сбора фото. Фото отправляются в backend endpoint /api/reports/:id/photo."
       />
     </B24Card>
 
@@ -126,6 +168,18 @@ onMounted(async () => {
       color="air-secondary"
       title="Загрузка"
       description="Загружаем карточку отчёта..."
+    />
+    <B24Alert
+      v-if="saveSuccess"
+      color="air-primary-success"
+      title="Успешно"
+      :description="saveSuccess"
+    />
+    <B24Alert
+      v-if="saveError"
+      color="air-primary-alert"
+      title="Ошибка загрузки"
+      :description="saveError"
     />
 
     <B24Card v-if="report">
@@ -149,7 +203,7 @@ onMounted(async () => {
         <div class="flex items-center justify-between">
           <ProseH3>{{ slot.title }}</ProseH3>
           <B24Badge :color="slot.done ? 'air-primary-success' : 'air-secondary'">
-            {{ slot.done ? 'загружено' : 'ожидает фото' }}
+            {{ slot.uploading ? 'загрузка...' : (slot.done ? 'загружено' : 'ожидает фото') }}
           </B24Badge>
         </div>
       </template>

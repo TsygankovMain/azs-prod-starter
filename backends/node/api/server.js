@@ -82,7 +82,12 @@ app.get('/api/list', verifyToken, async (req, res) => {
 
 app.use('/api/settings', verifyToken, createSettingsRouter({ store: settingsStore }));
 app.use('/api/jobs', verifyToken, createDispatchRouter({ dispatchService }));
-app.use('/api/reports', verifyToken, createReportsRouter({ reportsStore, dispatchService }));
+app.use('/api/reports', verifyToken, createReportsRouter({
+  reportsStore,
+  dispatchService,
+  settingsStore,
+  bitrixClient
+}));
 
 app.post('/api/install', async (req, res) => {
   console.log('/api/install', req.body);
@@ -93,8 +98,10 @@ app.post('/api/install', async (req, res) => {
 
 app.post('/api/getToken', async (req, res) => {
   console.log('/api/getToken', req.body);
+  const userId = Number(req.body?.user_id || 0) || 0;
   const appInfo = {
-    id: 1
+    id: userId,
+    user_id: userId
   };
 
   const token = jwt.sign(appInfo, process.env.JWT_SECRET, { expiresIn: '1h' });
@@ -115,6 +122,14 @@ dispatchLogStore.ensureSchema()
   })
   .catch((error) => {
     console.error('Failed to prepare dispatch_log schema', error);
+  });
+
+reportsStore.ensurePhotoSchema()
+  .then(() => {
+    console.log('report_photo schema is ready');
+  })
+  .catch((error) => {
+    console.error('Failed to prepare report_photo schema', error);
   });
 
 const scheduler = createDispatchScheduler({

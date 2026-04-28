@@ -110,7 +110,10 @@ export const useApiStore = defineStore(
       })
     }
 
-    const getReportById = async (id: number): Promise<{ item: ReportRow }> => {
+    const getReportById = async (id: number): Promise<{
+      item: ReportRow
+      photos?: Array<{ photoCode: string }>
+    }> => {
       return await $api(`/api/reports/${id}`, {
         headers: {
           Authorization: `Bearer ${tokenJWT.value}`
@@ -125,6 +128,28 @@ export const useApiStore = defineStore(
       return await $api('/api/reports/manual', {
         method: 'POST',
         body: JSON.stringify({ candidate }),
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
+    const uploadReportPhoto = async ({
+      reportId,
+      photoCode,
+      file
+    }: {
+      reportId: number
+      photoCode: string
+      file: File
+    }): Promise<{ item: JsonObject }> => {
+      const form = new FormData()
+      form.append('photo', file)
+      form.append('photoCode', photoCode)
+
+      return await $api(`/api/reports/${reportId}/photo`, {
+        method: 'POST',
+        body: form,
         headers: {
           Authorization: `Bearer ${tokenJWT.value}`
         }
@@ -208,6 +233,7 @@ export const useApiStore = defineStore(
       getReportById,
       postInstall,
       createManualReport,
+      uploadReportPhoto,
       saveSettings,
       telemetryTest,
     }
