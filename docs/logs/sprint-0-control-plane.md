@@ -12,13 +12,14 @@ Done:
 - Main project log was created.
 - Sprint 0 log was created.
 - Start time was recorded: 2026-04-28 16:54:07 MSK (+0300).
+- Bitrix24 project task was created through direct MCP: 6475.
 
 Not done yet:
-- Bitrix24 task creation is blocked by expired direct MCP credentials.
+- None for Sprint 0.
 
 Business result:
 - We can safely commit and push project work to the user's repository.
-- Time tracking task still needs MCP reauthorization before it can be created.
+- Time tracking can be written to Bitrix24 task 6475.
 
 ## Agent Notes
 
@@ -34,7 +35,7 @@ Git state:
 - `upstream` push: `DISABLED`
 - working branch: `master`
 
-Bitrix24 task payload to create after MCP reauthorization:
+Bitrix24 task payload used:
 
 ```json
 {
@@ -53,3 +54,4 @@ Verification:
 - `git remote -v` must show `origin` pointing to `TsygankovMain/azs-prod-starter`.
 - `git remote -v` must show `upstream` push as `DISABLED`.
 - `docs/logs/project-log.md` must contain current status and next step.
+- Bitrix24 task 6475 must exist in group 371.

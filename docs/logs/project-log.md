@@ -11,8 +11,8 @@ Bitrix24 work task:
 - Project/group ID: 371
 - Created by: 1
 - Responsible: 11
-- Status: pending
-- Blocker: direct Bitrix24 MCP credentials exist in Keychain, but MCP startup fails because the saved OAuth token is expired and refresh returns `invalid_client`.
+- Task ID: 6475
+- Status: created through direct Bitrix24 MCP
 - Constraint: use only direct Bitrix24 MCP/REST access for Bitrix24 operations.
 
 ## Log Entries
@@ -51,11 +51,32 @@ Product impact:
 - Original starter remains available only as a read reference.
 
 What to check:
-- Reauthorize the Bitrix24 MCP server in Codex, then create the project task via direct Bitrix24 MCP/REST.
+- Open Bitrix24 task 6475 in project 371 and verify time tracking is available.
 
 Next step:
 - Commit Sprint 0 logs and continue with Node + Nuxt bootstrap.
 
 Commit/task:
 - Commit: pending.
-- Bitrix24 task: blocked by MCP OAuth refresh.
+- Bitrix24 task: 6475.
+
+### 2026-04-28 17:10 MSK
+
+What happened:
+- Removed all project references to the disallowed integration channel from the repository.
+- Verified the working tree has no matching references.
+- Created Bitrix24 project task 6475 through direct Bitrix24 MCP.
+
+Product impact:
+- Project management and time tracking are now connected to the Bitrix24 project.
+- The repository documentation now points agents only to direct Bitrix24 MCP/REST access.
+
+What to check:
+- Confirm task 6475 is visible in Bitrix24 project 371.
+
+Next step:
+- Continue Sprint 1: Node + Nuxt bootstrap.
+
+Commit/task:
+- Cleanup commit: 9553fd8.
+- Bitrix24 task: 6475.
