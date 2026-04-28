@@ -80,3 +80,26 @@ Next step:
 Commit/task:
 - Cleanup commit: 9553fd8.
 - Bitrix24 task: 6475.
+
+### 2026-04-28 17:33 MSK
+
+What happened:
+- Sprint 1 bootstrap started and verified.
+- Local `.env` was configured for Node backend, PostgreSQL, Cloudpub, and Bitrix24 app credentials.
+- Docker containers were renamed to `azs-prod-*` to avoid conflicts with other local projects.
+- Node + Nuxt stack was started in detached Docker Compose mode.
+- Public Cloudpub URL is active: https://simply-staid-mollusk.cloudpub.ru
+
+Product impact:
+- The starter app is reachable through HTTPS and ready to be registered as a Bitrix24 local application.
+- Development can continue on the Node + Nuxt stack without touching PHP/Python backends.
+
+What to check:
+- Open https://simply-staid-mollusk.cloudpub.ru/install.
+- In Bitrix24 local app settings, use main URL `https://simply-staid-mollusk.cloudpub.ru/` and install URL `https://simply-staid-mollusk.cloudpub.ru/install`.
+
+Next step:
+- Continue Sprint 2: settings and smart-process mapping.
+
+Commit/task:
+- Bitrix24 task: 6475.
