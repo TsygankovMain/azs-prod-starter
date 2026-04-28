@@ -128,3 +128,26 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-28 22:29 MSK
+
+What happened:
+- Sprint 3 Disk module foundation was implemented on Node backend.
+- Added `ensureRootFolder`, `ensureFolderPath`, and `uploadPhoto` service functions.
+- Added deterministic folder path builder and file name builder with safe-segment normalization.
+- Added unit tests for folder path format, file name format, folder reuse behavior, and upload flow.
+
+Product impact:
+- The backend now has a reusable disk abstraction required for report-photo delivery.
+- Next sprints can call the same service from report dispatch and mobile upload routes.
+
+What to check:
+- Backend tests include the new disk module and should pass in local and Docker environments.
+- Verify naming format remains aligned with product rule: `{slotHHmm}_{photoCode}_{isoTimestamp}.{ext}`.
+
+Next step:
+- Continue Sprint 4: report dispatch scheduler and idempotent dispatch log.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
