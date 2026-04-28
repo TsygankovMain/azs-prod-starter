@@ -3,6 +3,21 @@ import { withoutTrailingSlash } from 'ufo'
 
 type JsonObject = Record<string, unknown>
 
+type ReportRow = {
+  id: number
+  slotKey: string
+  azsId: string
+  adminUserId: number
+  status: string
+  reportItemId: number | null
+  jitterMinutes: number | null
+  scheduledAt: string | null
+  deadlineAt: string | null
+  errorText: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
 export const useApiStore = defineStore(
   'api',
   () => {
@@ -74,6 +89,42 @@ export const useApiStore = defineStore(
       return await $api('/api/settings', {
         method: 'PUT',
         body: JSON.stringify({ settings }),
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
+    const getReports = async (filters: {
+      dateFrom?: string
+      dateTo?: string
+      status?: string
+      azsId?: string
+      limit?: number
+    } = {}): Promise<{ items: ReportRow[]; total: number }> => {
+      return await $api('/api/reports', {
+        query: filters,
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
+    const getReportById = async (id: number): Promise<{ item: ReportRow }> => {
+      return await $api(`/api/reports/${id}`, {
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
+    const createManualReport = async (candidate: JsonObject): Promise<{
+      summary: JsonObject
+      items: JsonObject[]
+    }> => {
+      return await $api('/api/reports/manual', {
+        method: 'POST',
+        body: JSON.stringify({ candidate }),
         headers: {
           Authorization: `Bearer ${tokenJWT.value}`
         }
@@ -153,7 +204,10 @@ export const useApiStore = defineStore(
       getEnum,
       getList,
       getSettings,
+      getReports,
+      getReportById,
       postInstall,
+      createManualReport,
       saveSettings,
       telemetryTest,
     }

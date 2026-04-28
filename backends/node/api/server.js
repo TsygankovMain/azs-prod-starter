@@ -12,6 +12,8 @@ import createDispatchService from './src/dispatch/dispatchService.js';
 import createDispatchRouter from './src/dispatch/dispatchRoutes.js';
 import createDispatchScheduler from './src/dispatch/dispatchScheduler.js';
 import { readDispatchCandidates } from './src/dispatch/dispatchCandidatesFileStore.js';
+import createReportsStore from './src/reports/reportsStore.js';
+import createReportsRouter from './src/reports/reportsRoutes.js';
 
 const app = express();
 app.use(cors());
@@ -40,6 +42,7 @@ const pool = dbType === 'mysql'
 
 const settingsStore = createFileSettingsStore();
 const dispatchLogStore = createDispatchLogStore({ pool, dbType });
+const reportsStore = createReportsStore({ pool, dbType });
 const bitrixClient = createBitrixRestClient();
 const dispatchService = createDispatchService({
   dispatchLogStore,
@@ -79,6 +82,7 @@ app.get('/api/list', verifyToken, async (req, res) => {
 
 app.use('/api/settings', verifyToken, createSettingsRouter({ store: settingsStore }));
 app.use('/api/jobs', verifyToken, createDispatchRouter({ dispatchService }));
+app.use('/api/reports', verifyToken, createReportsRouter({ reportsStore, dispatchService }));
 
 app.post('/api/install', async (req, res) => {
   console.log('/api/install', req.body);

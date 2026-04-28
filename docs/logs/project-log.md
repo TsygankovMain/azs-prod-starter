@@ -178,3 +178,31 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-28 22:48 MSK
+
+What happened:
+- Implemented visible user-facing screens based on Bitrix24 UI Kit.
+- Replaced demo home page with app navigation hub (`/`) to business screens.
+- Added reviewer dashboard screen (`/reviewer`) with filters, report table, and manual dispatch action.
+- Added admin mobile capture screen (`/admin/[reportId]`) for photo slot workflow UX.
+- Added backend report APIs:
+  - `GET /api/reports`
+  - `GET /api/reports/:id`
+  - `POST /api/reports/manual`
+
+Product impact:
+- The app now contains explicit product screens instead of only starter demo buttons.
+- PM and users can open working interfaces and validate flow step-by-step.
+
+What to check:
+- Open `/` and verify cards for Settings, Reviewer, Admin screens.
+- Open `/reviewer` and run manual report creation.
+- Open `/admin/:reportId` from reviewer table and verify mobile photo slot UI.
+
+Next step:
+- Continue Sprint 6: actual photo upload endpoint and DONE transition logic.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.

@@ -1,63 +1,65 @@
 <script setup lang="ts">
 import type { B24Frame } from '@bitrix24/b24jssdk'
-import { onMounted, getCurrentInstance } from 'vue'
-import { useDashboard } from '@bitrix24/b24ui-nuxt/utils/dashboard'
 
-const { t, locales: localesI18n, setLocale } = useI18n()
+const PAGE_TITLE = 'Фото-отчёты АЗС'
+useHead({ title: PAGE_TITLE })
 
-useHead({
-  title: t('page.index.seo.title')
-})
-
-// region Init ////
-const { $logger, initApp, processErrorGlobal } = useAppInit('IndexPage')
+const { locales: localesI18n, setLocale } = useI18n()
+const { initApp, processErrorGlobal } = useAppInit('AppHomePage')
 const { $initializeB24Frame } = useNuxtApp()
+const apiStore = useApiStore()
+const userStore = useUserStore()
+
 let $b24: null | B24Frame = null
 
-const apiStore = useApiStore()
-const route = useRoute()
-const { track } = useTelemetry()
-const config = useRuntimeConfig()
-const isTelemetryEnabled = computed(() => String(config.public.telemetryEnabled) === 'true')
-// endregion ////
-
-// region Actions ////
-async function getEnums() {
-  track('ui_button_click', { 'ui.button_id': 'get_enums', 'ui.path': route.path })
-  const enums = await apiStore.getEnum()
-
-  $logger.info(enums)
-}
-
-async function getItems() {
-  track('ui_button_click', { 'ui.button_id': 'get_items', 'ui.path': route.path })
-  const items = await apiStore.getList()
-
-  $logger.info(items)
-}
-// endregion ////
-
-const { contextId, isLoading: isLoadingState, load } = useDashboard({ isLoading: ref(false), load: () => {} })
-const isLoading = computed({
-  get: () => isLoadingState?.value === true,
-  set: (value: boolean) => {
-    $logger.info(load, value, contextId, isLoadingState?.value)
-    load?.(value, contextId)
-  }
-})
-
-// region Lifecycle Hooks ////
 const isInit = ref(false)
-onMounted(async () => {
-  $logger.info('Hi from index page')
+const isLoading = ref(false)
+const healthStatus = ref<'unknown' | 'ok' | 'error'>('unknown')
+const healthText = ref('Проверка API...')
 
+const appScreens = [
+  {
+    key: 'settings',
+    title: 'Настройки',
+    description: 'Маппинг смарт-процессов, стадий, дедлайнов и параметров диска.',
+    path: '/settings'
+  },
+  {
+    key: 'reviewer',
+    title: 'Экран Проверяющего',
+    description: 'Список отчётов, статусы, фильтры и ручной запуск запроса фото.',
+    path: '/reviewer'
+  },
+  {
+    key: 'admin',
+    title: 'Экран Администратора АЗС',
+    description: 'Мобильная форма загрузки фото по позициям отчёта.',
+    path: '/admin/1'
+  }
+] as const
+
+const openPage = async (path: string) => {
+  await navigateTo(path)
+}
+
+const checkBackend = async () => {
+  try {
+    await apiStore.checkHealth()
+    healthStatus.value = 'ok'
+    healthText.value = 'Backend доступен'
+  } catch {
+    healthStatus.value = 'error'
+    healthText.value = 'Backend недоступен или JWT не инициализирован'
+  }
+}
+
+onMounted(async () => {
   try {
     isLoading.value = true
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
-
-    await $b24.parent.setTitle(t('page.index.seo.title'))
-
+    await $b24.parent.setTitle(PAGE_TITLE)
+    await checkBackend()
     isInit.value = true
   } catch (error) {
     processErrorGlobal(error)
@@ -65,35 +67,64 @@ onMounted(async () => {
     isLoading.value = false
   }
 })
-// endregion ////
 </script>
 
 <template>
-  <div class="flex flex-col items-center justify-center gap-16 h-[calc(100vh-200px)]">
-    <B24Card
-      v-if="isInit"
-      :b24ui="{
-        footer: 'flex flex-row flex-wrap items-center justify-start gap-2'
-      }"
-    >
+  <div class="w-full max-w-[1120px] mx-auto px-4 py-4 space-y-4">
+    <B24Card>
       <template #header>
-        <ProseH2>{{ $t('page.index.message.title') }}</ProseH2>
-        <ProseP>{{ $t('page.index.message.line1') }}</ProseP>
+        <div class="flex flex-row items-center justify-between gap-3">
+          <div>
+            <ProseH2>Фото-отчёты АЗС</ProseH2>
+            <ProseP>Рабочие экраны приложения на Bitrix24 UI Kit.</ProseP>
+          </div>
+          <B24Badge :color="healthStatus === 'ok' ? 'air-primary-success' : (healthStatus === 'error' ? 'air-primary-alert' : 'air-secondary')">
+            {{ healthText }}
+          </B24Badge>
+        </div>
       </template>
 
-      <BackendStatus />
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <B24Card
+          v-for="screen in appScreens"
+          :key="screen.key"
+          variant="outline"
+          :b24ui="{
+            body: 'space-y-3'
+          }"
+        >
+          <ProseH3>{{ screen.title }}</ProseH3>
+          <ProseP class="text-[13px]">{{ screen.description }}</ProseP>
+          <B24Button
+            color="air-primary"
+            variant="solid"
+            :label="`Открыть: ${screen.title}`"
+            loading-auto
+            @click="openPage(screen.path)"
+          />
+        </B24Card>
+      </div>
 
       <template #footer>
-        <B24Button label="getEnums" loading-auto @click="getEnums" />
-        <B24Button label="getItems" loading-auto @click="getItems" />
-        <B24Button
-          v-if="isTelemetryEnabled"
-          :label="$t('page.index.action.telemetry_test')"
-          color="air-secondary"
-          loading-auto
-          @click="$router.push('/telemetry-test')"
-        />
+        <div class="flex flex-row items-center justify-between w-full gap-3">
+          <ProseP class="text-[12px] text-gray-500">
+            Пользователь: {{ userStore.id || 'unknown' }} | Админ: {{ userStore.isAdmin ? 'yes' : 'no' }}
+          </ProseP>
+          <B24Button
+            color="air-secondary"
+            label="Проверить API ещё раз"
+            loading-auto
+            @click="checkBackend"
+          />
+        </div>
       </template>
     </B24Card>
+
+    <B24Alert
+      v-if="!isInit && !isLoading"
+      color="air-primary-alert"
+      title="Инициализация не завершена"
+      description="Проверьте запуск через Bitrix24 iframe и доступность backend."
+    />
   </div>
 </template>
