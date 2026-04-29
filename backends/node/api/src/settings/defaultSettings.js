@@ -14,19 +14,23 @@ export const DEFAULT_SETTINGS = Object.freeze({
       admin: '',
       reviewers: '',
       photoSet: '',
-      schedule: '',
-      timezone: '',
       enabled: ''
+    }
+  },
+  photoType: {
+    entityTypeId: 0,
+    fields: {
+      code: '',
+      title: '',
+      sort: '',
+      active: ''
     }
   },
   report: {
     entityTypeId: 0,
     fields: {
       azs: '',
-      admin: '',
       slotTime: '',
-      scheduledAt: '',
-      deadlineAt: '',
       trigger: '',
       folderId: '',
       photos: '',
@@ -105,7 +109,7 @@ export const validateSettings = (settings) => {
     throw new SettingsValidationError(['settings must be a JSON object']);
   }
 
-  for (const key of ['azs', 'report', 'disk']) {
+  for (const key of ['azs', 'photoType', 'report', 'disk']) {
     validateObject(settings, key, errors);
   }
 
@@ -116,6 +120,11 @@ export const validateSettings = (settings) => {
   if (isPlainObject(settings.azs)) {
     validateNumber(Number(settings.azs.entityTypeId), 'azs.entityTypeId', 0, errors);
     validateObject(settings.azs, 'fields', errors);
+  }
+
+  if (isPlainObject(settings.photoType)) {
+    validateNumber(Number(settings.photoType.entityTypeId), 'photoType.entityTypeId', 0, errors);
+    validateObject(settings.photoType, 'fields', errors);
   }
 
   if (isPlainObject(settings.report)) {
@@ -142,6 +151,10 @@ export const validateSettings = (settings) => {
     azs: {
       ...settings.azs,
       entityTypeId: Number(settings.azs.entityTypeId)
+    },
+    photoType: {
+      ...settings.photoType,
+      entityTypeId: Number(settings.photoType.entityTypeId)
     },
     report: {
       ...settings.report,

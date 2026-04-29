@@ -53,7 +53,13 @@ const addMinutes = (dateValue, minutes) => new Date(new Date(dateValue).getTime(
 
 const buildReportFields = ({ settings, candidate, slotHHmm, scheduledAt, deadlineAt, trigger }) => {
   const fieldsMap = settings.report?.fields || {};
-  const mappedFields = {};
+  const mappedFields = {
+    title: `Фото-отчёт АЗС ${candidate.azsId} / ${slotHHmm}`,
+    assignedById: Number(candidate.adminUserId),
+    begindate: scheduledAt.toISOString(),
+    closedate: deadlineAt.toISOString(),
+    opened: 'N'
+  };
   const setField = (fieldCode, value) => {
     if (!fieldCode) {
       return;
@@ -62,10 +68,7 @@ const buildReportFields = ({ settings, candidate, slotHHmm, scheduledAt, deadlin
   };
 
   setField(fieldsMap.azs, candidate.azsId);
-  setField(fieldsMap.admin, candidate.adminUserId);
   setField(fieldsMap.slotTime, slotHHmm);
-  setField(fieldsMap.scheduledAt, scheduledAt.toISOString());
-  setField(fieldsMap.deadlineAt, deadlineAt.toISOString());
   setField(fieldsMap.trigger, trigger);
 
   if (settings.report?.stages?.new) {

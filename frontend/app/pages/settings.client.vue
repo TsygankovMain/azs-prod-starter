@@ -9,19 +9,23 @@ type SettingsTree = {
       admin: string
       reviewers: string
       photoSet: string
-      schedule: string
-      timezone: string
       enabled: string
+    }
+  }
+  photoType: {
+    entityTypeId: number
+    fields: {
+      code: string
+      title: string
+      sort: string
+      active: string
     }
   }
   report: {
     entityTypeId: number
     fields: {
       azs: string
-      admin: string
       slotTime: string
-      scheduledAt: string
-      deadlineAt: string
       trigger: string
       folderId: string
       photos: string
@@ -44,6 +48,44 @@ type SettingsTree = {
 }
 
 type JsonObject = Record<string, unknown>
+type ModuleKey = 'azs' | 'photoType' | 'report'
+type FieldMapKey =
+  | 'admin'
+  | 'reviewers'
+  | 'photoSet'
+  | 'enabled'
+  | 'code'
+  | 'title'
+  | 'sort'
+  | 'active'
+  | 'azs'
+  | 'slotTime'
+  | 'trigger'
+  | 'folderId'
+  | 'photos'
+  | 'photoStatus'
+
+type SmartProcessOption = {
+  label: string
+  value: number
+}
+
+type CrmFieldOption = {
+  label: string
+  value: string
+  type: string
+  isMultiple: boolean
+  isReadOnly: boolean
+}
+
+type FieldRequirement = {
+  key: FieldMapKey
+  label: string
+  type: string
+  multiple?: boolean
+  createType: string
+  createPostfix: string
+}
 
 const PAGE_TITLE = 'Настройки АЗС'
 
@@ -65,6 +107,37 @@ const saveError = ref('')
 const saveSuccess = ref('')
 const defaultsData = ref<JsonObject>({})
 const loadedSnapshot = ref('')
+const smartProcesses = ref<SmartProcessOption[]>([])
+const fieldsByModule = reactive<Record<ModuleKey, CrmFieldOption[]>>({
+  azs: [],
+  photoType: [],
+  report: []
+})
+const portalLoadError = ref('')
+const creatingFieldKey = ref('')
+
+const azsFieldRequirements: FieldRequirement[] = [
+  { key: 'admin', label: 'Администратор АЗС', type: 'Пользователь', createType: 'employee', createPostfix: 'ADMIN' },
+  { key: 'reviewers', label: 'Проверяющие', type: 'Пользователь, множественное', multiple: true, createType: 'employee', createPostfix: 'REVIEWERS' },
+  { key: 'photoSet', label: 'Набор обязательных фото', type: 'Привязка к СП Типы фото, множественное', multiple: true, createType: 'crm', createPostfix: 'PHOTO_SET' },
+  { key: 'enabled', label: 'Активна', type: 'Да/Нет', createType: 'boolean', createPostfix: 'ENABLED' }
+]
+
+const photoTypeFieldRequirements: FieldRequirement[] = [
+  { key: 'code', label: 'Код фото', type: 'Строка', createType: 'string', createPostfix: 'CODE' },
+  { key: 'title', label: 'Название фото', type: 'Строка', createType: 'string', createPostfix: 'TITLE' },
+  { key: 'sort', label: 'Сортировка', type: 'Число', createType: 'integer', createPostfix: 'SORT' },
+  { key: 'active', label: 'Активность', type: 'Да/Нет', createType: 'boolean', createPostfix: 'ACTIVE' }
+]
+
+const reportFieldRequirements: FieldRequirement[] = [
+  { key: 'azs', label: 'АЗС', type: 'Привязка к СП АЗС или строка', createType: 'crm', createPostfix: 'AZS' },
+  { key: 'slotTime', label: 'Слот отчёта', type: 'Строка HHmm', createType: 'string', createPostfix: 'SLOT_TIME' },
+  { key: 'trigger', label: 'Тип запуска', type: 'Строка auto/manual', createType: 'string', createPostfix: 'TRIGGER' },
+  { key: 'folderId', label: 'Папка Диска', type: 'Число', createType: 'integer', createPostfix: 'FOLDER_ID' },
+  { key: 'photos', label: 'Загруженные фото', type: 'Файл, множественное', multiple: true, createType: 'file', createPostfix: 'PHOTOS' },
+  { key: 'photoStatus', label: 'Статус фото', type: 'Строка', createType: 'string', createPostfix: 'PHOTO_STATUS' }
+]
 
 function makeEmptySettings(): SettingsTree {
   return {
@@ -74,19 +147,23 @@ function makeEmptySettings(): SettingsTree {
         admin: '',
         reviewers: '',
         photoSet: '',
-        schedule: '',
-        timezone: '',
         enabled: ''
+      }
+    },
+    photoType: {
+      entityTypeId: 0,
+      fields: {
+        code: '',
+        title: '',
+        sort: '',
+        active: ''
       }
     },
     report: {
       entityTypeId: 0,
       fields: {
         azs: '',
-        admin: '',
         slotTime: '',
-        scheduledAt: '',
-        deadlineAt: '',
         trigger: '',
         folderId: '',
         photos: '',
@@ -151,6 +228,7 @@ function normalizeSettings(
   )
 
   normalized.azs.entityTypeId = Number(normalized.azs.entityTypeId || 0)
+  normalized.photoType.entityTypeId = Number(normalized.photoType.entityTypeId || 0)
   normalized.report.entityTypeId = Number(normalized.report.entityTypeId || 0)
   normalized.report.timeoutMinutes = Number(normalized.report.timeoutMinutes || 0)
   normalized.report.dispatchJitterMinutes = Number(normalized.report.dispatchJitterMinutes || 0)
@@ -166,6 +244,11 @@ function applySettings(nextSettings: SettingsTree) {
     entityTypeId: nextSettings.azs.entityTypeId
   })
   Object.assign(form.azs.fields, nextSettings.azs.fields)
+
+  Object.assign(form.photoType, {
+    entityTypeId: nextSettings.photoType.entityTypeId
+  })
+  Object.assign(form.photoType.fields, nextSettings.photoType.fields)
 
   Object.assign(form.report, {
     entityTypeId: nextSettings.report.entityTypeId,
@@ -187,19 +270,23 @@ function readSettings(): SettingsTree {
         admin: form.azs.fields.admin,
         reviewers: form.azs.fields.reviewers,
         photoSet: form.azs.fields.photoSet,
-        schedule: form.azs.fields.schedule,
-        timezone: form.azs.fields.timezone,
         enabled: form.azs.fields.enabled
+      }
+    },
+    photoType: {
+      entityTypeId: Number(form.photoType.entityTypeId || 0),
+      fields: {
+        code: form.photoType.fields.code,
+        title: form.photoType.fields.title,
+        sort: form.photoType.fields.sort,
+        active: form.photoType.fields.active
       }
     },
     report: {
       entityTypeId: Number(form.report.entityTypeId || 0),
       fields: {
         azs: form.report.fields.azs,
-        admin: form.report.fields.admin,
         slotTime: form.report.fields.slotTime,
-        scheduledAt: form.report.fields.scheduledAt,
-        deadlineAt: form.report.fields.deadlineAt,
         trigger: form.report.fields.trigger,
         folderId: form.report.fields.folderId,
         photos: form.report.fields.photos,
@@ -247,6 +334,153 @@ const statusColor = computed(() => {
 
   return 'air-primary-success'
 })
+
+function getB24Result(data: unknown): unknown {
+  const response = data as { getData?: () => unknown }
+  const payload = typeof response?.getData === 'function' ? response.getData() : data
+  return (payload as { result?: unknown })?.result ?? payload
+}
+
+async function callB24(method: string, params: JsonObject = {}) {
+  if (!$b24) {
+    throw new Error('Bitrix24 frame is not initialized')
+  }
+
+  const response = await $b24.callMethod(method, params)
+  return getB24Result(response)
+}
+
+function entitySelectValue(module: ModuleKey) {
+  return String(form[module].entityTypeId || '')
+}
+
+function setEntitySelectValue(module: ModuleKey, value: string) {
+  form[module].entityTypeId = Number(value || 0)
+  void loadFieldsForModule(module)
+}
+
+function getModuleFieldValue(module: ModuleKey, key: FieldMapKey) {
+  return String((form[module].fields as Record<string, string>)[key] || '')
+}
+
+function setModuleFieldValue(module: ModuleKey, key: FieldMapKey, value: string) {
+  ;(form[module].fields as Record<string, string>)[key] = value
+}
+
+function normalizeFieldOptions(fields: JsonObject): CrmFieldOption[] {
+  return Object.entries(fields)
+    .map(([value, raw]) => {
+      const field = isPlainObject(raw) ? raw : {}
+      return {
+        value,
+        label: `${String(field.title || value)} (${value})`,
+        type: String(field.type || ''),
+        isMultiple: Boolean(field.isMultiple),
+        isReadOnly: Boolean(field.isReadOnly)
+      }
+    })
+    .sort((a, b) => a.label.localeCompare(b.label, 'ru'))
+}
+
+function makeFieldName(entityTypeId: number, postfix: string) {
+  const safePostfix = String(postfix || 'FIELD')
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]/g, '_')
+    .slice(0, 24)
+  return `UF_CRM_${entityTypeId}_${safePostfix}`.slice(0, 50)
+}
+
+function createPayloadForField(entityTypeId: number, requirement: FieldRequirement) {
+  return {
+    moduleId: 'crm',
+    field: {
+      entityId: `CRM_${entityTypeId}`,
+      fieldName: makeFieldName(entityTypeId, requirement.createPostfix),
+      userTypeId: requirement.createType,
+      multiple: requirement.multiple ? 'Y' : 'N',
+      mandatory: 'N',
+      showFilter: 'Y',
+      editInList: 'Y',
+      isSearchable: requirement.createType === 'string' ? 'Y' : 'N',
+      editFormLabel: {
+        ru: requirement.label,
+        en: requirement.createPostfix
+      }
+    }
+  }
+}
+
+async function loadSmartProcesses() {
+  portalLoadError.value = ''
+  try {
+    const result = await callB24('crm.type.list', {
+      order: { title: 'ASC' }
+    })
+    const types = Array.isArray(result?.types) ? result.types : []
+    smartProcesses.value = types
+      .map((item: JsonObject) => ({
+        label: `${String(item.title || 'Смарт-процесс')} (${String(item.entityTypeId)})`,
+        value: Number(item.entityTypeId)
+      }))
+      .filter((item: SmartProcessOption) => Number.isFinite(item.value) && item.value > 0)
+  } catch (error) {
+    portalLoadError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+async function loadFieldsForModule(module: ModuleKey) {
+  const entityTypeId = Number(form[module].entityTypeId || 0)
+  fieldsByModule[module] = []
+  if (!entityTypeId) {
+    return
+  }
+
+  try {
+    const result = await callB24('crm.item.fields', {
+      entityTypeId,
+      useOriginalUfNames: 'N'
+    })
+    fieldsByModule[module] = normalizeFieldOptions((result?.fields ?? {}) as JsonObject)
+  } catch (error) {
+    portalLoadError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+async function loadPortalMetadata() {
+  await loadSmartProcesses()
+  await Promise.all([
+    loadFieldsForModule('azs'),
+    loadFieldsForModule('photoType'),
+    loadFieldsForModule('report')
+  ])
+}
+
+async function createMappedField(module: ModuleKey, requirement: FieldRequirement) {
+  const entityTypeId = Number(form[module].entityTypeId || 0)
+  if (!entityTypeId) {
+    saveError.value = 'Сначала выберите смарт-процесс'
+    return
+  }
+
+  creatingFieldKey.value = `${module}.${requirement.key}`
+  saveError.value = ''
+  saveSuccess.value = ''
+
+  try {
+    const result = await callB24('userfieldconfig.add', createPayloadForField(entityTypeId, requirement))
+    await loadFieldsForModule(module)
+    const fieldName = String(result?.field?.fieldName || '')
+    const createdOption = fieldsByModule[module].find((item) => item.value.toUpperCase() === fieldName.toUpperCase())
+    if (createdOption) {
+      setModuleFieldValue(module, requirement.key, createdOption.value)
+    }
+    saveSuccess.value = `Поле "${requirement.label}" создано`
+  } catch (error) {
+    saveError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    creatingFieldKey.value = ''
+  }
+}
 
 async function loadSettings() {
   if (!$b24) {
@@ -328,6 +562,7 @@ onMounted(async () => {
     await initApp($b24, localesI18n, setLocale)
     await $b24.parent.setTitle(PAGE_TITLE)
     await loadSettings()
+    await loadPortalMetadata()
   } catch (error) {
     processErrorGlobal(error)
   } finally {
@@ -393,6 +628,13 @@ onUnmounted(() => {
       description="Сохранение настроек доступно только для администратора портала."
     />
 
+    <B24Alert
+      v-if="portalLoadError"
+      color="air-primary-alert"
+      title="Не удалось загрузить метаданные портала"
+      :description="portalLoadError"
+    />
+
     <div class="grid gap-4 xl:grid-cols-2">
       <B24Card
         variant="outline"
@@ -408,89 +650,135 @@ onUnmounted(() => {
                 АЗС
               </ProseH3>
               <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                Базовая сущность, поля карточки, расписание и флаг активности.
+                Выберите СП АЗС и сопоставьте поля карточки станции.
               </ProseP>
             </div>
           </div>
         </template>
 
-        <div class="grid gap-3 sm:grid-cols-2">
-          <B24FormField
-            label="ID сущности АЗС"
-            class="w-full"
-          >
-            <B24InputNumber
-              v-model="form.azs.entityTypeId"
-              class="w-full"
+        <div class="space-y-4">
+          <B24FormField label="Смарт-процесс АЗС">
+            <select
+              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+              :value="entitySelectValue('azs')"
               :disabled="!isAdminReady"
-            />
+              @change="setEntitySelectValue('azs', ($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">Выберите СП</option>
+              <option v-for="item in smartProcesses" :key="item.value" :value="item.value">
+                {{ item.label }}
+              </option>
+            </select>
           </B24FormField>
-          <B24FormField
-            label="Поле администратора"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.azs.fields.admin"
-              class="w-full"
-              placeholder="UF_CRM_..."
+
+          <div class="overflow-auto">
+            <table class="min-w-full text-sm">
+              <tbody>
+                <tr v-for="requirement in azsFieldRequirements" :key="requirement.key" class="border-b border-gray-100">
+                  <td class="w-[38%] py-2 pr-3">
+                    <div class="font-medium">{{ requirement.label }}</div>
+                    <div class="text-xs text-gray-500">{{ requirement.type }}</div>
+                  </td>
+                  <td class="py-2 pr-2">
+                    <select
+                      class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+                      :value="getModuleFieldValue('azs', requirement.key)"
+                      :disabled="!isAdminReady || !form.azs.entityTypeId"
+                      @change="setModuleFieldValue('azs', requirement.key, ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option value="">Не сопоставлено</option>
+                      <option v-for="field in fieldsByModule.azs" :key="field.value" :value="field.value">
+                        {{ field.label }}
+                      </option>
+                    </select>
+                  </td>
+                  <td class="w-[120px] py-2 text-right">
+                    <B24Button
+                      size="xs"
+                      color="air-secondary"
+                      label="Создать"
+                      :disabled="!isAdminReady || !form.azs.entityTypeId || Boolean(creatingFieldKey)"
+                      loading-auto
+                      @click="createMappedField('azs', requirement)"
+                    />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </B24Card>
+
+      <B24Card
+        variant="outline"
+        :b24ui="{
+          body: 'p-4 sm:p-5',
+          header: 'p-4 sm:p-5',
+        }"
+      >
+        <template #header>
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <ProseH3 class="mb-1">
+                Типы фото
+              </ProseH3>
+              <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                Справочник обязательных фото, который выбирается в карточке АЗС.
+              </ProseP>
+            </div>
+          </div>
+        </template>
+
+        <div class="space-y-4">
+          <B24FormField label="Смарт-процесс Типы фото">
+            <select
+              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+              :value="entitySelectValue('photoType')"
               :disabled="!isAdminReady"
-            />
+              @change="setEntitySelectValue('photoType', ($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">Выберите СП</option>
+              <option v-for="item in smartProcesses" :key="item.value" :value="item.value">
+                {{ item.label }}
+              </option>
+            </select>
           </B24FormField>
-          <B24FormField
-            label="Поле согласующих"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.azs.fields.reviewers"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Поле набора фото"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.azs.fields.photoSet"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Поле расписания"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.azs.fields.schedule"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Поле часового пояса"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.azs.fields.timezone"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Поле включения"
-            class="w-full sm:col-span-2"
-          >
-            <B24Input
-              v-model="form.azs.fields.enabled"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
+
+          <div class="overflow-auto">
+            <table class="min-w-full text-sm">
+              <tbody>
+                <tr v-for="requirement in photoTypeFieldRequirements" :key="requirement.key" class="border-b border-gray-100">
+                  <td class="w-[38%] py-2 pr-3">
+                    <div class="font-medium">{{ requirement.label }}</div>
+                    <div class="text-xs text-gray-500">{{ requirement.type }}</div>
+                  </td>
+                  <td class="py-2 pr-2">
+                    <select
+                      class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+                      :value="getModuleFieldValue('photoType', requirement.key)"
+                      :disabled="!isAdminReady || !form.photoType.entityTypeId"
+                      @change="setModuleFieldValue('photoType', requirement.key, ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option value="">Не сопоставлено</option>
+                      <option v-for="field in fieldsByModule.photoType" :key="field.value" :value="field.value">
+                        {{ field.label }}
+                      </option>
+                    </select>
+                  </td>
+                  <td class="w-[120px] py-2 text-right">
+                    <B24Button
+                      size="xs"
+                      color="air-secondary"
+                      label="Создать"
+                      :disabled="!isAdminReady || !form.photoType.entityTypeId || Boolean(creatingFieldKey)"
+                      loading-auto
+                      @click="createMappedField('photoType', requirement)"
+                    />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </B24Card>
 
@@ -508,122 +796,62 @@ onUnmounted(() => {
                 Отчёт
               </ProseH3>
               <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                Сущность отчёта, её поля и статусы жизненного цикла.
+                Используем штатные поля title, assignedById, begindate, closedate и stageId; здесь сопоставляются только недостающие поля.
               </ProseP>
             </div>
           </div>
         </template>
 
-        <div class="grid gap-3 sm:grid-cols-2">
-          <B24FormField
-            label="ID сущности отчёта"
-            class="w-full"
-          >
-            <B24InputNumber
-              v-model="form.report.entityTypeId"
-              class="w-full"
+        <div class="space-y-4">
+          <B24FormField label="Смарт-процесс Отчёт АЗС">
+            <select
+              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+              :value="entitySelectValue('report')"
               :disabled="!isAdminReady"
-            />
+              @change="setEntitySelectValue('report', ($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">Выберите СП</option>
+              <option v-for="item in smartProcesses" :key="item.value" :value="item.value">
+                {{ item.label }}
+              </option>
+            </select>
           </B24FormField>
-          <B24FormField
-            label="Поле АЗС"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.report.fields.azs"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Поле администратора"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.report.fields.admin"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Поле времени слота"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.report.fields.slotTime"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Поле даты планирования"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.report.fields.scheduledAt"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Поле дедлайна"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.report.fields.deadlineAt"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Поле триггера"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.report.fields.trigger"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Поле папки"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.report.fields.folderId"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Поле фото"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.report.fields.photos"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Поле статуса фото"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.report.fields.photoStatus"
-              class="w-full"
-              placeholder="UF_CRM_..."
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
+
+          <div class="overflow-auto">
+            <table class="min-w-full text-sm">
+              <tbody>
+                <tr v-for="requirement in reportFieldRequirements" :key="requirement.key" class="border-b border-gray-100">
+                  <td class="w-[38%] py-2 pr-3">
+                    <div class="font-medium">{{ requirement.label }}</div>
+                    <div class="text-xs text-gray-500">{{ requirement.type }}</div>
+                  </td>
+                  <td class="py-2 pr-2">
+                    <select
+                      class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+                      :value="getModuleFieldValue('report', requirement.key)"
+                      :disabled="!isAdminReady || !form.report.entityTypeId"
+                      @change="setModuleFieldValue('report', requirement.key, ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option value="">Не сопоставлено</option>
+                      <option v-for="field in fieldsByModule.report" :key="field.value" :value="field.value">
+                        {{ field.label }}
+                      </option>
+                    </select>
+                  </td>
+                  <td class="w-[120px] py-2 text-right">
+                    <B24Button
+                      size="xs"
+                      color="air-secondary"
+                      label="Создать"
+                      :disabled="!isAdminReady || !form.report.entityTypeId || Boolean(creatingFieldKey)"
+                      loading-auto
+                      @click="createMappedField('report', requirement)"
+                    />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </B24Card>
 
@@ -641,7 +869,7 @@ onUnmounted(() => {
                 Сроки и этапы
               </ProseH3>
               <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                Настройка стадий отчёта и параметров автоматической отправки.
+                Стадии отчёта, общий timezone, таймаут и джиттер.
               </ProseP>
             </div>
           </div>

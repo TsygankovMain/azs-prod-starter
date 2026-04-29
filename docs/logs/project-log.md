@@ -360,3 +360,40 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-29 12:08:50 MSK
+
+What happened:
+- Reworked `/settings` field mapping UX from manual code input to portal metadata driven mapping.
+- Added dropdowns with all smart processes from `crm.type.list` for:
+  - AZS
+  - Photo Types
+  - Report
+- Added field mapping tables that load fields from selected smart process via `crm.item.fields`.
+- Added "Create" action for missing fields through `userfieldconfig.add`.
+- Removed AZS schedule/timezone field mapping from settings UI; these are global app settings now.
+- Added `photoType` settings block for the smart-process photo dictionary.
+- Updated report creation to use standard CRM fields where possible:
+  - `title`
+  - `assignedById`
+  - `begindate`
+  - `closedate`
+  - `opened`
+
+Product impact:
+- Portal administrator no longer needs to copy UF field codes manually.
+- Settings screen now supports the target Bitrix24 specialist workflow: select smart process, select field, create missing field.
+- Report cards become closer to native Bitrix24 behavior by relying on standard fields.
+
+What to check:
+- Open `/settings` inside Bitrix24.
+- Verify smart-process dropdowns are populated.
+- Select AZS/Photo Types/Report smart processes and verify field dropdowns load.
+- Try "Create" for a simple missing field and confirm it appears after reload.
+
+Next step:
+- Add runtime use of AZS `photoSet` and Photo Types dictionary for dynamic required photo slots.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
