@@ -129,6 +129,39 @@ Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
 
+### 2026-04-29 15:43:29 MSK
+
+What happened:
+- Hardened Sprint 6/7 lifecycle synchronization with Bitrix24 smart-process reports.
+- Added `crm.item.update` support to the Node Bitrix REST client.
+- Added shared report CRM sync helper for update payloads.
+- Photo upload now:
+  - validates `photoCode` against the AZS required photo set before Disk upload
+  - updates local report status to `in_progress` or `done`
+  - updates the Bitrix24 report item stage using mapped stages
+  - writes mapped Disk folder field as string
+  - writes mapped photos field with uploaded file IDs
+- Timeout watcher now updates the Bitrix24 report item to mapped `EXPIRED` stage when `reportItemId` exists.
+- Added unit tests for CRM update payload and timeout CRM stage sync.
+
+Product impact:
+- Reviewer sees lifecycle changes not only in the app dashboard, but also in the Bitrix24 report smart-process card.
+- Invalid photo codes no longer create unnecessary files on Bitrix24 Disk.
+- DONE/EXPIRED workflow is closer to real portal acceptance testing.
+
+What to check:
+- Upload photos in `/admin/:reportId` and verify the Report SP card changes stage to in-progress/DONE.
+- Verify the Report SP folder field contains a Disk folder ID string.
+- Verify the Report SP photos field receives uploaded file IDs.
+- Create an overdue report and run `/api/jobs/timeout`; verify the Report SP card moves to EXPIRED.
+
+Next step:
+- Restart local API container if needed and run a portal smoke test through Bitrix24 WebView.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
 ### 2026-04-28 22:29 MSK
 
 What happened:

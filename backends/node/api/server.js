@@ -47,7 +47,8 @@ const reportsStore = createReportsStore({ pool, dbType });
 const bitrixClient = createBitrixRestClient();
 const timeoutWatcher = createTimeoutWatcher({
   reportsStore,
-  bitrixClient
+  bitrixClient,
+  settingsStore
 });
 const dispatchService = createDispatchService({
   dispatchLogStore,

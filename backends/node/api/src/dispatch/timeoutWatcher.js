@@ -1,3 +1,5 @@
+import { updateReportCrmItem } from '../reports/reportCrmSync.js';
+
 const normalizeLimit = (value) => {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) {
@@ -9,6 +11,7 @@ const normalizeLimit = (value) => {
 export const createTimeoutWatcher = ({
   reportsStore,
   bitrixClient,
+  settingsStore = null,
   reviewerUserId = Number(process.env.REPORT_REVIEWER_USER_ID || 0),
   nowFn = () => new Date(),
   logger = console
@@ -27,6 +30,7 @@ export const createTimeoutWatcher = ({
     let failed = 0;
     let notified = 0;
     let skipped = 0;
+    const settings = settingsStore ? await settingsStore.read() : {};
 
     for (const report of candidates) {
       if (report.status === 'done' || report.status === 'expired') {
@@ -37,6 +41,13 @@ export const createTimeoutWatcher = ({
       try {
         await reportsStore.setReportStatus({
           reportId: report.id,
+          status: 'expired'
+        });
+
+        await updateReportCrmItem({
+          bitrixClient,
+          settings,
+          report,
           status: 'expired'
         });
         expired += 1;

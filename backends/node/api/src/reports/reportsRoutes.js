@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import exifr from 'exifr';
 import { ensureRootFolder, uploadPhoto } from '../disk/diskService.js';
+import { updateReportCrmItem } from './reportCrmSync.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const EXIF_MAX_AGE_MINUTES = Number(process.env.EXIF_MAX_AGE_MINUTES || 720);
@@ -308,6 +309,20 @@ export const createReportsRouter = ({
         });
       }
 
+      const settings = await settingsStore.read();
+      const requiredPhotos = await readRequiredPhotos({
+        bitrixClient,
+        settings,
+        azsId: report.azsId
+      });
+      const requiredCodes = requiredPhotos.map((item) => item.code);
+      if (!requiredCodes.includes(photoCode)) {
+        return res.status(400).json({
+          error: 'photo_code_not_required',
+          message: `photoCode ${photoCode} is not required for this AZS`
+        });
+      }
+
       const exifMeta = await exifr.parse(file.buffer, ['DateTimeOriginal', 'CreateDate']).catch(() => ({}));
       const exifDate = exifMeta?.DateTimeOriginal || exifMeta?.CreateDate || null;
       const exifValidation = validateExifDate(exifDate);
@@ -318,7 +333,6 @@ export const createReportsRouter = ({
         });
       }
 
-      const settings = await settingsStore.read();
       const rootFolderId = await ensureRootFolder(bitrixClient.diskApi, {
         configuredRootFolderId: Number(settings.disk?.rootFolderId || 0),
         storageRootId: Number(process.env.BITRIX_DISK_STORAGE_ROOT_ID || 1),
@@ -347,19 +361,6 @@ export const createReportsRouter = ({
         exifAt: exifValidation.exifAt
       });
 
-      const requiredPhotos = await readRequiredPhotos({
-        bitrixClient,
-        settings,
-        azsId: report.azsId
-      });
-      const requiredCodes = requiredPhotos.map((item) => item.code);
-      if (!requiredCodes.includes(photoCode)) {
-        return res.status(400).json({
-          error: 'photo_code_not_required',
-          message: `photoCode ${photoCode} is not required for this AZS`
-        });
-      }
-
       const currentPhotos = await reportsStore.listPhotos(reportId);
       const uploadedCodes = new Set(currentPhotos.map((photo) => normalizePhotoCode(photo.photoCode)));
       const allRequiredUploaded = requiredCodes.every((code) => uploadedCodes.has(code));
@@ -368,6 +369,15 @@ export const createReportsRouter = ({
       await reportsStore.setReportStatus({
         reportId,
         status: nextStatus
+      });
+
+      await updateReportCrmItem({
+        bitrixClient,
+        settings,
+        report,
+        status: nextStatus,
+        photos: currentPhotos,
+        diskFolderId: uploaded.folderId
       });
 
       if (allRequiredUploaded) {

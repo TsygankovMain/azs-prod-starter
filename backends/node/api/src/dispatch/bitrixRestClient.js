@@ -82,6 +82,26 @@ export const createBitrixRestClient = ({
       };
     },
 
+    async updateReportItem({ entityTypeId, id, fields }) {
+      if (!Number(entityTypeId)) {
+        throw new Error('report.entityTypeId is required for crm.item.update');
+      }
+      if (!Number(id)) {
+        throw new Error('report item id is required for crm.item.update');
+      }
+
+      const result = await call('crm.item.update', {
+        entityTypeId: Number(entityTypeId),
+        id: Number(id),
+        fields
+      });
+
+      return {
+        reportItemId: Number(id),
+        raw: result
+      };
+    },
+
     async notifyUser({ userId, message }) {
       if (!Number(userId)) {
         throw new Error('notifyUser requires userId');
