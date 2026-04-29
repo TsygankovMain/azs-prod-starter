@@ -129,7 +129,17 @@ const createManual = async () => {
       slotDate: manualCandidate.slotDate.trim() || undefined,
       slotHHmm: manualCandidate.slotHHmm.trim() || undefined
     })
-    manualSuccess.value = `Создано: ${String((result.summary as Record<string, unknown>).created || 0)}, дублей: ${String((result.summary as Record<string, unknown>).duplicates || 0)}`
+    const summary = result.summary as Record<string, unknown>
+    const duplicates = Array.isArray(result.items)
+      ? result.items.filter((item) => Boolean((item as Record<string, unknown>).duplicate))
+      : []
+    const duplicateSlots = duplicates
+      .map((item) => String((item as Record<string, unknown>).slotKey || ''))
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(', ')
+
+    manualSuccess.value = `Создано: ${String(summary.created || 0)}, дублей: ${String(summary.duplicates || 0)}${duplicateSlots ? `. Дубли слотов: ${duplicateSlots}` : ''}`
     await loadReports()
   } catch (error) {
     manualError.value = error instanceof Error ? error.message : 'Не удалось создать ручной отчёт'

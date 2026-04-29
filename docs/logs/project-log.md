@@ -287,3 +287,31 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-29 09:25:16 MSK
+
+What happened:
+- Implemented Sprint 9 manual trigger hardening.
+- Added separated reserve key strategy for manual dispatch:
+  - `manual:${slotKey}` is used only for idempotency reservation.
+  - Auto dispatch keeps base `slotKey` format.
+- Kept report lifecycle unchanged for manual flow (`dispatch -> report create -> notify`).
+- Added reviewer UI feedback for duplicate manual slots in success message.
+- Added regression test that manual dispatch does not block auto dispatch for the same AZS and time slot.
+
+Product impact:
+- Manual launch no longer blocks scheduled auto slots for the same AZS/time.
+- Reviewer gets clearer feedback when a manual slot was already created.
+
+What to check:
+- In `/reviewer`, run manual creation twice with same AZS/date/time:
+  - first should create
+  - second should return duplicate in message
+- Verify later auto dispatch for the same slot still creates its own report.
+
+Next step:
+- Continue Sprint 10: QA pass, release checklist, and production runbook.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.

@@ -17,6 +17,13 @@ export const formatDateKeyUtc = (date) => {
 
 export const buildSlotKey = ({ slotDate, slotHHmm }) => `${slotDate}:${normalizeSlot(slotHHmm)}`;
 
+const buildReserveSlotKey = ({ slotKey, trigger = 'auto' }) => {
+  if (String(trigger || '').toLowerCase() === 'manual') {
+    return `manual:${slotKey}`;
+  }
+  return slotKey;
+};
+
 export const pickJitterMinutes = (maxAbsMinutes = 0, rng = Math.random) => {
   const bound = Number(maxAbsMinutes);
   if (!Number.isFinite(bound) || bound <= 0) {
@@ -95,10 +102,11 @@ export const createDispatchService = ({
     const plannedDate = candidate.slotDate || formatDateKeyUtc(nowValue);
     const slotHHmm = normalizeSlot(candidate.slotHHmm || `${pad2(nowValue.getUTCHours())}${pad2(nowValue.getUTCMinutes())}`);
     const slotKey = buildSlotKey({ slotDate: plannedDate, slotHHmm });
+    const reserveSlotKey = buildReserveSlotKey({ slotKey, trigger });
     const jitterMinutes = pickJitterMinutes(jitterLimit, rng);
 
     const reserve = await dispatchLogStore.reserve({
-      slotKey,
+      slotKey: reserveSlotKey,
       azsId: String(candidate.azsId),
       adminUserId: Number(candidate.adminUserId),
       status: 'reserved'
@@ -109,7 +117,10 @@ export const createDispatchService = ({
         ok: true,
         duplicate: true,
         slotKey,
-        azsId: candidate.azsId
+        azsId: candidate.azsId,
+        duplicateReason: String(trigger || '').toLowerCase() === 'manual'
+          ? 'manual_slot_exists'
+          : 'auto_slot_exists'
       };
     }
 
