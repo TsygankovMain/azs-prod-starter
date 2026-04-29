@@ -339,3 +339,24 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-29 09:46:06 MSK
+
+What happened:
+- Fixed mobile camera runtime error: `cameraVideoEl.value.play is not a function`.
+- Replaced repeated template ref binding with explicit ref setter for native `<video>`.
+- Added safe video playback guard before calling `play()`.
+
+Product impact:
+- Camera open flow works correctly on mobile WebView where prior ref binding returned non-video value.
+
+What to check:
+- Open admin screen on phone and press "Открыть камеру".
+- Ensure camera preview appears without red error alert.
+
+Next step:
+- Continue mobile QA for camera permissions on Android/iOS Bitrix24 WebView.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.

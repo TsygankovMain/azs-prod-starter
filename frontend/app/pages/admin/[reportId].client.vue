@@ -71,6 +71,21 @@ const closeCamera = () => {
   stopCameraStream()
 }
 
+const setCameraVideoRef = (el: Element | null) => {
+  cameraVideoEl.value = el instanceof HTMLVideoElement ? el : null
+}
+
+const safePlayVideo = async (videoEl: HTMLVideoElement | null) => {
+  if (!videoEl) {
+    return
+  }
+  const playFn = (videoEl as HTMLVideoElement & { play?: () => Promise<void> | void }).play
+  if (typeof playFn !== 'function') {
+    throw new Error('Видео-элемент не поддерживает воспроизведение')
+  }
+  await Promise.resolve(playFn.call(videoEl))
+}
+
 const startCameraForSlot = async (slot: SlotState) => {
   slot.error = ''
   saveError.value = ''
@@ -96,7 +111,7 @@ const startCameraForSlot = async (slot: SlotState) => {
     await nextTick()
     if (cameraVideoEl.value) {
       cameraVideoEl.value.srcObject = stream
-      await cameraVideoEl.value.play().catch(() => undefined)
+      await safePlayVideo(cameraVideoEl.value).catch(() => undefined)
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось открыть камеру'
@@ -332,7 +347,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="activeCameraSlotKey === slot.key" class="rounded overflow-hidden bg-black">
           <video
-            ref="cameraVideoEl"
+            :ref="setCameraVideoRef"
             class="w-full max-h-[420px] object-cover"
             autoplay
             playsinline
