@@ -315,3 +315,27 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-29 09:29:40 MSK
+
+What happened:
+- Reworked admin photo capture UX to camera-only flow.
+- Removed file picker (`input type=file`) from admin report screen.
+- Added direct camera stream (`getUserMedia`) with capture button and immediate upload.
+- Added camera lifecycle handling (open/close/cleanup on page unmount).
+
+Product impact:
+- In-app flow no longer proposes gallery/file selection UI from the app layer.
+- Admin now captures fresh photos directly from camera preview for each required slot.
+
+What to check:
+- Open `/admin/:reportId` in mobile Bitrix24.
+- For each slot click "Открыть камеру" -> "Сделать фото".
+- Verify upload status and DONE transition after all required photos.
+
+Next step:
+- Continue Sprint 10 QA pass on real mobile devices and WebView permission matrix.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
