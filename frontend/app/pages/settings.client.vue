@@ -25,11 +25,9 @@ type SettingsTree = {
     entityTypeId: number
     fields: {
       azs: string
-      slotTime: string
       trigger: string
       folderId: string
       photos: string
-      photoStatus: string
     }
     stages: {
       new: string
@@ -59,11 +57,9 @@ type FieldMapKey =
   | 'sort'
   | 'active'
   | 'azs'
-  | 'slotTime'
   | 'trigger'
   | 'folderId'
   | 'photos'
-  | 'photoStatus'
 
 type SmartProcessOption = {
   label: string
@@ -76,6 +72,12 @@ type CrmFieldOption = {
   type: string
   isMultiple: boolean
   isReadOnly: boolean
+  statusType?: string
+}
+
+type StageOption = {
+  label: string
+  value: string
 }
 
 type FieldRequirement = {
@@ -113,6 +115,7 @@ const fieldsByModule = reactive<Record<ModuleKey, CrmFieldOption[]>>({
   photoType: [],
   report: []
 })
+const reportStages = ref<StageOption[]>([])
 const portalLoadError = ref('')
 const creatingFieldKey = ref('')
 
@@ -132,11 +135,9 @@ const photoTypeFieldRequirements: FieldRequirement[] = [
 
 const reportFieldRequirements: FieldRequirement[] = [
   { key: 'azs', label: 'АЗС', type: 'Привязка к СП АЗС или строка', createType: 'crm', createPostfix: 'AZS' },
-  { key: 'slotTime', label: 'Слот отчёта', type: 'Строка HHmm', createType: 'string', createPostfix: 'SLOT_TIME' },
   { key: 'trigger', label: 'Тип запуска', type: 'Строка auto/manual', createType: 'string', createPostfix: 'TRIGGER' },
-  { key: 'folderId', label: 'Папка Диска', type: 'Число', createType: 'integer', createPostfix: 'FOLDER_ID' },
-  { key: 'photos', label: 'Загруженные фото', type: 'Файл, множественное', multiple: true, createType: 'file', createPostfix: 'PHOTOS' },
-  { key: 'photoStatus', label: 'Статус фото', type: 'Строка', createType: 'string', createPostfix: 'PHOTO_STATUS' }
+  { key: 'folderId', label: 'Папка Диска', type: 'Строка', createType: 'string', createPostfix: 'FOLDER_ID' },
+  { key: 'photos', label: 'Загруженные фото', type: 'Файл, множественное', multiple: true, createType: 'file', createPostfix: 'PHOTOS' }
 ]
 
 function makeEmptySettings(): SettingsTree {
@@ -163,11 +164,9 @@ function makeEmptySettings(): SettingsTree {
       entityTypeId: 0,
       fields: {
         azs: '',
-        slotTime: '',
         trigger: '',
         folderId: '',
-        photos: '',
-        photoStatus: ''
+        photos: ''
       },
       stages: {
         new: '',
@@ -286,11 +285,9 @@ function readSettings(): SettingsTree {
       entityTypeId: Number(form.report.entityTypeId || 0),
       fields: {
         azs: form.report.fields.azs,
-        slotTime: form.report.fields.slotTime,
         trigger: form.report.fields.trigger,
         folderId: form.report.fields.folderId,
-        photos: form.report.fields.photos,
-        photoStatus: form.report.fields.photoStatus
+        photos: form.report.fields.photos
       },
       stages: {
         new: form.report.stages.new,
@@ -357,6 +354,9 @@ function entitySelectValue(module: ModuleKey) {
 function setEntitySelectValue(module: ModuleKey, value: string) {
   form[module].entityTypeId = Number(value || 0)
   void loadFieldsForModule(module)
+  if (module === 'report') {
+    void loadReportStages()
+  }
 }
 
 function getModuleFieldValue(module: ModuleKey, key: FieldMapKey) {
@@ -376,7 +376,8 @@ function normalizeFieldOptions(fields: JsonObject): CrmFieldOption[] {
         label: `${String(field.title || value)} (${value})`,
         type: String(field.type || ''),
         isMultiple: Boolean(field.isMultiple),
-        isReadOnly: Boolean(field.isReadOnly)
+        isReadOnly: Boolean(field.isReadOnly),
+        statusType: String(field.statusType || '')
       }
     })
     .sort((a, b) => a.label.localeCompare(b.label, 'ru'))
@@ -441,6 +442,45 @@ async function loadFieldsForModule(module: ModuleKey) {
       useOriginalUfNames: 'N'
     })
     fieldsByModule[module] = normalizeFieldOptions((result?.fields ?? {}) as JsonObject)
+    if (module === 'report') {
+      await loadReportStages()
+    }
+  } catch (error) {
+    portalLoadError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+function normalizeStageOptions(items: unknown): StageOption[] {
+  if (!Array.isArray(items)) {
+    return []
+  }
+
+  return items
+    .map((item) => {
+      const row = isPlainObject(item) ? item : {}
+      const value = String(row.STATUS_ID || row.statusId || '')
+      const name = String(row.NAME || row.name || value)
+      return {
+        value,
+        label: `${name} (${value})`
+      }
+    })
+    .filter((item) => item.value)
+}
+
+async function loadReportStages() {
+  reportStages.value = []
+  const stageField = fieldsByModule.report.find((field) => field.value === 'stageId' || field.value === 'stage_id')
+  const statusType = String(stageField?.statusType || '')
+  if (!statusType) {
+    return
+  }
+
+  try {
+    const result = await callB24('crm.status.entity.items', {
+      entityId: statusType
+    })
+    reportStages.value = normalizeStageOptions(result)
   } catch (error) {
     portalLoadError.value = error instanceof Error ? error.message : String(error)
   }
@@ -880,45 +920,61 @@ onUnmounted(() => {
             label="Стадия: новая"
             class="w-full"
           >
-            <B24Input
+            <select
               v-model="form.report.stages.new"
-              class="w-full"
-              placeholder="NEW"
-              :disabled="!isAdminReady"
-            />
+              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+              :disabled="!isAdminReady || !reportStages.length"
+            >
+              <option value="">Выберите стадию</option>
+              <option v-for="stage in reportStages" :key="stage.value" :value="stage.value">
+                {{ stage.label }}
+              </option>
+            </select>
           </B24FormField>
           <B24FormField
             label="Стадия: в работе"
             class="w-full"
           >
-            <B24Input
+            <select
               v-model="form.report.stages.inProgress"
-              class="w-full"
-              placeholder="IN_PROGRESS"
-              :disabled="!isAdminReady"
-            />
+              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+              :disabled="!isAdminReady || !reportStages.length"
+            >
+              <option value="">Выберите стадию</option>
+              <option v-for="stage in reportStages" :key="stage.value" :value="stage.value">
+                {{ stage.label }}
+              </option>
+            </select>
           </B24FormField>
           <B24FormField
             label="Стадия: выполнено"
             class="w-full"
           >
-            <B24Input
+            <select
               v-model="form.report.stages.done"
-              class="w-full"
-              placeholder="DONE"
-              :disabled="!isAdminReady"
-            />
+              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+              :disabled="!isAdminReady || !reportStages.length"
+            >
+              <option value="">Выберите стадию</option>
+              <option v-for="stage in reportStages" :key="stage.value" :value="stage.value">
+                {{ stage.label }}
+              </option>
+            </select>
           </B24FormField>
           <B24FormField
             label="Стадия: просрочено"
             class="w-full"
           >
-            <B24Input
+            <select
               v-model="form.report.stages.expired"
-              class="w-full"
-              placeholder="EXPIRED"
-              :disabled="!isAdminReady"
-            />
+              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+              :disabled="!isAdminReady || !reportStages.length"
+            >
+              <option value="">Выберите стадию</option>
+              <option v-for="stage in reportStages" :key="stage.value" :value="stage.value">
+                {{ stage.label }}
+              </option>
+            </select>
           </B24FormField>
           <B24FormField
             label="Таймаут, минут"

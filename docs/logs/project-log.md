@@ -397,3 +397,32 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-29 12:32:11 MSK
+
+What happened:
+- Simplified report mapping according to product constraints.
+- Removed report field mappings that are not used in business flow:
+  - slot time
+  - photo status
+- Changed report Disk folder field creation type from number to string.
+- Added automatic report stage loading:
+  - read `stageId.statusType` from `crm.item.fields`
+  - load stages through `crm.status.entity.items`
+  - show stages as dropdowns in settings.
+
+Product impact:
+- Report settings are smaller and closer to the real app workflow.
+- Portal admin can select stages from actual Bitrix24 stages instead of copying IDs manually.
+
+What to check:
+- Open `/settings`, select Report smart process, verify stage dropdowns are populated.
+- Confirm report mapping table no longer contains "Слот отчёта" and "Статус фото".
+- Use "Создать" for "Папка Диска" and verify created field is string/text, not number.
+
+Next step:
+- Implement dynamic required photo slots from AZS `photoSet` and Photo Types smart process.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.

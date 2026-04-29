@@ -30,11 +30,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
     entityTypeId: 0,
     fields: {
       azs: '',
-      slotTime: '',
       trigger: '',
       folderId: '',
-      photos: '',
-      photoStatus: ''
+      photos: ''
     },
     stages: {
       new: '',

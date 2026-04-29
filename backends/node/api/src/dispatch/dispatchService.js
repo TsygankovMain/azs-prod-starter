@@ -68,7 +68,6 @@ const buildReportFields = ({ settings, candidate, slotHHmm, scheduledAt, deadlin
   };
 
   setField(fieldsMap.azs, candidate.azsId);
-  setField(fieldsMap.slotTime, slotHHmm);
   setField(fieldsMap.trigger, trigger);
 
   if (settings.report?.stages?.new) {
