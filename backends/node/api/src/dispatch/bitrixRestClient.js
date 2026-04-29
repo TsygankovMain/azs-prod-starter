@@ -20,10 +20,12 @@ const parseId = (value) => {
 
 export const createBitrixRestClient = ({
   endpoint = process.env.BITRIX_REST_ENDPOINT || '',
+  authId = process.env.BITRIX_REST_AUTH_ID || '',
   logger = console
 } = {}) => {
   const base = normalizeEndpoint(endpoint);
   const isConfigured = Boolean(base);
+  const restAuthId = String(authId || '').trim();
 
   const ensureConfigured = () => {
     if (!isConfigured) {
@@ -33,6 +35,9 @@ export const createBitrixRestClient = ({
 
   const call = async (method, params = {}) => {
     ensureConfigured();
+    const requestPayload = restAuthId
+      ? { ...params, auth: restAuthId }
+      : params;
 
     const url = `${base}/${method}.json`;
     const response = await fetch(url, {
@@ -40,19 +45,20 @@ export const createBitrixRestClient = ({
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(params)
+      body: JSON.stringify(requestPayload)
     });
 
     if (!response.ok) {
-      throw new Error(`Bitrix REST ${method} failed with HTTP ${response.status}`);
+      const errorBody = await response.text().catch(() => '');
+      throw new Error(`Bitrix REST ${method} failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`);
     }
 
-    const payload = await response.json();
-    if (payload.error) {
-      throw new Error(`Bitrix REST ${method} error: ${payload.error} ${payload.error_description || ''}`.trim());
+    const responsePayload = await response.json();
+    if (responsePayload.error) {
+      throw new Error(`Bitrix REST ${method} error: ${responsePayload.error} ${responsePayload.error_description || ''}`.trim());
     }
 
-    return payload.result ?? payload;
+    return responsePayload.result ?? responsePayload;
   };
 
   return {

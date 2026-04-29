@@ -129,6 +129,41 @@ Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
 
+### 2026-04-29 16:38:32 MSK
+
+What happened:
+- Added production env contract for Bitrix REST:
+  - `BITRIX_REST_ENDPOINT`
+  - `BITRIX_REST_AUTH_ID`
+- Updated Node Bitrix REST client to include `auth` token in every REST call payload.
+- Improved REST HTTP error diagnostics by returning Bitrix response body in backend error text.
+- Applied local `.env` with live portal endpoint and auth token for runtime test.
+- Recreated Docker stack (`frontend`, `api-node`, `cloudpub`, `db-postgres`) to apply new env.
+
+Smoke test result:
+- `crm.item.get` live call works from backend container for AZS entity/item (`entityTypeId=1114`, `id=2`).
+- `GET /api/reports/11` returns real required photo list from portal smart-process fields (no template fallback).
+- `POST /api/reports/12/photo` upload works and returns `status=in_progress` with real file/folder IDs.
+- Manual dispatch currently fails on notification step with Bitrix error:
+  - `insufficient_scope` for `im.notify.personal.add`.
+  - This is a token scope/permission issue, separate from report data flow.
+
+Product impact:
+- Report data flow now runs against live portal data with production env.
+- Required photo set is confirmed real in runtime and upload path works.
+- Remaining blocker is notification scope, not demo fallback.
+
+What to check:
+- In Bitrix24 app settings, ensure token/scope includes notification rights used by `im.notify.personal.add`.
+- Re-run manual dispatch after scope fix and verify `summary.created=1` instead of `failed=1`.
+
+Next step:
+- Either extend token scope for `im.notify.personal.add` or degrade notification failure to non-blocking warning.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
 ### 2026-04-29 16:25:57 MSK
 
 What happened:
