@@ -74,8 +74,10 @@ test('dispatch service prevents duplicates by slot + azs and applies jitter', as
       async createReportItem(payload) {
         createdReports.push(payload);
         return { reportItemId: 7001 };
-      },
-      async notifyUser(payload) {
+      }
+    },
+    notificationService: {
+      async notifyDispatch(payload) {
         notifiedUsers.push(payload);
       }
     },
@@ -96,6 +98,7 @@ test('dispatch service prevents duplicates by slot + azs and applies jitter', as
   assert.equal(result.summary.failed, 0);
   assert.equal(createdReports.length, 1);
   assert.equal(notifiedUsers.length, 1);
+  assert.equal(notifiedUsers[0].reportId > 0, true);
   assert.equal(result.items[0].jitterMinutes, 15);
 });
 
@@ -131,8 +134,10 @@ test('manual trigger does not block auto slot for same azs and hhmm', async () =
       async createReportItem(payload) {
         createdReports.push(payload);
         return { reportItemId: 7002 + createdReports.length };
-      },
-      async notifyUser() {}
+      }
+    },
+    notificationService: {
+      async notifyDispatch() {}
     },
     nowFn: () => new Date('2026-04-28T00:00:00.000Z'),
     rng: () => 0.5

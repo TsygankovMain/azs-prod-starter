@@ -11,13 +11,14 @@ const normalizeLimit = (value) => {
 export const createTimeoutWatcher = ({
   reportsStore,
   bitrixClient,
+  notificationService,
   settingsStore = null,
   reviewerUserId = Number(process.env.REPORT_REVIEWER_USER_ID || 0),
   nowFn = () => new Date(),
   logger = console
 }) => {
-  if (!reportsStore || !bitrixClient) {
-    throw new Error('reportsStore and bitrixClient are required');
+  if (!reportsStore || !bitrixClient || !notificationService) {
+    throw new Error('reportsStore, bitrixClient and notificationService are required');
   }
 
   const runOnce = async ({ limit = 200 } = {}) => {
@@ -53,9 +54,11 @@ export const createTimeoutWatcher = ({
         expired += 1;
 
         if (reviewerUserId > 0) {
-          await bitrixClient.notifyUser({
+          await notificationService.notifyReportExpired({
             userId: reviewerUserId,
-            message: `Отчёт АЗС ${report.azsId} просрочен (slot ${report.slotKey}).`
+            reportId: report.id,
+            azsId: report.azsId,
+            slotKey: report.slotKey
           });
           notified += 1;
         }

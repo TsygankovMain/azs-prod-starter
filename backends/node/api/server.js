@@ -15,6 +15,7 @@ import createTimeoutWatcher from './src/dispatch/timeoutWatcher.js';
 import { readDispatchCandidates } from './src/dispatch/dispatchCandidatesFileStore.js';
 import createReportsStore from './src/reports/reportsStore.js';
 import createReportsRouter from './src/reports/reportsRoutes.js';
+import createNotificationService from './src/notifications/notificationService.js';
 
 const app = express();
 app.use(cors());
@@ -45,15 +46,18 @@ const settingsStore = createFileSettingsStore();
 const dispatchLogStore = createDispatchLogStore({ pool, dbType });
 const reportsStore = createReportsStore({ pool, dbType });
 const bitrixClient = createBitrixRestClient();
+const notificationService = createNotificationService({ bitrixClient });
 const timeoutWatcher = createTimeoutWatcher({
   reportsStore,
   bitrixClient,
-  settingsStore
+  settingsStore,
+  notificationService
 });
 const dispatchService = createDispatchService({
   dispatchLogStore,
   settingsStore,
   bitrixClient,
+  notificationService,
   timeoutWatcher
 });
 
@@ -77,7 +81,8 @@ app.use('/api/reports', verifyToken, createReportsRouter({
   reportsStore,
   dispatchService,
   settingsStore,
-  bitrixClient
+  bitrixClient,
+  notificationService
 }));
 
 app.post('/api/install', async (req, res) => {

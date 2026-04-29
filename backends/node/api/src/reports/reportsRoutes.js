@@ -16,6 +16,15 @@ class ReportConfigError extends Error {
   }
 }
 
+class ReportSyncError extends Error {
+  constructor(message, code = 'report_sync_failed') {
+    super(message);
+    this.name = 'ReportSyncError';
+    this.code = code;
+    this.statusCode = 502;
+  }
+}
+
 const normalizeDateFilter = (value) => {
   const raw = String(value || '').trim();
   if (!raw) {
@@ -174,14 +183,26 @@ const validateExifDate = (exifDate) => {
   };
 };
 
+const ensureFolderFieldMapping = (settings) => {
+  const folderFieldCode = String(settings?.report?.fields?.folderId || '').trim();
+  if (!folderFieldCode) {
+    throw new ReportConfigError(
+      'Field mapping report.fields.folderId is required to sync Disk folder id into report smart process item',
+      'report_folder_mapping_not_configured'
+    );
+  }
+  return folderFieldCode;
+};
+
 export const createReportsRouter = ({
   reportsStore,
   dispatchService,
   settingsStore,
-  bitrixClient
+  bitrixClient,
+  notificationService
 }) => {
-  if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient) {
-    throw new Error('reportsStore, dispatchService, settingsStore and bitrixClient are required');
+  if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService) {
+    throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient and notificationService are required');
   }
 
   const router = express.Router();
@@ -334,6 +355,7 @@ export const createReportsRouter = ({
       }
 
       const settings = await settingsStore.read();
+      const folderFieldCode = ensureFolderFieldMapping(settings);
       const requiredPhotos = await readRequiredPhotos({
         bitrixClient,
         settings,
@@ -401,15 +423,29 @@ export const createReportsRouter = ({
         report,
         status: nextStatus,
         photos: currentPhotos,
-        diskFolderId: uploaded.folderId
+        diskFolderId: uploaded.folderId,
+        requireReportItem: true
       });
+
+      const syncedCrmItem = await bitrixClient.getCrmItem({
+        entityTypeId: Number(settings.report?.entityTypeId || 0),
+        id: Number(report.reportItemId || 0)
+      });
+      const syncedFolderId = String(getFieldValue(syncedCrmItem, folderFieldCode) ?? '').trim();
+      if (syncedFolderId !== String(uploaded.folderId)) {
+        throw new ReportSyncError(
+          `Report CRM folder field "${folderFieldCode}" was not synced. Expected "${String(uploaded.folderId)}", got "${syncedFolderId || '<empty>'}"`,
+          'report_folder_sync_failed'
+        );
+      }
 
       if (allRequiredUploaded) {
         const reviewerId = Number(process.env.REPORT_REVIEWER_USER_ID || 0);
         if (reviewerId > 0) {
-          await bitrixClient.notifyUser({
+          await notificationService.notifyReportDone({
             userId: reviewerId,
-            message: `Отчёт АЗС ${report.azsId} завершён и готов к проверке.`
+            reportId,
+            azsId: report.azsId
           });
         }
       }

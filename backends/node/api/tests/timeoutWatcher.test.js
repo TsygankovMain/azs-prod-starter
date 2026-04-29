@@ -24,8 +24,10 @@ test('timeout watcher expires overdue reports and skips done/expired', async () 
     bitrixClient: {
       async updateReportItem(payload) {
         updates.push(payload);
-      },
-      async notifyUser(payload) {
+      }
+    },
+    notificationService: {
+      async notifyReportExpired(payload) {
         notifications.push(payload);
       }
     },
@@ -74,8 +76,10 @@ test('timeout watcher updates Bitrix report stage when crm report id exists', as
     bitrixClient: {
       async updateReportItem(payload) {
         updates.push(payload);
-      },
-      async notifyUser() {}
+      }
+    },
+    notificationService: {
+      async notifyReportExpired() {}
     },
     settingsStore: {
       async read() {
@@ -118,6 +122,9 @@ test('timeout watcher counts failures when status update throws', async () => {
     },
     bitrixClient: {
       async notifyUser() {}
+    },
+    notificationService: {
+      async notifyReportExpired() {}
     },
     reviewerUserId: 11
   });

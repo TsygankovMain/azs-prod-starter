@@ -45,12 +45,22 @@ export const updateReportCrmItem = async ({
   report,
   status,
   photos = [],
-  diskFolderId = null
+  diskFolderId = null,
+  requireReportItem = false
 }) => {
   const entityTypeId = Number(settings?.report?.entityTypeId || 0);
   const reportItemId = Number(report?.reportItemId || 0);
 
-  if (!entityTypeId || !reportItemId || typeof bitrixClient?.updateReportItem !== 'function') {
+  if (!entityTypeId || typeof bitrixClient?.updateReportItem !== 'function') {
+    return null;
+  }
+  if (!reportItemId) {
+    if (requireReportItem) {
+      const error = new Error('reportItemId is missing or invalid; cannot sync report to Bitrix24 CRM');
+      error.code = 'report_item_id_invalid';
+      error.statusCode = 422;
+      throw error;
+    }
     return null;
   }
 

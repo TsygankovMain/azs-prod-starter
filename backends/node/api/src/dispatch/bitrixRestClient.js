@@ -63,6 +63,7 @@ export const createBitrixRestClient = ({
 
   return {
     isConfigured,
+    callMethod: call,
 
     async createReportItem({ entityTypeId, fields }) {
       if (!Number(entityTypeId)) {

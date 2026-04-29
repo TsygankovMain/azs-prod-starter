@@ -78,6 +78,21 @@ test('updateReportCrmItem skips call without crm report id', async () => {
   assert.equal(called, false);
 });
 
+test('updateReportCrmItem throws without crm report id in strict mode', async () => {
+  await assert.rejects(
+    updateReportCrmItem({
+      bitrixClient: {
+        async updateReportItem() {}
+      },
+      settings,
+      report: { reportItemId: null },
+      status: 'done',
+      requireReportItem: true
+    }),
+    /reportItemId is missing or invalid/
+  );
+});
+
 test('updateReportCrmItem sends crm.item.update payload', async () => {
   const calls = [];
 

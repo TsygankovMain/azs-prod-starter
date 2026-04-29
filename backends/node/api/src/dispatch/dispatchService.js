@@ -81,13 +81,14 @@ export const createDispatchService = ({
   dispatchLogStore,
   settingsStore,
   bitrixClient,
+  notificationService,
   timeoutWatcher = null,
   nowFn = () => new Date(),
   rng = Math.random,
   logger = console
 }) => {
-  if (!dispatchLogStore || !settingsStore || !bitrixClient) {
-    throw new Error('dispatchLogStore, settingsStore and bitrixClient are required');
+  if (!dispatchLogStore || !settingsStore || !bitrixClient || !notificationService) {
+    throw new Error('dispatchLogStore, settingsStore, bitrixClient and notificationService are required');
   }
 
   const dispatchCandidate = async ({ candidate, settings, trigger = 'auto' }) => {
@@ -146,9 +147,12 @@ export const createDispatchService = ({
       });
       reportItemId = reportResult.reportItemId;
 
-      await bitrixClient.notifyUser({
+      await notificationService.notifyDispatch({
         userId: Number(candidate.adminUserId),
-        message: `Фото-отчёт АЗС: слот ${slotHHmm}, дедлайн ${deadlineAt.toISOString()}`
+        reportId: reserve.id,
+        azsId: candidate.azsId,
+        slotHHmm,
+        deadlineAt
       });
 
       await dispatchLogStore.markDone({

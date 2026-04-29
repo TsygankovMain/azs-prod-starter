@@ -9,6 +9,7 @@ const { initApp, processErrorGlobal } = useAppInit('AppHomePage')
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
 const userStore = useUserStore()
+const route = useRoute()
 
 let $b24: null | B24Frame = null
 
@@ -42,6 +43,62 @@ const openPage = async (path: string) => {
   await navigateTo(path)
 }
 
+const parsePositiveInt = (value: unknown): number => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0
+  }
+  return Math.floor(parsed)
+}
+
+const parseReportIdFromPath = (value: unknown): number => {
+  const match = String(value || '').match(/\/admin\/(\d+)/)
+  return parsePositiveInt(match?.[1])
+}
+
+const parsePlacementOptions = ($frame: B24Frame): Record<string, unknown> => {
+  const raw = $frame.placement?.options
+  if (!raw) {
+    return {}
+  }
+  if (typeof raw === 'object') {
+    return raw as Record<string, unknown>
+  }
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      return {}
+    }
+  }
+  return {}
+}
+
+const resolveContextReportId = ($frame: B24Frame): number => {
+  const direct = parsePositiveInt(route.query.reportId)
+  if (direct > 0) {
+    return direct
+  }
+
+  const bracket = parsePositiveInt(route.query['params[reportId]'])
+  if (bracket > 0) {
+    return bracket
+  }
+
+  const fromQueryPath = parseReportIdFromPath(route.query.path ?? route.query['params[path]'])
+  if (fromQueryPath > 0) {
+    return fromQueryPath
+  }
+
+  const placementOptions = parsePlacementOptions($frame)
+  const fromPlacement = parsePositiveInt(placementOptions.reportId ?? placementOptions['params[reportId]'])
+  if (fromPlacement > 0) {
+    return fromPlacement
+  }
+
+  return parseReportIdFromPath(placementOptions.path ?? placementOptions['params[path]'])
+}
+
 const checkBackend = async () => {
   try {
     await apiStore.checkHealth()
@@ -59,6 +116,13 @@ onMounted(async () => {
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
     await $b24.parent.setTitle(PAGE_TITLE)
+
+    const contextReportId = resolveContextReportId($b24)
+    if (contextReportId > 0) {
+      await navigateTo(`/admin/${contextReportId}`)
+      return
+    }
+
     await checkBackend()
     isInit.value = true
   } catch (error) {

@@ -129,6 +129,47 @@ Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
 
+### 2026-04-29 17:04:28 MSK
+
+What happened:
+- Implemented production notification layer with bot-first strategy:
+  - added `NotificationService` (`bot` via `imbot.v2.Chat.Message.send`, fallback to `im.notify.personal.add`)
+  - added REST_APP_URI report links in messages (`/marketplace/view/{APP_CODE}/?...`)
+- Integrated `NotificationService` into:
+  - dispatch flow (new report notification to AZS admin)
+  - timeout watcher (expired report notification to reviewer)
+  - upload completion flow (DONE notification to reviewer)
+- Hardened report CRM sync:
+  - strict mode for missing/invalid `reportItemId` during upload sync
+  - explicit runtime verification that report `folderId` field in CRM is actually updated
+  - clear sync error when `folderId` mapping is missing or not written
+- Added production validation rule:
+  - `report.fields.folderId` is required when `BITRIX_REST_ENDPOINT` is configured
+- Added frontend deep-link handling:
+  - index page now resolves `reportId` from query/REST_APP_URI placement params and opens `/admin/{reportId}`
+- Updated env and docs:
+  - added `BITRIX_BOT_MODE`, `BITRIX_BOT_ID`, `BITRIX_APP_CODE`, `APP_PUBLIC_BASE_URL`
+  - expanded required scopes with `disk`, `im`, `imbot`, `user`
+  - added portal setup spec for Bitrix24 specialist: `docs/bitrix24-portal-setup.md`
+
+Product impact:
+- Notifications can now be sent from named bot scenario ("Порядок на АЗС"), with automatic fallback.
+- Report links in notifications open the app report screen via Bitrix24 app-link mechanism.
+- Folder ID persistence into CRM report card is now controlled and diagnosable in runtime.
+
+What to check:
+- Configure env for bot mode and reinstall app with updated scopes.
+- Run manual dispatch and verify bot message contains `/marketplace/view/{APP_CODE}/...` link.
+- Upload first photo and verify CRM report string field "Папка Диска" gets folder id.
+- Open app via REST_APP_URI link and confirm redirect to `/admin/{reportId}`.
+
+Next step:
+- Bind and verify actual bot registration on portal, then run full portal smoke test in mobile/web.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
 ### 2026-04-29 16:38:32 MSK
 
 What happened:

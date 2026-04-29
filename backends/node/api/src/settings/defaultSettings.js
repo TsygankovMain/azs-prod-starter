@@ -102,6 +102,7 @@ const validateNumber = (value, path, minValue, errors) => {
 
 export const validateSettings = (settings) => {
   const errors = [];
+  const isProductionBitrixSync = String(process.env.BITRIX_REST_ENDPOINT || '').trim() !== '';
 
   if (!isPlainObject(settings)) {
     throw new SettingsValidationError(['settings must be a JSON object']);
@@ -131,6 +132,12 @@ export const validateSettings = (settings) => {
     validateNumber(Number(settings.report.dispatchJitterMinutes), 'report.dispatchJitterMinutes', 0, errors);
     validateObject(settings.report, 'fields', errors);
     validateObject(settings.report, 'stages', errors);
+    if (isProductionBitrixSync) {
+      const folderFieldCode = String(settings.report?.fields?.folderId || '').trim();
+      if (!folderFieldCode) {
+        errors.push('report.fields.folderId is required when BITRIX_REST_ENDPOINT is configured');
+      }
+    }
   }
 
   if (isPlainObject(settings.disk)) {

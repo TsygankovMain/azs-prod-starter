@@ -38,3 +38,27 @@ test('validateSettings rejects invalid timeout and jitter ranges', () => {
     /report.dispatchJitterMinutes must be greater than or equal to 0/
   );
 });
+
+test('validateSettings requires report.fields.folderId when REST endpoint is configured', () => {
+  const previous = process.env.BITRIX_REST_ENDPOINT;
+  process.env.BITRIX_REST_ENDPOINT = 'https://example.bitrix24.ru/rest';
+
+  try {
+    assert.throws(
+      () => validateSettings(mergeSettings({
+        report: {
+          fields: {
+            folderId: ''
+          }
+        }
+      })),
+      /report.fields.folderId is required/
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.BITRIX_REST_ENDPOINT;
+    } else {
+      process.env.BITRIX_REST_ENDPOINT = previous;
+    }
+  }
+});
