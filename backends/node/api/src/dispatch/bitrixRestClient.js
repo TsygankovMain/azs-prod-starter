@@ -33,10 +33,11 @@ export const createBitrixRestClient = ({
     }
   };
 
-  const call = async (method, params = {}) => {
+  const callInternal = async (method, params = {}, authOverride = '') => {
     ensureConfigured();
-    const requestPayload = restAuthId
-      ? { ...params, auth: restAuthId }
+    const resolvedAuth = String(authOverride || restAuthId || '').trim();
+    const requestPayload = resolvedAuth
+      ? { ...params, auth: resolvedAuth }
       : params;
 
     const url = `${base}/${method}.json`;
@@ -61,9 +62,13 @@ export const createBitrixRestClient = ({
     return responsePayload.result ?? responsePayload;
   };
 
+  const call = async (method, params = {}) => callInternal(method, params, '');
+  const callWithAuth = async (method, params = {}, authId = '') => callInternal(method, params, authId);
+
   return {
     isConfigured,
     callMethod: call,
+    callMethodWithAuth: callWithAuth,
 
     async createReportItem({ entityTypeId, fields }) {
       if (!Number(entityTypeId)) {

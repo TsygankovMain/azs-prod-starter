@@ -75,10 +75,15 @@
 - `BITRIX_REST_AUTH_ID`
 - `BITRIX_BOT_MODE=bot|notify`
 - `BITRIX_BOT_ID`
+- `BITRIX_BOT_CODE`
+- `BITRIX_BOT_NAME`
 - `BITRIX_APP_CODE`
 - `APP_PUBLIC_BASE_URL`
 
 Рекомендуемый режим: `BITRIX_BOT_MODE=bot`.
+
+Примечание:
+- При `BITRIX_BOT_MODE=bot` backend пытается зарегистрировать бота автоматически в `/api/install` через `imbot.v2.Bot.register` (используется `AUTH_ID` из install payload).
 
 ## 7. Приёмка
 

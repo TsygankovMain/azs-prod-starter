@@ -79,6 +79,7 @@ export const createNotificationService = ({
 
   const resolvedMode = normalizeMode(mode);
   const resolvedBotId = Number(botId);
+  let currentBotId = Number.isFinite(resolvedBotId) ? resolvedBotId : 0;
 
   const notify = async ({ userId, message, fallbackToNotify = true }) => {
     if (!Number(userId)) {
@@ -89,13 +90,13 @@ export const createNotificationService = ({
     }
 
     if (resolvedMode === 'bot') {
-      if (!resolvedBotId) {
+      if (!currentBotId) {
         throw new Error('BITRIX_BOT_ID is required when BITRIX_BOT_MODE=bot');
       }
       try {
         const result = await sendViaBot({
           bitrixClient,
-          botId: resolvedBotId,
+          botId: currentBotId,
           userId,
           message
         });
@@ -172,7 +173,14 @@ export const createNotificationService = ({
 
   return {
     mode: resolvedMode,
-    botId: resolvedBotId || null,
+    botId: currentBotId || null,
+    setBotId(nextBotId) {
+      const parsed = Number(nextBotId);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        currentBotId = Math.floor(parsed);
+      }
+      return currentBotId;
+    },
     notify,
     notifyDispatch,
     notifyReportDone,

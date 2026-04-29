@@ -190,6 +190,8 @@ BITRIX_REST_ENDPOINT - REST endpoint портала для Node backend (`https:
 BITRIX_REST_AUTH_ID - OAuth/webhook token для вызовов REST от backend.
 BITRIX_BOT_MODE - канал уведомлений: `bot` (основной) или `notify` (fallback через `im.notify.personal.add`).
 BITRIX_BOT_ID - ID зарегистрированного бота «Порядок на АЗС» для `imbot.v2.Chat.Message.send`.
+BITRIX_BOT_CODE - код бота для авторегистрации на `/api/install` (например, `azs_order_bot`).
+BITRIX_BOT_NAME - отображаемое имя бота в чате (например, `Порядок на АЗС`).
 BITRIX_APP_CODE - код приложения для REST_APP_URI ссылки `/marketplace/view/{APP_CODE}/...`.
 APP_PUBLIC_BASE_URL - публичная база приложения для fallback-ссылок на отчёты.
 

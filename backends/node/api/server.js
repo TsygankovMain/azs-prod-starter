@@ -16,6 +16,7 @@ import { readDispatchCandidates } from './src/dispatch/dispatchCandidatesFileSto
 import createReportsStore from './src/reports/reportsStore.js';
 import createReportsRouter from './src/reports/reportsRoutes.js';
 import createNotificationService from './src/notifications/notificationService.js';
+import createBotRegistryService from './src/notifications/botRegistryService.js';
 
 const app = express();
 app.use(cors());
@@ -47,6 +48,7 @@ const dispatchLogStore = createDispatchLogStore({ pool, dbType });
 const reportsStore = createReportsStore({ pool, dbType });
 const bitrixClient = createBitrixRestClient();
 const notificationService = createNotificationService({ bitrixClient });
+const botRegistryService = createBotRegistryService({ bitrixClient });
 const timeoutWatcher = createTimeoutWatcher({
   reportsStore,
   bitrixClient,
@@ -87,9 +89,52 @@ app.use('/api/reports', verifyToken, createReportsRouter({
 
 app.post('/api/install', async (req, res) => {
   console.log('/api/install', req.body);
-  res.json({
-    message: 'All success'
-  });
+  const botMode = String(process.env.BITRIX_BOT_MODE || 'notify').trim().toLowerCase();
+  const authId = String(req.body?.AUTH_ID || '').trim();
+
+  const payload = {
+    message: 'All success',
+    bot: {
+      mode: botMode,
+      registered: false,
+      botId: Number(process.env.BITRIX_BOT_ID || 0) || null
+    }
+  };
+
+  if (botMode !== 'bot') {
+    return res.json(payload);
+  }
+
+  if (!authId) {
+    return res.status(400).json({
+      error: 'bot_auth_required',
+      message: 'BITRIX_BOT_MODE=bot requires AUTH_ID in /api/install payload'
+    });
+  }
+
+  try {
+    const registration = await botRegistryService.registerBot({ authId });
+    process.env.BITRIX_BOT_ID = String(registration.botId);
+    if (typeof notificationService.setBotId === 'function') {
+      notificationService.setBotId(registration.botId);
+    }
+    const bots = await botRegistryService.listBots({ authId }).catch(() => []);
+    return res.json({
+      ...payload,
+      bot: {
+        mode: botMode,
+        registered: true,
+        botId: registration.botId,
+        bots
+      }
+    });
+  } catch (error) {
+    return res.status(502).json({
+      error: 'bot_register_failed',
+      message: error.message,
+      bot: payload.bot
+    });
+  }
 });
 
 app.post('/api/getToken', async (req, res) => {

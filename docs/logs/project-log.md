@@ -129,6 +129,39 @@ Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
 
+### 2026-04-29 21:07:30 MSK
+
+What happened:
+- Rechecked bot registration path and confirmed root cause:
+  - `/api/install` previously did not register bot at all (stub response only).
+  - Current REST auth token from `.env` returns `expired_token` for `imbot.*` checks.
+  - Local `.env` scopes were outdated and did not include `imbot`/`im`/`disk`/`user`.
+- Implemented bot auto-registration on install:
+  - added `botRegistryService` with `imbot.v2.Bot.register` and `imbot.v2.Bot.list`
+  - `/api/install` now, in `BITRIX_BOT_MODE=bot`, uses install payload `AUTH_ID` to register bot
+  - backend updates runtime `BITRIX_BOT_ID` from registration result and reuses it in notifications
+- Extended Bitrix REST client with `callMethodWithAuth` for install-time OAuth token usage.
+- Updated local env and docs with bot variables:
+  - `BITRIX_BOT_MODE`, `BITRIX_BOT_ID`, `BITRIX_BOT_CODE`, `BITRIX_BOT_NAME`
+- Added backend tests for bot registry service.
+
+Product impact:
+- Bot registration now happens automatically during app install/reinstall, not manually outside app code.
+- Notification channel `bot` can start working immediately after successful install and scope renewal.
+
+What to check:
+- Reinstall app in portal (to refresh OAuth token and scopes).
+- Ensure app scopes include: `crm,disk,im,imbot,user,user_brief,pull,placement,userfieldconfig`.
+- Open `/install` flow and verify `/api/install` returns `bot.registered=true` and `bot.botId > 0`.
+- Run manual dispatch and verify messages come from bot “Порядок на АЗС”.
+
+Next step:
+- Optional: persist registered `botId` to durable storage (settings/app.option) to keep value after container restart.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
 ### 2026-04-29 17:04:28 MSK
 
 What happened:
