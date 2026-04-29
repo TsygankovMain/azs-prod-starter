@@ -216,9 +216,19 @@ const uploadSlotFile = async (slot: SlotState, file: File) => {
   } catch (error) {
     slot.done = false
     slot.fileName = ''
-    const responseMessage = (error as { data?: { message?: string; error?: string } })?.data?.message
-      || (error as { data?: { message?: string; error?: string } })?.data?.error
-    slot.error = responseMessage || (error instanceof Error ? error.message : 'Не удалось загрузить фото')
+    const responseData = (error as {
+      data?: {
+        message?: string
+        error?: string
+        currentUserId?: number
+        expectedAdminUserId?: number
+      }
+    })?.data
+    const accessDetails = responseData?.error === 'forbidden_user'
+      ? ` Текущий пользователь: ${String(responseData.currentUserId || '—')}, назначенный админ отчёта: ${String(responseData.expectedAdminUserId || '—')}.`
+      : ''
+    const responseMessage = responseData?.message || responseData?.error
+    slot.error = `${responseMessage || (error instanceof Error ? error.message : 'Не удалось загрузить фото')}${accessDetails}`
     saveError.value = slot.error
   } finally {
     slot.uploading = false

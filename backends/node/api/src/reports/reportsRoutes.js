@@ -305,7 +305,9 @@ export const createReportsRouter = ({
       if (!currentUserId || currentUserId !== Number(report.adminUserId)) {
         return res.status(403).json({
           error: 'forbidden_user',
-          message: 'Current user is not report administrator'
+          message: 'Current user is not report administrator',
+          currentUserId,
+          expectedAdminUserId: Number(report.adminUserId)
         });
       }
 

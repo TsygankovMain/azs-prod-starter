@@ -129,6 +129,36 @@ Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
 
+### 2026-04-29 16:01:50 MSK
+
+What happened:
+- Investigated mobile upload error `Current user is not report administrator`.
+- Confirmed report `#1` is assigned to `admin_user_id=11`, while current Bitrix24 user/JWT is `user_id=1`.
+- Improved reviewer manual trigger defaults:
+  - removed hardcoded admin user `11`
+  - manual report form now defaults to current Bitrix24 user ID after app initialization
+- Improved forbidden upload error details:
+  - backend returns `currentUserId`
+  - backend returns `expectedAdminUserId`
+  - admin screen displays both IDs for faster test diagnostics
+
+Product impact:
+- New manual reports created by the current tester are uploadable by that tester by default.
+- Existing reports still respect the security rule: only the assigned station administrator can upload photos.
+- Permission errors now explain who is current user and who is assigned to the report.
+
+What to check:
+- Open `/reviewer`, create a new manual report without changing "Админ user id".
+- Open the new report admin screen and upload a photo.
+- Do not reuse old report `#1` unless testing as user `11` or changing its admin assignment.
+
+Next step:
+- Retest upload on a newly created report assigned to current user `1`.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
 ### 2026-04-29 15:51:45 MSK
 
 What happened:

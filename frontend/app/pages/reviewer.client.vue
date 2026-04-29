@@ -32,6 +32,7 @@ const { locales: localesI18n, setLocale } = useI18n()
 const { initApp, processErrorGlobal } = useAppInit('ReviewerPage')
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
+const userStore = useUserStore()
 
 let $b24: null | B24Frame = null
 
@@ -60,7 +61,7 @@ const filters = reactive({
 
 const manualCandidate = reactive({
   azsId: '',
-  adminUserId: 11,
+  adminUserId: 0,
   slotDate: '',
   slotHHmm: ''
 })
@@ -162,6 +163,7 @@ onMounted(async () => {
   try {
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
+    manualCandidate.adminUserId = userStore.id || 1
     await $b24.parent.setTitle(PAGE_TITLE)
     await loadReports()
   } catch (error) {
