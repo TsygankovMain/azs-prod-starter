@@ -129,6 +129,38 @@ Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
 
+### 2026-04-29 16:25:57 MSK
+
+What happened:
+- Switched report flow to production-only mode (no mock, no template fallback).
+- Removed Bitrix REST mock behavior in Node client:
+  - no fake responses when endpoint is missing
+  - explicit runtime error if `BITRIX_REST_ENDPOINT` is not set
+  - no fake `reportItemId` generation
+- Removed template required-photo fallback from report API:
+  - deleted default photo set usage
+  - strict validation of AZS/photoType mapping and AZS item id
+  - if mapping/data is invalid, backend now returns explicit `422` error codes.
+- Admin screen no longer injects default demo photo slots.
+- Admin screen now shows backend config/data errors directly for report load.
+
+Product impact:
+- Report behavior is deterministic and based only on real portal data.
+- Misconfiguration now fails loudly with actionable errors instead of silent demo substitution.
+- Demo slots (`totem/columns/shop/territory`) are no longer shown by default.
+
+What to check:
+- Ensure backend env has `BITRIX_REST_ENDPOINT` configured for your portal.
+- Open `/admin/:reportId` for a report with valid numeric AZS item id and mapped photo set.
+- Verify required photo list is taken only from AZS + PhotoType entities.
+
+Next step:
+- Set `BITRIX_REST_ENDPOINT` and run a full portal smoke test (manual dispatch -> admin upload -> DONE/EXPIRED).
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
 ### 2026-04-29 16:01:50 MSK
 
 What happened:

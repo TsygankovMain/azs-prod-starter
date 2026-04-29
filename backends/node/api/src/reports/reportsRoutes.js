@@ -6,13 +6,15 @@ import { updateReportCrmItem } from './reportCrmSync.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const EXIF_MAX_AGE_MINUTES = Number(process.env.EXIF_MAX_AGE_MINUTES || 720);
-const DEFAULT_REQUIRED_CODES = ['totem', 'columns', 'shop', 'territory'];
-const DEFAULT_REQUIRED_PHOTOS = [
-  { code: 'totem', title: 'Тотем / цена стелы', sort: 10 },
-  { code: 'columns', title: 'Топливораздаточные колонки', sort: 20 },
-  { code: 'shop', title: 'Торговый зал / касса', sort: 30 },
-  { code: 'territory', title: 'Территория АЗС', sort: 40 }
-];
+
+class ReportConfigError extends Error {
+  constructor(message, code = 'report_config_error') {
+    super(message);
+    this.name = 'ReportConfigError';
+    this.code = code;
+    this.statusCode = 422;
+  }
+}
 
 const normalizeDateFilter = (value) => {
   const raw = String(value || '').trim();
@@ -28,15 +30,6 @@ const normalizeLimit = (value) => {
     return 200;
   }
   return Math.min(Math.floor(parsed), 500);
-};
-
-const parseRequiredCodes = () => {
-  const envValue = String(process.env.REPORT_REQUIRED_PHOTO_CODES || '').trim();
-  if (!envValue) {
-    return DEFAULT_REQUIRED_CODES;
-  }
-  const items = envValue.split(',').map((value) => value.trim().toLowerCase()).filter(Boolean);
-  return items.length ? items : DEFAULT_REQUIRED_CODES;
 };
 
 const normalizePhotoCode = (value) => String(value || '').trim().toLowerCase();
@@ -73,10 +66,6 @@ const getFieldValue = (item, fieldCode) => {
   return item[fieldCode] ?? item[fieldCode.toLowerCase()] ?? item[fieldCode.toUpperCase()];
 };
 
-const toDefaultRequiredPhotos = () => DEFAULT_REQUIRED_PHOTOS
-  .filter((item) => parseRequiredCodes().includes(item.code))
-  .map((item) => ({ ...item }));
-
 const readRequiredPhotos = async ({ bitrixClient, settings, azsId }) => {
   const azsEntityTypeId = Number(settings.azs?.entityTypeId || 0);
   const photoSetField = String(settings.azs?.fields?.photoSet || '').trim();
@@ -84,17 +73,42 @@ const readRequiredPhotos = async ({ bitrixClient, settings, azsId }) => {
   const photoTypeFields = settings.photoType?.fields || {};
   const azsItemId = parseCrmItemId(azsId);
 
-  if (!azsEntityTypeId || !photoSetField || !photoTypeEntityTypeId || !azsItemId || typeof bitrixClient.getCrmItem !== 'function') {
-    return toDefaultRequiredPhotos();
+  if (!azsEntityTypeId || !photoSetField || !photoTypeEntityTypeId) {
+    throw new ReportConfigError(
+      'Required photos mapping is not configured: set AZS entity/photoSet and PhotoType entity in settings',
+      'required_photos_mapping_not_configured'
+    );
+  }
+  if (!azsItemId) {
+    throw new ReportConfigError(
+      `Report AZS id "${String(azsId || '')}" is not a valid smart-process item id`,
+      'invalid_report_azs_id'
+    );
+  }
+  if (typeof bitrixClient.getCrmItem !== 'function') {
+    throw new ReportConfigError(
+      'Bitrix client does not support crm.item.get',
+      'bitrix_client_not_supported'
+    );
   }
 
   const azsItem = await bitrixClient.getCrmItem({
     entityTypeId: azsEntityTypeId,
     id: azsItemId
   });
+  if (!azsItem) {
+    throw new ReportConfigError(
+      `AZS item ${azsItemId} was not found in entityTypeId=${azsEntityTypeId}`,
+      'azs_item_not_found'
+    );
+  }
+
   const photoTypeIds = [...new Set(extractMultipleIds(getFieldValue(azsItem, photoSetField)))];
   if (!photoTypeIds.length) {
-    return toDefaultRequiredPhotos();
+    throw new ReportConfigError(
+      `AZS item ${azsItemId} has empty required photo set field "${photoSetField}"`,
+      'azs_photo_set_empty'
+    );
   }
 
   const items = await Promise.all(photoTypeIds.map((id) => bitrixClient.getCrmItem({
@@ -121,7 +135,14 @@ const readRequiredPhotos = async ({ bitrixClient, settings, azsId }) => {
     .sort((a, b) => a.sort - b.sort)
     .map(({ code, title, sort }) => ({ code, title, sort }));
 
-  return requiredPhotos.length ? requiredPhotos : toDefaultRequiredPhotos();
+  if (!requiredPhotos.length) {
+    throw new ReportConfigError(
+      'No active photo types resolved from AZS photo set',
+      'required_photo_types_empty'
+    );
+  }
+
+  return requiredPhotos;
 };
 
 const extractUserId = (user) => {
@@ -238,8 +259,9 @@ export const createReportsRouter = ({
       ]);
       return res.json({ item, photos, requiredPhotos });
     } catch (error) {
-      return res.status(500).json({
-        error: 'report_get_failed',
+      const statusCode = Number(error?.statusCode || 500);
+      return res.status(statusCode).json({
+        error: error?.code || 'report_get_failed',
         message: error.message
       });
     }
@@ -407,8 +429,9 @@ export const createReportsRouter = ({
         }
       });
     } catch (error) {
-      return res.status(500).json({
-        error: 'report_photo_upload_failed',
+      const statusCode = Number(error?.statusCode || 500);
+      return res.status(statusCode).json({
+        error: error?.code || 'report_photo_upload_failed',
         message: error.message
       });
     }

@@ -24,19 +24,15 @@ export const createBitrixRestClient = ({
 } = {}) => {
   const base = normalizeEndpoint(endpoint);
   const isConfigured = Boolean(base);
-  let mockSequence = 5000;
-  const mockFolders = new Map();
 
-  const mockKey = (parentId, name) => `${parentId}:${name}`;
+  const ensureConfigured = () => {
+    if (!isConfigured) {
+      throw new Error('BITRIX_REST_ENDPOINT is required in production mode');
+    }
+  };
 
   const call = async (method, params = {}) => {
-    if (!isConfigured) {
-      return {
-        mock: true,
-        method,
-        params
-      };
-    }
+    ensureConfigured();
 
     const url = `${base}/${method}.json`;
     const response = await fetch(url, {
@@ -71,7 +67,7 @@ export const createBitrixRestClient = ({
         entityTypeId: Number(entityTypeId),
         fields
       });
-      const reportItemId = parseReportItemId(result) || (isConfigured ? null : Date.now());
+      const reportItemId = parseReportItemId(result);
       if (!reportItemId) {
         throw new Error('crm.item.add response does not include item id');
       }
@@ -131,11 +127,6 @@ export const createBitrixRestClient = ({
 
     diskApi: {
       async findChildFolder(parentId, name) {
-        if (!isConfigured) {
-          const id = mockFolders.get(mockKey(parentId, name));
-          return id ? { id } : null;
-        }
-
         const result = await call('disk.folder.getchildren', {
           id: Number(parentId)
         });
@@ -147,16 +138,6 @@ export const createBitrixRestClient = ({
       },
 
       async createFolder(parentId, name) {
-        if (!isConfigured) {
-          const key = mockKey(parentId, name);
-          if (mockFolders.has(key)) {
-            return { id: mockFolders.get(key) };
-          }
-          mockSequence += 1;
-          mockFolders.set(key, mockSequence);
-          return { id: mockSequence };
-        }
-
         const result = await call('disk.folder.addsubfolder', {
           id: Number(parentId),
           data: {
@@ -171,11 +152,6 @@ export const createBitrixRestClient = ({
       },
 
       async uploadFile(folderId, { fileName, content }) {
-        if (!isConfigured) {
-          mockSequence += 1;
-          return { id: mockSequence, fileName };
-        }
-
         const base64 = Buffer.isBuffer(content)
           ? content.toString('base64')
           : Buffer.from(content).toString('base64');

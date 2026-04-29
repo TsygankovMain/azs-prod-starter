@@ -48,14 +48,7 @@ const cameraBusy = ref(false)
 const cameraVideoEl = ref<HTMLVideoElement | null>(null)
 const cameraStream = ref<MediaStream | null>(null)
 
-const defaultPhotoSlots: SlotState[] = [
-  { key: 'totem', title: 'Тотем / цена стелы', done: false, uploading: false, fileName: '', error: '' },
-  { key: 'columns', title: 'Топливораздаточные колонки', done: false, uploading: false, fileName: '', error: '' },
-  { key: 'shop', title: 'Торговый зал / касса', done: false, uploading: false, fileName: '', error: '' },
-  { key: 'territory', title: 'Территория АЗС', done: false, uploading: false, fileName: '', error: '' }
-]
-
-const photoSlots = reactive<SlotState[]>(defaultPhotoSlots.map((slot) => ({ ...slot })))
+const photoSlots = reactive<SlotState[]>([])
 
 const completedCount = computed(() => photoSlots.filter((slot) => slot.done).length)
 const allCompleted = computed(() => completedCount.value === photoSlots.length)
@@ -75,11 +68,7 @@ const applyRequiredPhotos = (requiredPhotos: RequiredPhoto[] = []) => {
     .map(makeSlot)
     .filter((slot) => slot.key)
 
-  photoSlots.splice(
-    0,
-    photoSlots.length,
-    ...(nextSlots.length ? nextSlots : defaultPhotoSlots.map((slot) => ({ ...slot })))
-  )
+  photoSlots.splice(0, photoSlots.length, ...nextSlots)
 }
 
 const stopCameraStream = () => {
@@ -175,7 +164,13 @@ const loadReport = async () => {
       slot.uploading = false
     }
   } catch (error) {
-    loadError.value = error instanceof Error ? error.message : 'Не удалось загрузить отчёт'
+    const responseData = (error as {
+      data?: {
+        message?: string
+        error?: string
+      }
+    })?.data
+    loadError.value = responseData?.message || responseData?.error || (error instanceof Error ? error.message : 'Не удалось загрузить отчёт')
   } finally {
     isLoading.value = false
   }
@@ -319,6 +314,12 @@ onBeforeUnmount(() => {
       color="air-primary-alert"
       title="Ошибка загрузки отчёта"
       :description="loadError"
+    />
+    <B24Alert
+      v-if="!isLoading && !loadError && photoSlots.length === 0"
+      color="air-primary-alert"
+      title="Нет обязательных фото"
+      description="Для этого отчёта не определён набор обязательных фото. Проверьте настройки и карточку АЗС."
     />
     <B24Alert
       v-if="isLoading"
