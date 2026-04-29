@@ -136,6 +136,7 @@ export const useApiStore = defineStore(
     const getReportById = async (id: number): Promise<{
       item: ReportRow
       photos?: Array<{ photoCode: string }>
+      requiredPhotos?: Array<{ code: string; title: string; sort?: number }>
     }> => {
       return await $api(`/api/reports/${id}`, {
         headers: {

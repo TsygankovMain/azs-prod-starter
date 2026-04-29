@@ -426,3 +426,33 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-29 12:47:34 MSK
+
+What happened:
+- Fixed required photo source for admin capture screen and DONE calculation.
+- Added runtime loading of required photos from AZS smart-process item:
+  - read AZS item by `settings.azs.entityTypeId` and report `azsId`
+  - read AZS `photoSet` mapped field
+  - load selected Photo Type items by `settings.photoType.entityTypeId`
+  - use mapped Photo Type fields: `code`, `title`, `sort`, `active`
+- `GET /api/reports/:id` now returns `requiredPhotos`.
+- Admin mobile screen now renders slots from `requiredPhotos` instead of fixed hardcoded list.
+- Photo upload now rejects photo codes that are not required for the report's AZS.
+
+Product impact:
+- Different AZS cards can have different required photo sets.
+- The admin screen now follows the photo set configured in the AZS card.
+- DONE status now depends on the AZS-specific required set, not global defaults.
+
+What to check:
+- In `/settings`, confirm AZS `photoSet` and Photo Types mapping are saved.
+- Create/open report where `azsId` is the CRM item ID of the AZS card.
+- Open `/admin/:reportId` and verify the displayed photo slots match the AZS `photoSet`.
+
+Next step:
+- If existing reports were created with non-numeric `azsId`, recreate them with the actual AZS item ID for reliable CRM lookup.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.

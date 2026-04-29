@@ -6,6 +6,12 @@ import { ensureRootFolder, uploadPhoto } from '../disk/diskService.js';
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const EXIF_MAX_AGE_MINUTES = Number(process.env.EXIF_MAX_AGE_MINUTES || 720);
 const DEFAULT_REQUIRED_CODES = ['totem', 'columns', 'shop', 'territory'];
+const DEFAULT_REQUIRED_PHOTOS = [
+  { code: 'totem', title: 'Тотем / цена стелы', sort: 10 },
+  { code: 'columns', title: 'Топливораздаточные колонки', sort: 20 },
+  { code: 'shop', title: 'Торговый зал / касса', sort: 30 },
+  { code: 'territory', title: 'Территория АЗС', sort: 40 }
+];
 
 const normalizeDateFilter = (value) => {
   const raw = String(value || '').trim();
@@ -33,6 +39,89 @@ const parseRequiredCodes = () => {
 };
 
 const normalizePhotoCode = (value) => String(value || '').trim().toLowerCase();
+
+const parseCrmItemId = (value) => {
+  const direct = Number(value);
+  if (Number.isFinite(direct) && direct > 0) {
+    return Math.floor(direct);
+  }
+
+  const match = String(value || '').match(/(\d+)$/);
+  const parsed = Number(match?.[1] || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+};
+
+const extractMultipleIds = (value) => {
+  if (Array.isArray(value)) {
+    return value.flatMap(extractMultipleIds);
+  }
+
+  if (value && typeof value === 'object') {
+    const item = value;
+    return extractMultipleIds(item.id ?? item.ID ?? item.value ?? item.VALUE);
+  }
+
+  const id = parseCrmItemId(value);
+  return id ? [id] : [];
+};
+
+const getFieldValue = (item, fieldCode) => {
+  if (!item || !fieldCode) {
+    return undefined;
+  }
+  return item[fieldCode] ?? item[fieldCode.toLowerCase()] ?? item[fieldCode.toUpperCase()];
+};
+
+const toDefaultRequiredPhotos = () => DEFAULT_REQUIRED_PHOTOS
+  .filter((item) => parseRequiredCodes().includes(item.code))
+  .map((item) => ({ ...item }));
+
+const readRequiredPhotos = async ({ bitrixClient, settings, azsId }) => {
+  const azsEntityTypeId = Number(settings.azs?.entityTypeId || 0);
+  const photoSetField = String(settings.azs?.fields?.photoSet || '').trim();
+  const photoTypeEntityTypeId = Number(settings.photoType?.entityTypeId || 0);
+  const photoTypeFields = settings.photoType?.fields || {};
+  const azsItemId = parseCrmItemId(azsId);
+
+  if (!azsEntityTypeId || !photoSetField || !photoTypeEntityTypeId || !azsItemId || typeof bitrixClient.getCrmItem !== 'function') {
+    return toDefaultRequiredPhotos();
+  }
+
+  const azsItem = await bitrixClient.getCrmItem({
+    entityTypeId: azsEntityTypeId,
+    id: azsItemId
+  });
+  const photoTypeIds = [...new Set(extractMultipleIds(getFieldValue(azsItem, photoSetField)))];
+  if (!photoTypeIds.length) {
+    return toDefaultRequiredPhotos();
+  }
+
+  const items = await Promise.all(photoTypeIds.map((id) => bitrixClient.getCrmItem({
+    entityTypeId: photoTypeEntityTypeId,
+    id
+  })));
+
+  const requiredPhotos = items
+    .filter(Boolean)
+    .map((item, index) => {
+      const code = normalizePhotoCode(getFieldValue(item, photoTypeFields.code));
+      const title = String(getFieldValue(item, photoTypeFields.title) || code).trim();
+      const sort = Number(getFieldValue(item, photoTypeFields.sort) ?? ((index + 1) * 10));
+      const activeValue = getFieldValue(item, photoTypeFields.active);
+      const isInactive = ['N', 'n', '0', 'false', 'нет'].includes(String(activeValue ?? 'Y').trim());
+      return {
+        code,
+        title: title || code,
+        sort: Number.isFinite(sort) ? sort : ((index + 1) * 10),
+        active: !isInactive
+      };
+    })
+    .filter((item) => item.code && item.active)
+    .sort((a, b) => a.sort - b.sort)
+    .map(({ code, title, sort }) => ({ code, title, sort }));
+
+  return requiredPhotos.length ? requiredPhotos : toDefaultRequiredPhotos();
+};
 
 const extractUserId = (user) => {
   const id = Number(user?.user_id ?? user?.id ?? user?.uid ?? 0);
@@ -137,8 +226,16 @@ export const createReportsRouter = ({
         });
       }
 
-      const photos = await reportsStore.listPhotos(id);
-      return res.json({ item, photos });
+      const settings = await settingsStore.read();
+      const [photos, requiredPhotos] = await Promise.all([
+        reportsStore.listPhotos(id),
+        readRequiredPhotos({
+          bitrixClient,
+          settings,
+          azsId: item.azsId
+        })
+      ]);
+      return res.json({ item, photos, requiredPhotos });
     } catch (error) {
       return res.status(500).json({
         error: 'report_get_failed',
@@ -250,7 +347,19 @@ export const createReportsRouter = ({
         exifAt: exifValidation.exifAt
       });
 
-      const requiredCodes = parseRequiredCodes();
+      const requiredPhotos = await readRequiredPhotos({
+        bitrixClient,
+        settings,
+        azsId: report.azsId
+      });
+      const requiredCodes = requiredPhotos.map((item) => item.code);
+      if (!requiredCodes.includes(photoCode)) {
+        return res.status(400).json({
+          error: 'photo_code_not_required',
+          message: `photoCode ${photoCode} is not required for this AZS`
+        });
+      }
+
       const currentPhotos = await reportsStore.listPhotos(reportId);
       const uploadedCodes = new Set(currentPhotos.map((photo) => normalizePhotoCode(photo.photoCode)));
       const allRequiredUploaded = requiredCodes.every((code) => uploadedCodes.has(code));
@@ -281,7 +390,8 @@ export const createReportsRouter = ({
           status: nextStatus,
           completed: allRequiredUploaded,
           uploadedCount: uploadedCodes.size,
-          requiredCount: requiredCodes.length
+          requiredCount: requiredCodes.length,
+          requiredPhotos
         }
       });
     } catch (error) {

@@ -20,6 +20,12 @@ type SlotState = {
   error: string
 }
 
+type RequiredPhoto = {
+  code: string
+  title: string
+  sort?: number
+}
+
 const PAGE_TITLE = 'Фотоотчёт АЗС: загрузка'
 useHead({ title: PAGE_TITLE })
 
@@ -42,16 +48,39 @@ const cameraBusy = ref(false)
 const cameraVideoEl = ref<HTMLVideoElement | null>(null)
 const cameraStream = ref<MediaStream | null>(null)
 
-const photoSlots = reactive<SlotState[]>([
+const defaultPhotoSlots: SlotState[] = [
   { key: 'totem', title: 'Тотем / цена стелы', done: false, uploading: false, fileName: '', error: '' },
   { key: 'columns', title: 'Топливораздаточные колонки', done: false, uploading: false, fileName: '', error: '' },
   { key: 'shop', title: 'Торговый зал / касса', done: false, uploading: false, fileName: '', error: '' },
   { key: 'territory', title: 'Территория АЗС', done: false, uploading: false, fileName: '', error: '' }
-])
+]
+
+const photoSlots = reactive<SlotState[]>(defaultPhotoSlots.map((slot) => ({ ...slot })))
 
 const completedCount = computed(() => photoSlots.filter((slot) => slot.done).length)
 const allCompleted = computed(() => completedCount.value === photoSlots.length)
 const isCameraOpen = computed(() => Boolean(activeCameraSlotKey.value))
+
+const makeSlot = (photo: RequiredPhoto): SlotState => ({
+  key: String(photo.code || '').trim().toLowerCase(),
+  title: String(photo.title || photo.code || '').trim(),
+  done: false,
+  uploading: false,
+  fileName: '',
+  error: ''
+})
+
+const applyRequiredPhotos = (requiredPhotos: RequiredPhoto[] = []) => {
+  const nextSlots = requiredPhotos
+    .map(makeSlot)
+    .filter((slot) => slot.key)
+
+  photoSlots.splice(
+    0,
+    photoSlots.length,
+    ...(nextSlots.length ? nextSlots : defaultPhotoSlots.map((slot) => ({ ...slot })))
+  )
+}
 
 const stopCameraStream = () => {
   if (cameraVideoEl.value) {
@@ -135,6 +164,7 @@ const loadReport = async () => {
   try {
     const response = await apiStore.getReportById(id)
     report.value = response.item as ReportRow
+    applyRequiredPhotos(response.requiredPhotos || [])
     const uploaded = new Set((response.photos || []).map((photo) => String(photo.photoCode || '').toLowerCase()))
     for (const slot of photoSlots) {
       slot.done = uploaded.has(slot.key)

@@ -96,6 +96,19 @@ export const createBitrixRestClient = ({
       return result;
     },
 
+    async getCrmItem({ entityTypeId, id }) {
+      if (!Number(entityTypeId) || !Number(id)) {
+        return null;
+      }
+
+      const result = await call('crm.item.get', {
+        entityTypeId: Number(entityTypeId),
+        id: Number(id)
+      });
+
+      return result?.item ?? result ?? null;
+    },
+
     diskApi: {
       async findChildFolder(parentId, name) {
         if (!isConfigured) {
