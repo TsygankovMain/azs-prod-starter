@@ -1,5 +1,4 @@
 import { LoggerBrowser } from '@bitrix24/b24jssdk'
-import type { B24Frame } from '@bitrix24/b24jssdk'
 import type { RouteLocationNormalized } from 'vue-router'
 
 const $logger = LoggerBrowser.build(
@@ -41,31 +40,13 @@ export default defineNuxtRouteMiddleware(async (
 
   try {
     const { $initializeB24Frame } = useNuxtApp()
-    const $b24: B24Frame = await $initializeB24Frame()
-
-    $logger.log('>> placement.options', $b24.placement.options)
-    if ($b24.placement.options?.place) {
-      const optionsPlace: string = $b24.placement.options.place
-      let goTo: null | string = null
-
-      if (optionsPlace === 'app-options') {
-        goTo = `${baseDir}slider/app-options`
-      }
-
-      if (
-        null !== goTo
-        && to.path !== goTo
-      ) {
-        $logger.log(`middleware >> ${goTo}`)
-        return navigateTo(goTo)
-      }
-    }
+    await $initializeB24Frame()
 
     $logger.log('>> stop')
-  } catch (error: any) {
+  } catch (error: unknown) {
     const appError = createError({
       statusCode: 404,
-      statusMessage: error?.message || error,
+      statusMessage: error instanceof Error ? error.message : String(error),
       data: { description: 'Problem in middleware' },
       cause: error,
       fatal: true

@@ -456,3 +456,36 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-29 15:33:50 MSK
+
+What happened:
+- Removed starter demo surfaces from the application code.
+- Deleted demo frontend pages:
+  - telemetry test
+  - demo CRM deal placement handler
+  - demo user-field handler
+  - demo background error handler
+  - demo app-options slider
+- Removed demo backend endpoints:
+  - `GET /api/enum`
+  - `GET /api/list`
+- Removed demo API store methods and demo install registrations for CRM placement/user-field type.
+- Updated README API examples to use real app methods instead of demo list/enum methods.
+
+Product impact:
+- The app no longer exposes starter demo buttons, demo routes, or demo REST endpoints.
+- Installation flow no longer registers unrelated demo Bitrix24 placements/user-field types.
+- The visible product surface is focused on AZS photo reports.
+
+What to check:
+- Reinstall/open the app in Bitrix24 and verify demo pages/buttons are gone.
+- Open `/`, `/settings`, `/admin/:reportId`, `/reviewer` and verify product screens still load.
+- Confirm old demo URLs like `/telemetry-test`, `/handler/uf.demo`, `/slider/app-options` are not part of the app anymore.
+
+Next step:
+- Continue Sprint 6/7 hardening around real Bitrix24 report creation, upload lifecycle, DONE/EXPIRED and portal acceptance testing.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.

@@ -70,22 +70,6 @@ app.get('/api/health', verifyToken, (req, res) => {
   });
 });
 
-app.get('/api/enum', verifyToken, async (req, res) => {
-  res.json([
-    'option 1',
-    'option 2',
-    'option 3'
-  ]);
-});
-
-app.get('/api/list', verifyToken, async (req, res) => {
-  res.json([
-    'element 1',
-    'element 2',
-    'element 3'
-  ]);
-});
-
 app.use('/api/settings', verifyToken, createSettingsRouter({ store: settingsStore }));
 app.use('/api/jobs', verifyToken, createDispatchRouter({ dispatchService }));
 app.use('/api/reports', verifyToken, createReportsRouter({

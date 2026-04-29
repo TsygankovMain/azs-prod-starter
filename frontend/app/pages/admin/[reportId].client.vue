@@ -297,8 +297,8 @@ onBeforeUnmount(() => {
 
       <B24Alert
         color="air-secondary"
-        title="Шаг Sprint 5"
-        description="Экран мобильного сбора фото. Фото отправляются в backend endpoint /api/reports/:id/photo."
+        title="Мобильный сбор фото"
+        description="Фото отправляются в отчёт и сохраняются в папку Bitrix24 Диска."
       />
     </B24Card>
 

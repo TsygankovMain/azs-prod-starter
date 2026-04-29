@@ -362,54 +362,6 @@ const {data, error} = await $fetch('/api/protected-route', {
 curl http://localhost:8000/api/health
 ```
 
-### `/api/enum`
-
-Возвращает перечисление опций.
-
-- **Метод**: `GET`
-- **Параметры**: нет
-- **Ответ**: `string[]` - массив строк с опциями
-
-Пример ответа:
-
-```json
-[
-  "option 1",
-  "option 2", 
-  "option 3"
-]
-```
-
-Тестирование:
-
-```bash
-curl http://localhost:8000/api/enum
-```
-
-### `/api/list`
-
-Возвращает список элементов.
-
-- **Метод**: `GET`
-- **Параметры**: нет
-- **Ответ**: `string[]` - массив строк с элементами
-
-Пример ответа:
-
-```json
-[
-  "element 1",
-  "element 2",
-  "element 3"
-]
-```
-
-Тестирование:
-
-```bash
-curl http://localhost:8000/api/list
-```
-
 ### `/api/install`
 
 Вызывается из фронтенд клиента при установке приложения.
@@ -605,8 +557,8 @@ const apiStore = useApiStore()
 await apiStore.init($b24)
 
 // Запросы с автоматической передачей JWT
-const data = await apiStore.getList()
-const enumData = await apiStore.getEnum()
+const reports = await apiStore.getReports()
+const settings = await apiStore.getSettings()
 
 // Добавление нового метода в store
 // В app/stores/api.ts:

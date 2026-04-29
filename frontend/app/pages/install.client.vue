@@ -46,174 +46,6 @@ const steps = ref<Record<string, IStep>>({
     caption: t('page.install.step.init.caption'),
     action: makeInit
   },
-  demo: {
-    caption: t('page.install.step.demo.caption'),
-    action: async () => {
-      return sleepAction(1000)
-    }
-  },
-  // events: {
-  //   caption: t('page.install.step.events.caption'),
-  //   action: async () => {
-  //     /**
-  //      * Registering onAppInstall | onAppUninstall
-  //      */
-  //     await $b24.callBatch([
-  //       {
-  //         method: 'event.unbind',
-  //         params: {
-  //           event: 'ONAPPINSTALL',
-  //           handler: `${appUrl}/api/event/onAppInstall`
-  //         }
-  //       },
-  //       {
-  //         method: 'event.unbind',
-  //         params: {
-  //           event: 'ONAPPUNINSTALL',
-  //           handler: `${appUrl}/api/event/onAppUninstall`
-  //         }
-  //       },
-  //       {
-  //         method: 'event.bind',
-  //         params: {
-  //           event: 'ONAPPINSTALL',
-  //           handler: `${appUrl}/api/event/onAppInstall`
-  //         }
-  //       },
-  //       {
-  //         method: 'event.bind',
-  //         params: {
-  //           event: 'ONAPPUNINSTALL',
-  //           handler: `${appUrl}/api/event/onAppUninstall`
-  //         }
-  //       }
-  //     ])
-  //   }
-  // },
-  placement: {
-    caption: t('page.install.step.placement.caption'),
-    action: async () => {
-      const key = {
-        placement: 'CRM_DEAL_DETAIL_TAB',
-        handler: `${appUrl}/handler/placement-crm-deal-detail-tab`
-      }
-      const exists = (steps.value.init?.data?.placementList as { placement: string, handler: string }[]).some(item => item.placement === key.placement)
-
-      // Логируем для отладки
-      $logger.log('Placement registration', {
-        appUrl,
-        placement: key.placement,
-        handler: key.handler,
-        exists,
-        existingPlacements: steps.value.init?.data?.placementList
-      })
-
-      // Всегда делаем unbind если placement существует, затем bind с новым handler
-      if (exists) {
-        await $b24.callBatch([
-          {
-            method: 'placement.unbind',
-            params: {
-              PLACEMENT: key.placement
-            }
-          },
-          {
-            method: 'placement.bind',
-            params: {
-              PLACEMENT: key.placement,
-              HANDLER: key.handler,
-              TITLE: '[demo] Some Tab',
-              OPTIONS: {
-                errorHandlerUrl: `${appUrl}/handler/background-some-problem`
-              }
-            }
-          }
-        ])
-
-        return
-      }
-
-      await $b24.callBatch([
-        {
-          method: 'placement.bind',
-          params: {
-            PLACEMENT: key.placement,
-            HANDLER: key.handler,
-            TITLE: '[demo] Some Tab',
-            OPTIONS: {
-              errorHandlerUrl: `${appUrl}/handler/background-some-problem`
-            }
-          }
-        }
-      ])
-    }
-  },
-  userFields: {
-    caption: t('page.install.step.userFields.caption'),
-    action: async () => {
-      const typeId = `some_type_${import.meta.dev ? 'dev' : 'prod'}`
-
-      const exists = (steps.value.init?.data?.userFieldTypeList as { USER_TYPE_ID: string }[]).some(item => item.USER_TYPE_ID === typeId)
-
-      // Логируем для отладки
-      $logger.log('UserField registration', {
-        appUrl,
-        typeId,
-        handler: `${appUrl}/handler/uf.demo`,
-        exists,
-        existingUserFieldTypes: steps.value.init?.data?.userFieldTypeList
-      })
-
-      if (exists) {
-        await $b24.callBatch([
-          {
-            method: 'userfieldtype.update',
-            params: {
-              USER_TYPE_ID: typeId,
-              HANDLER: `${appUrl}/handler/uf.demo`,
-              TITLE: `[${import.meta.dev ? 'dev' : 'prod'}] Some Type`,
-              DESCRIPTION: `Some Description`,
-              OPTIONS: {
-                height: 105
-              }
-            }
-          }
-        ], false)
-
-        return
-      }
-
-      await $b24.callBatch([
-        {
-          method: 'userfieldtype.add',
-          params: {
-            USER_TYPE_ID: typeId,
-            HANDLER: `${appUrl}/handler/uf.demo`,
-            TITLE: `[${import.meta.dev ? 'dev' : 'prod'}] Some Type`,
-            DESCRIPTION: `Some Description`,
-            OPTIONS: {
-              height: 105
-            }
-          }
-        }
-      ], false)
-    }
-  },
-  // crm: {
-  //   caption: t('page.install.step.crm.caption'),
-  //   action: async () => {
-  //     /**
-  //      * Some actions for crm
-  //      */
-  //     if (steps.value.crm) {
-  //       steps.value.crm.data = {
-  //         par31: 'val31',
-  //         par32: 'val32'
-  //       }
-  //     }
-  //     return sleepAction()
-  //   }
-  // },
   serverSide: {
     caption: t('page.install.step.serverSide.caption'),
     action: async () => {
@@ -258,9 +90,7 @@ async function makeInit(): Promise<void> {
   if (steps.value.init) {
     const response = await $b24.callBatch({
       appInfo: { method: 'app.info' },
-      profile: { method: 'profile' },
-      userFieldTypeList: { method: 'userfieldtype.list' },
-      placementList: { method: 'placement.get' }
+      profile: { method: 'profile' }
     })
 
     steps.value.init.data = response.getData() as {
@@ -279,20 +109,6 @@ async function makeInit(): Promise<void> {
         LAST_NAME?: string
         NAME?: string
       }
-      userFieldTypeList: {
-        USER_TYPE_ID: string
-        HANDLER: string
-        TITLE: string
-        DESCRIPTION: string
-      }[]
-      placementList: {
-        placement: string
-        userId: number
-        handler: string
-        options: any
-        title: string
-        description: string
-      }[]
     }
   }
 }
@@ -328,7 +144,7 @@ onMounted(async () => {
       stepCode.value = key
       await step.action()
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     processErrorGlobal(error)
   }
 })
