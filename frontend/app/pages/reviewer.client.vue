@@ -16,6 +16,15 @@ type ReportRow = {
   updatedAt: string | null
 }
 
+type Summary = {
+  total: number
+  overdue: number
+  open: number
+  done: number
+  expired: number
+  failed: number
+}
+
 const PAGE_TITLE = 'Проверка отчётов АЗС'
 useHead({ title: PAGE_TITLE })
 
@@ -32,6 +41,14 @@ const manualError = ref('')
 const manualSuccess = ref('')
 const timeoutMessage = ref('')
 const reports = ref<ReportRow[]>([])
+const summary = ref<Summary>({
+  total: 0,
+  overdue: 0,
+  open: 0,
+  done: 0,
+  expired: 0,
+  failed: 0
+})
 
 const filters = reactive({
   dateFrom: '',
@@ -58,23 +75,48 @@ const statusColor = (status: string) => {
   return 'air-secondary'
 }
 
+const summaryCards = computed(() => ([
+  { key: 'total', label: 'Всего', value: summary.value.total, color: 'air-secondary' },
+  { key: 'open', label: 'В работе', value: summary.value.open, color: 'air-primary' },
+  { key: 'done', label: 'DONE', value: summary.value.done, color: 'air-primary-success' },
+  { key: 'expired', label: 'EXPIRED', value: summary.value.expired, color: 'air-primary-alert' },
+  { key: 'overdue', label: 'Просрочено', value: summary.value.overdue, color: 'air-primary-alert' }
+]))
+
+const loadSummary = async () => {
+  const response = await apiStore.getReportsSummary({
+    dateFrom: filters.dateFrom || undefined,
+    dateTo: filters.dateTo || undefined,
+    azsId: filters.azsId || undefined
+  })
+  summary.value = response.summary
+}
+
 const loadReports = async () => {
   isLoading.value = true
   loadError.value = ''
   try {
-    const response = await apiStore.getReports({
-      dateFrom: filters.dateFrom || undefined,
-      dateTo: filters.dateTo || undefined,
-      status: filters.status || undefined,
-      azsId: filters.azsId || undefined,
-      limit: filters.limit
-    })
-    reports.value = response.items
+    const [reportsResponse] = await Promise.all([
+      apiStore.getReports({
+        dateFrom: filters.dateFrom || undefined,
+        dateTo: filters.dateTo || undefined,
+        status: filters.status || undefined,
+        azsId: filters.azsId || undefined,
+        limit: filters.limit
+      }),
+      loadSummary()
+    ])
+    reports.value = reportsResponse.items
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : 'Не удалось загрузить отчёты'
   } finally {
     isLoading.value = false
   }
+}
+
+const applyStatusFilter = async (status: string) => {
+  filters.status = status
+  await loadReports()
 }
 
 const createManual = async () => {
@@ -153,6 +195,34 @@ onMounted(async () => {
       <template #footer>
         <B24Button color="air-primary" label="Применить фильтры" loading-auto @click="loadReports" />
       </template>
+    </B24Card>
+
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+      <B24Card
+        v-for="card in summaryCards"
+        :key="card.key"
+        variant="outline"
+        :b24ui="{ body: 'py-3 px-3' }"
+      >
+        <div class="flex items-center justify-between">
+          <ProseP class="text-[12px] text-gray-500">{{ card.label }}</ProseP>
+          <B24Badge :color="card.color">{{ card.value }}</B24Badge>
+        </div>
+      </B24Card>
+    </div>
+
+    <B24Card>
+      <template #header>
+        <ProseH3>Быстрые фильтры</ProseH3>
+      </template>
+      <div class="flex flex-wrap gap-2">
+        <B24Button size="xs" color="air-secondary" label="Все" loading-auto @click="applyStatusFilter('')" />
+        <B24Button size="xs" color="air-primary" label="new" loading-auto @click="applyStatusFilter('new')" />
+        <B24Button size="xs" color="air-primary" label="in_progress" loading-auto @click="applyStatusFilter('in_progress')" />
+        <B24Button size="xs" color="air-primary-success" label="done" loading-auto @click="applyStatusFilter('done')" />
+        <B24Button size="xs" color="air-primary-alert" label="expired" loading-auto @click="applyStatusFilter('expired')" />
+        <B24Button size="xs" color="air-primary-alert" label="failed" loading-auto @click="applyStatusFilter('failed')" />
+      </div>
     </B24Card>
 
     <B24Alert

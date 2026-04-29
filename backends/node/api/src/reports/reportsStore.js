@@ -154,6 +154,64 @@ const createPostgresStore = (pool) => ({
       [new Date(now), Math.min(Number(limit) || 200, 500)]
     );
     return result.rows.map(toViewModel);
+  },
+
+  async getSummary({ dateFrom, dateTo, azsId, now = new Date() } = {}) {
+    const where = [];
+    const params = [];
+    let idx = 1;
+
+    if (dateFrom) {
+      where.push(`created_at >= $${idx}`);
+      params.push(new Date(`${dateFrom}T00:00:00.000Z`));
+      idx += 1;
+    }
+    if (dateTo) {
+      where.push(`created_at <= $${idx}`);
+      params.push(new Date(`${dateTo}T23:59:59.999Z`));
+      idx += 1;
+    }
+    if (azsId) {
+      where.push(`azs_id = $${idx}`);
+      params.push(azsId);
+      idx += 1;
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const statusResult = await pool.query(
+      `SELECT status, COUNT(*)::int AS count FROM dispatch_log ${whereSql} GROUP BY status`,
+      params
+    );
+
+    const byStatus = {};
+    let total = 0;
+    for (const row of statusResult.rows) {
+      byStatus[row.status] = Number(row.count);
+      total += Number(row.count);
+    }
+
+    const overdueWhere = [...where, `deadline_at IS NOT NULL`, `deadline_at < $${idx}`, `status NOT IN ('done', 'expired')`];
+    const overdueParams = [...params, new Date(now)];
+    const overdueResult = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM dispatch_log WHERE ${overdueWhere.join(' AND ')}`,
+      overdueParams
+    );
+    const overdue = Number(overdueResult.rows[0]?.count || 0);
+
+    const open = Number(byStatus.new || 0) + Number(byStatus.in_progress || 0) + Number(byStatus.reserved || 0);
+    const done = Number(byStatus.done || 0);
+    const expired = Number(byStatus.expired || 0);
+    const failed = Number(byStatus.failed || 0);
+
+    return {
+      total,
+      overdue,
+      open,
+      done,
+      expired,
+      failed,
+      byStatus
+    };
   }
 });
 
@@ -289,6 +347,64 @@ const createMysqlStore = (pool) => ({
       [sqlDate, Math.min(Number(limit) || 200, 500)]
     );
     return rows.map(toViewModel);
+  },
+
+  async getSummary({ dateFrom, dateTo, azsId, now = new Date() } = {}) {
+    const where = [];
+    const params = [];
+
+    if (dateFrom) {
+      where.push('created_at >= ?');
+      params.push(`${dateFrom} 00:00:00`);
+    }
+    if (dateTo) {
+      where.push('created_at <= ?');
+      params.push(`${dateTo} 23:59:59`);
+    }
+    if (azsId) {
+      where.push('azs_id = ?');
+      params.push(azsId);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const [statusRows] = await pool.execute(
+      `SELECT status, COUNT(*) AS count FROM dispatch_log ${whereSql} GROUP BY status`,
+      params
+    );
+
+    const byStatus = {};
+    let total = 0;
+    for (const row of statusRows) {
+      byStatus[row.status] = Number(row.count);
+      total += Number(row.count);
+    }
+
+    const dt = new Date(now);
+    const nowSql = Number.isNaN(dt.getTime())
+      ? new Date().toISOString().slice(0, 19).replace('T', ' ')
+      : dt.toISOString().slice(0, 19).replace('T', ' ');
+    const overdueWhere = [...where, 'deadline_at IS NOT NULL', 'deadline_at < ?', "status NOT IN ('done', 'expired')"];
+    const overdueParams = [...params, nowSql];
+    const [overdueRows] = await pool.execute(
+      `SELECT COUNT(*) AS count FROM dispatch_log WHERE ${overdueWhere.join(' AND ')}`,
+      overdueParams
+    );
+    const overdue = Number(overdueRows[0]?.count || 0);
+
+    const open = Number(byStatus.new || 0) + Number(byStatus.in_progress || 0) + Number(byStatus.reserved || 0);
+    const done = Number(byStatus.done || 0);
+    const expired = Number(byStatus.expired || 0);
+    const failed = Number(byStatus.failed || 0);
+
+    return {
+      total,
+      overdue,
+      open,
+      done,
+      expired,
+      failed,
+      byStatus
+    };
   }
 });
 

@@ -261,3 +261,29 @@ Next step:
 Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
+
+### 2026-04-29 09:22:22 MSK
+
+What happened:
+- Implemented Sprint 8 reviewer dashboard analytics improvements.
+- Added backend endpoint `GET /api/reports/summary` with filters by date range and AZS id.
+- Added aggregated counters in reports store: `total`, `open`, `done`, `expired`, `failed`, `overdue`, and `byStatus`.
+- Updated reviewer screen with KPI cards and quick status filter buttons.
+- Added frontend API method `getReportsSummary` and parallel loading of list + summary.
+- Verified changed scope with backend tests and frontend eslint checks.
+
+Product impact:
+- Reviewer now sees operational status snapshot immediately on one screen.
+- Filtering and decision-making are faster due to quick status toggles and overdue visibility.
+
+What to check:
+- Open `/reviewer` and verify KPI cards update with date/AZS filters.
+- Test quick filters (`new`, `in_progress`, `done`, `expired`, `failed`) and table refresh.
+- Check `/api/reports/summary` returns expected structure for current data.
+
+Next step:
+- Continue Sprint 9: manual trigger UX hardening and idempotency checks against auto slots.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.

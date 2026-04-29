@@ -103,6 +103,23 @@ export const createReportsRouter = ({
     }
   });
 
+  router.get('/summary', async (req, res) => {
+    try {
+      const summary = await reportsStore.getSummary({
+        dateFrom: normalizeDateFilter(req.query.dateFrom),
+        dateTo: normalizeDateFilter(req.query.dateTo),
+        azsId: String(req.query.azsId || '').trim()
+      });
+
+      return res.json({ summary });
+    } catch (error) {
+      return res.status(500).json({
+        error: 'reports_summary_failed',
+        message: error.message
+      });
+    }
+  });
+
   router.get('/:id', async (req, res) => {
     try {
       const id = Number(req.params.id);

@@ -18,6 +18,16 @@ type ReportRow = {
   updatedAt: string | null
 }
 
+type ReportsSummary = {
+  total: number
+  overdue: number
+  open: number
+  done: number
+  expired: number
+  failed: number
+  byStatus: Record<string, number>
+}
+
 export const useApiStore = defineStore(
   'api',
   () => {
@@ -103,6 +113,19 @@ export const useApiStore = defineStore(
       limit?: number
     } = {}): Promise<{ items: ReportRow[]; total: number }> => {
       return await $api('/api/reports', {
+        query: filters,
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
+    const getReportsSummary = async (filters: {
+      dateFrom?: string
+      dateTo?: string
+      azsId?: string
+    } = {}): Promise<{ summary: ReportsSummary }> => {
+      return await $api('/api/reports/summary', {
         query: filters,
         headers: {
           Authorization: `Bearer ${tokenJWT.value}`
@@ -242,6 +265,7 @@ export const useApiStore = defineStore(
       getList,
       getSettings,
       getReports,
+      getReportsSummary,
       getReportById,
       postInstall,
       createManualReport,
