@@ -129,6 +129,32 @@ Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
 
+### 2026-04-29 15:51:45 MSK
+
+What happened:
+- Fixed mobile photo upload `400 Bad Request`.
+- Root cause found in API logs: multipart camera upload was sent with global `Content-Type: application/json`, so Express JSON parser tried to parse `------WebKit...` as JSON before `multer`.
+- Removed global JSON header from Nuxt API store.
+- Changed JSON requests to send object bodies so `$fetch` sets JSON headers only for JSON requests.
+- Kept photo upload as `FormData` with only Authorization header.
+- Improved admin screen error display to show backend `message/error` when available.
+
+Product impact:
+- Camera photo upload can reach backend `multer` as multipart instead of being rejected before route handling.
+- Future upload errors should be readable on the phone, not only `400 Bad Request`.
+
+What to check:
+- Reopen `/admin/1` in Bitrix24 mobile WebView.
+- Open camera, take a photo, press upload.
+- If a new error appears, it should now show the actual backend reason.
+
+Next step:
+- Retest mobile upload on the same report and verify Disk upload plus report status transition.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
 ### 2026-04-29 15:43:29 MSK
 
 What happened:

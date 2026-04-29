@@ -216,7 +216,9 @@ const uploadSlotFile = async (slot: SlotState, file: File) => {
   } catch (error) {
     slot.done = false
     slot.fileName = ''
-    slot.error = error instanceof Error ? error.message : 'Не удалось загрузить фото'
+    const responseMessage = (error as { data?: { message?: string; error?: string } })?.data?.message
+      || (error as { data?: { message?: string; error?: string } })?.data?.error
+    slot.error = responseMessage || (error instanceof Error ? error.message : 'Не удалось загрузить фото')
     saveError.value = slot.error
   } finally {
     slot.uploading = false

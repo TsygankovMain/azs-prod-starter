@@ -42,10 +42,7 @@ export const useApiStore = defineStore(
     })
 
     const $api = $fetch.create({
-      baseURL: apiUrl,
-      headers: {
-        'Content-Type': 'application/json'
-      }
+      baseURL: apiUrl
     })
 
     // Health check
@@ -81,7 +78,7 @@ export const useApiStore = defineStore(
     }> => {
       return await $api('/api/settings', {
         method: 'PUT',
-        body: JSON.stringify({ settings }),
+        body: { settings },
         headers: {
           Authorization: `Bearer ${tokenJWT.value}`
         }
@@ -134,7 +131,7 @@ export const useApiStore = defineStore(
     }> => {
       return await $api('/api/reports/manual', {
         method: 'POST',
-        body: JSON.stringify({ candidate }),
+        body: { candidate },
         headers: {
           Authorization: `Bearer ${tokenJWT.value}`
         }
@@ -168,7 +165,7 @@ export const useApiStore = defineStore(
     }> => {
       return await $api('/api/jobs/timeout', {
         method: 'POST',
-        body: JSON.stringify({ limit }),
+        body: { limit },
         headers: {
           Authorization: `Bearer ${tokenJWT.value}`
         }
@@ -178,14 +175,14 @@ export const useApiStore = defineStore(
     const postInstall = async (data: JsonObject): Promise<JsonObject> => {
       return await $api('/api/install', {
         method: 'POST',
-        body: JSON.stringify(data),
+        body: data,
       })
     }
 
     const getToken = async (data: JsonObject): Promise<{ token: string }> => {
       return await $api('/api/getToken', {
         method: 'POST',
-        body: JSON.stringify(data),
+        body: data,
       })
     }
 
