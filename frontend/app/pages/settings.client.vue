@@ -175,15 +175,15 @@ function makeEmptySettings(): SettingsTree {
         done: '',
         expired: ''
       },
-      timeoutMinutes: 0,
-      dispatchJitterMinutes: 0,
+      timeoutMinutes: 60,
+      dispatchJitterMinutes: 15,
       dispatchTimes: []
     },
     disk: {
       rootFolderId: 0,
       folderNameTemplate: ''
     },
-    timezone: ''
+    timezone: 'Europe/Moscow'
   }
 }
 
@@ -219,6 +219,47 @@ function deepMerge<T>(base: T, override: JsonObject = {}): T {
   return result
 }
 
+function toPositiveInt(value: unknown, fallback: number, min = 0): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) {
+    return fallback
+  }
+  return Math.max(min, Math.trunc(parsed))
+}
+
+function isFetchErrorLike(value: unknown): value is { data?: unknown, message?: string } {
+  return Boolean(value) && typeof value === 'object'
+}
+
+function toErrorMessage(error: unknown, fallback = 'Неизвестная ошибка'): string {
+  if (isFetchErrorLike(error)) {
+    const data = error.data
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      const payload = data as Record<string, unknown>
+      const message = String(payload.message || '').trim()
+      const details = Array.isArray(payload.details)
+        ? payload.details.map((item) => String(item || '').trim()).filter(Boolean)
+        : []
+
+      const combined = [message, ...details].filter(Boolean).join('\n')
+      if (combined) {
+        return combined
+      }
+    }
+
+    const message = String(error.message || '').trim()
+    if (message) {
+      return message
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim()
+  }
+
+  return fallback
+}
+
 function normalizeSettings(
   settings: JsonObject = {},
   defaults: JsonObject = {}
@@ -231,12 +272,12 @@ function normalizeSettings(
   normalized.azs.entityTypeId = Number(normalized.azs.entityTypeId || 0)
   normalized.photoType.entityTypeId = Number(normalized.photoType.entityTypeId || 0)
   normalized.report.entityTypeId = Number(normalized.report.entityTypeId || 0)
-  normalized.report.timeoutMinutes = Number(normalized.report.timeoutMinutes || 0)
-  normalized.report.dispatchJitterMinutes = Number(normalized.report.dispatchJitterMinutes || 0)
+  normalized.report.timeoutMinutes = toPositiveInt(normalized.report.timeoutMinutes, 60, 1)
+  normalized.report.dispatchJitterMinutes = toPositiveInt(normalized.report.dispatchJitterMinutes, 15, 0)
   normalized.report.dispatchTimes = Array.isArray(normalized.report.dispatchTimes)
     ? normalized.report.dispatchTimes.map((item) => String(item || '').trim()).filter(Boolean)
     : []
-  normalized.disk.rootFolderId = Number(normalized.disk.rootFolderId || 0)
+  normalized.disk.rootFolderId = toPositiveInt(normalized.disk.rootFolderId, 0, 0)
 
   return normalized
 }
@@ -301,8 +342,8 @@ function readSettings(): SettingsTree {
         done: form.report.stages.done,
         expired: form.report.stages.expired
       },
-      timeoutMinutes: Number(form.report.timeoutMinutes || 0),
-      dispatchJitterMinutes: Number(form.report.dispatchJitterMinutes || 0),
+      timeoutMinutes: toPositiveInt(form.report.timeoutMinutes, 60, 1),
+      dispatchJitterMinutes: toPositiveInt(form.report.dispatchJitterMinutes, 15, 0),
       dispatchTimes: [...new Set(form.report.dispatchTimes.map((item) => String(item || '').trim()).filter(Boolean))].sort()
     },
     disk: {
@@ -580,6 +621,11 @@ async function saveSettings() {
     return
   }
 
+  if (!String(form.report.fields.folderId || '').trim()) {
+    saveError.value = 'Сопоставьте поле "Папка Диска" в разделе "Отчёт".'
+    return
+  }
+
   isSaving.value = true
   saveError.value = ''
   saveSuccess.value = ''
@@ -596,7 +642,7 @@ async function saveSettings() {
     saveSuccess.value = 'Настройки сохранены'
     $logger.info('Settings saved', response)
   } catch (error) {
-    saveError.value = error instanceof Error ? error.message : String(error)
+    saveError.value = toErrorMessage(error, 'Не удалось сохранить настройки')
     $logger.error('Settings save failed', error)
   } finally {
     isSaving.value = false
