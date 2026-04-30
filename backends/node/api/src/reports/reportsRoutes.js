@@ -41,6 +41,18 @@ const normalizeLimit = (value) => {
   return Math.min(Math.floor(parsed), 500);
 };
 
+const normalizeAzsIds = (value) => {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[,\n;]+/g);
+
+  return [...new Set(
+    source
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  )];
+};
+
 const normalizePhotoCode = (value) => String(value || '').trim().toLowerCase();
 
 const parseCrmItemId = (value) => {
@@ -219,7 +231,7 @@ export const createReportsRouter = ({
         dateFrom: normalizeDateFilter(req.query.dateFrom),
         dateTo: normalizeDateFilter(req.query.dateTo),
         status: String(req.query.status || '').trim(),
-        azsId: String(req.query.azsId || '').trim(),
+        azsIds: normalizeAzsIds(req.query.azsId),
         limit: normalizeLimit(req.query.limit)
       });
 
@@ -240,7 +252,7 @@ export const createReportsRouter = ({
       const summary = await reportsStore.getSummary({
         dateFrom: normalizeDateFilter(req.query.dateFrom),
         dateTo: normalizeDateFilter(req.query.dateTo),
-        azsId: String(req.query.azsId || '').trim()
+        azsIds: normalizeAzsIds(req.query.azsId)
       });
 
       return res.json({ summary });

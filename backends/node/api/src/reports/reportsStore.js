@@ -48,7 +48,7 @@ const createPostgresStore = (pool) => ({
     `);
   },
 
-  async list({ dateFrom, dateTo, status, azsId, limit = 200 } = {}) {
+  async list({ dateFrom, dateTo, status, azsId, azsIds = [], limit = 200 } = {}) {
     const where = [];
     const params = [];
     let idx = 1;
@@ -68,9 +68,20 @@ const createPostgresStore = (pool) => ({
       params.push(status);
       idx += 1;
     }
-    if (azsId) {
+    const normalizedAzsIds = Array.isArray(azsIds)
+      ? azsIds.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+    const singleAzsId = String(azsId || '').trim();
+    const selectedAzsIds = normalizedAzsIds.length > 0
+      ? normalizedAzsIds
+      : (singleAzsId ? [singleAzsId] : []);
+    if (selectedAzsIds.length === 1) {
       where.push(`azs_id = $${idx}`);
-      params.push(azsId);
+      params.push(selectedAzsIds[0]);
+      idx += 1;
+    } else if (selectedAzsIds.length > 1) {
+      where.push(`azs_id = ANY($${idx})`);
+      params.push(selectedAzsIds);
       idx += 1;
     }
 
@@ -156,7 +167,7 @@ const createPostgresStore = (pool) => ({
     return result.rows.map(toViewModel);
   },
 
-  async getSummary({ dateFrom, dateTo, azsId, now = new Date() } = {}) {
+  async getSummary({ dateFrom, dateTo, azsId, azsIds = [], now = new Date() } = {}) {
     const where = [];
     const params = [];
     let idx = 1;
@@ -171,9 +182,20 @@ const createPostgresStore = (pool) => ({
       params.push(new Date(`${dateTo}T23:59:59.999Z`));
       idx += 1;
     }
-    if (azsId) {
+    const normalizedAzsIds = Array.isArray(azsIds)
+      ? azsIds.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+    const singleAzsId = String(azsId || '').trim();
+    const selectedAzsIds = normalizedAzsIds.length > 0
+      ? normalizedAzsIds
+      : (singleAzsId ? [singleAzsId] : []);
+    if (selectedAzsIds.length === 1) {
       where.push(`azs_id = $${idx}`);
-      params.push(azsId);
+      params.push(selectedAzsIds[0]);
+      idx += 1;
+    } else if (selectedAzsIds.length > 1) {
+      where.push(`azs_id = ANY($${idx})`);
+      params.push(selectedAzsIds);
       idx += 1;
     }
 
@@ -235,7 +257,7 @@ const createMysqlStore = (pool) => ({
     `);
   },
 
-  async list({ dateFrom, dateTo, status, azsId, limit = 200 } = {}) {
+  async list({ dateFrom, dateTo, status, azsId, azsIds = [], limit = 200 } = {}) {
     const where = [];
     const params = [];
 
@@ -251,9 +273,19 @@ const createMysqlStore = (pool) => ({
       where.push('status = ?');
       params.push(status);
     }
-    if (azsId) {
+    const normalizedAzsIds = Array.isArray(azsIds)
+      ? azsIds.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+    const singleAzsId = String(azsId || '').trim();
+    const selectedAzsIds = normalizedAzsIds.length > 0
+      ? normalizedAzsIds
+      : (singleAzsId ? [singleAzsId] : []);
+    if (selectedAzsIds.length === 1) {
       where.push('azs_id = ?');
-      params.push(azsId);
+      params.push(selectedAzsIds[0]);
+    } else if (selectedAzsIds.length > 1) {
+      where.push(`azs_id IN (${selectedAzsIds.map(() => '?').join(',')})`);
+      params.push(...selectedAzsIds);
     }
 
     params.push(Math.min(Number(limit) || 200, 500));
@@ -349,7 +381,7 @@ const createMysqlStore = (pool) => ({
     return rows.map(toViewModel);
   },
 
-  async getSummary({ dateFrom, dateTo, azsId, now = new Date() } = {}) {
+  async getSummary({ dateFrom, dateTo, azsId, azsIds = [], now = new Date() } = {}) {
     const where = [];
     const params = [];
 
@@ -361,9 +393,19 @@ const createMysqlStore = (pool) => ({
       where.push('created_at <= ?');
       params.push(`${dateTo} 23:59:59`);
     }
-    if (azsId) {
+    const normalizedAzsIds = Array.isArray(azsIds)
+      ? azsIds.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+    const singleAzsId = String(azsId || '').trim();
+    const selectedAzsIds = normalizedAzsIds.length > 0
+      ? normalizedAzsIds
+      : (singleAzsId ? [singleAzsId] : []);
+    if (selectedAzsIds.length === 1) {
       where.push('azs_id = ?');
-      params.push(azsId);
+      params.push(selectedAzsIds[0]);
+    } else if (selectedAzsIds.length > 1) {
+      where.push(`azs_id IN (${selectedAzsIds.map(() => '?').join(',')})`);
+      params.push(...selectedAzsIds);
     }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';

@@ -25,6 +25,11 @@ type Summary = {
   failed: number
 }
 
+type AzsOption = {
+  value: string
+  label: string
+}
+
 const PAGE_TITLE = 'Проверка отчётов АЗС'
 useHead({ title: PAGE_TITLE })
 
@@ -42,6 +47,7 @@ const manualError = ref('')
 const manualSuccess = ref('')
 const timeoutMessage = ref('')
 const reports = ref<ReportRow[]>([])
+const azsOptions = ref<AzsOption[]>([])
 const summary = ref<Summary>({
   total: 0,
   overdue: 0,
@@ -55,7 +61,7 @@ const filters = reactive({
   dateFrom: '',
   dateTo: '',
   status: '',
-  azsId: '',
+  azsIds: [] as string[],
   limit: 100
 })
 
@@ -92,11 +98,86 @@ const summaryCards = computed(() => ([
   { key: 'overdue', label: 'Просрочено', value: summary.value.overdue, color: 'air-primary-alert' }
 ]))
 
+const azsQuery = computed(() => {
+  const ids = Array.isArray(filters.azsIds)
+    ? filters.azsIds.map((item) => String(item || '').trim()).filter(Boolean)
+    : []
+  return ids.length > 0 ? ids.join(',') : undefined
+})
+
+const getB24Result = (data: unknown): unknown => {
+  const response = data as { getData?: () => unknown }
+  const payload = typeof response?.getData === 'function' ? response.getData() : data
+  return (payload as { result?: unknown })?.result ?? payload
+}
+
+const callB24 = async (method: string, params: Record<string, unknown> = {}) => {
+  if (!$b24) {
+    throw new Error('Bitrix24 frame is not initialized')
+  }
+  const response = await $b24.callMethod(method, params)
+  return getB24Result(response)
+}
+
+const toAzsOption = (row: Record<string, unknown>): AzsOption | null => {
+  const id = String(row.id ?? row.ID ?? '').trim()
+  if (!id) {
+    return null
+  }
+  const title = String(row.title ?? row.TITLE ?? `АЗС ${id}`).trim()
+  return {
+    value: id,
+    label: `${title} (${id})`
+  }
+}
+
+const loadAzsOptions = async () => {
+  try {
+    const settingsResponse = await apiStore.getSettings()
+    const settings = (settingsResponse.settings ?? {}) as Record<string, unknown>
+    const azs = (settings.azs ?? {}) as Record<string, unknown>
+    const entityTypeId = Number(azs.entityTypeId || 0)
+    if (!Number.isFinite(entityTypeId) || entityTypeId <= 0) {
+      azsOptions.value = []
+      return
+    }
+
+    const items: Record<string, unknown>[] = []
+    let start = 0
+    while (start >= 0) {
+      const result = await callB24('crm.item.list', {
+        entityTypeId,
+        select: ['id', 'title'],
+        order: { id: 'ASC' },
+        start,
+        useOriginalUfNames: 'N'
+      })
+      const pageItems = Array.isArray((result as { items?: unknown[] })?.items)
+        ? (result as { items: unknown[] }).items
+        : (Array.isArray(result) ? result : [])
+      items.push(...pageItems.filter((row) => Boolean(row) && typeof row === 'object') as Record<string, unknown>[])
+      const next = Number((result as { next?: unknown })?.next ?? -1)
+      if (!Number.isFinite(next) || next < 0 || pageItems.length === 0) {
+        break
+      }
+      start = next
+    }
+
+    azsOptions.value = items
+      .map(toAzsOption)
+      .filter((item): item is AzsOption => Boolean(item))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ru'))
+  } catch (error) {
+    console.warn('Failed to load AZS options for reviewer filter', error)
+    azsOptions.value = []
+  }
+}
+
 const loadSummary = async () => {
   const response = await apiStore.getReportsSummary({
     dateFrom: filters.dateFrom || undefined,
     dateTo: filters.dateTo || undefined,
-    azsId: filters.azsId || undefined
+    azsId: azsQuery.value
   })
   summary.value = response.summary
 }
@@ -110,7 +191,7 @@ const loadReports = async () => {
         dateFrom: filters.dateFrom || undefined,
         dateTo: filters.dateTo || undefined,
         status: filters.status || undefined,
-        azsId: filters.azsId || undefined,
+        azsId: azsQuery.value,
         limit: filters.limit
       }),
       loadSummary()
@@ -177,6 +258,7 @@ onMounted(async () => {
     manualCandidate.slotDate = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
     manualCandidate.slotTime = `${to2(now.getUTCHours())}:${to2(now.getUTCMinutes())}`
     await $b24.parent.setTitle(PAGE_TITLE)
+    await loadAzsOptions()
     await loadReports()
   } catch (error) {
     processErrorGlobal(error)
@@ -208,8 +290,20 @@ onMounted(async () => {
         <B24FormField label="Статус">
           <B24Input v-model="filters.status" placeholder="done/reserved/failed" />
         </B24FormField>
-        <B24FormField label="АЗС ID">
-          <B24Input v-model="filters.azsId" placeholder="azs-17" />
+        <B24FormField label="АЗС (множественный выбор)">
+          <select
+            v-model="filters.azsIds"
+            multiple
+            class="h-[92px] w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+          >
+            <option
+              v-for="item in azsOptions"
+              :key="item.value"
+              :value="item.value"
+            >
+              {{ item.label }}
+            </option>
+          </select>
         </B24FormField>
         <B24FormField label="Лимит">
           <B24InputNumber v-model="filters.limit" :min="1" :max="500" />

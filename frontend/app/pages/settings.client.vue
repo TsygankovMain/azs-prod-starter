@@ -181,7 +181,7 @@ function makeEmptySettings(): SettingsTree {
     },
     disk: {
       rootFolderId: 0,
-      folderNameTemplate: ''
+      folderNameTemplate: '{yyyy-mm}/{dd}/{azs}'
     },
     timezone: 'Europe/Moscow'
   }
@@ -241,7 +241,21 @@ function toErrorMessage(error: unknown, fallback = 'Неизвестная ош�
         ? payload.details.map((item) => String(item || '').trim()).filter(Boolean)
         : []
 
-      const combined = [message, ...details].filter(Boolean).join('\n')
+      const unique = new Set<string>()
+      if (message) {
+        unique.add(message)
+      }
+      for (const detail of details) {
+        if (!detail) {
+          continue
+        }
+        if (message && message.includes(detail)) {
+          continue
+        }
+        unique.add(detail)
+      }
+
+      const combined = [...unique].join('\n')
       if (combined) {
         return combined
       }
@@ -278,6 +292,7 @@ function normalizeSettings(
     ? normalized.report.dispatchTimes.map((item) => String(item || '').trim()).filter(Boolean)
     : []
   normalized.disk.rootFolderId = toPositiveInt(normalized.disk.rootFolderId, 0, 0)
+  normalized.disk.folderNameTemplate = String(normalized.disk.folderNameTemplate || '').trim() || '{yyyy-mm}/{dd}/{azs}'
 
   return normalized
 }
@@ -348,7 +363,7 @@ function readSettings(): SettingsTree {
     },
     disk: {
       rootFolderId: Number(form.disk.rootFolderId || 0),
-      folderNameTemplate: form.disk.folderNameTemplate
+      folderNameTemplate: String(form.disk.folderNameTemplate || '').trim() || '{yyyy-mm}/{dd}/{azs}'
     },
     timezone: form.timezone
   })
