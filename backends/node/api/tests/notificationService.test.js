@@ -48,8 +48,12 @@ test('notifyDispatch sends message via bot channel when mode=bot', async () => {
   assert.equal(botCalls[0].method, 'imbot.v2.Chat.Message.send');
   assert.equal(botCalls[0].payload.botId, 77);
   assert.equal(botCalls[0].payload.dialogId, '11');
-  assert.match(botCalls[0].payload.fields.message, /Открыть отчёт:/);
-  assert.match(botCalls[0].payload.fields.message, /marketplace\/view\/local\.69f0c4a7dc8632\.03848830/);
+  assert.doesNotMatch(botCalls[0].payload.fields.message, /Открыть отчёт:/);
+  assert.equal(botCalls[0].payload.fields.keyboard.BUTTONS[0].TEXT, 'Открыть отчёт');
+  assert.match(
+    botCalls[0].payload.fields.keyboard.BUTTONS[0].LINK,
+    /marketplace\/view\/local\.69f0c4a7dc8632\.03848830/
+  );
 });
 
 test('notifyDispatch falls back to notify channel when bot send fails', async () => {

@@ -5,6 +5,30 @@ const normalizeMode = (value) => {
   return mode === 'bot' ? 'bot' : 'notify';
 };
 
+const resolveOpenReportLink = (links) => {
+  if (links.restAppUriLink) {
+    return links.restAppUriLink;
+  }
+  if (links.publicReportUrl) {
+    return links.publicReportUrl;
+  }
+  return links.appPath;
+};
+
+const buildOpenReportKeyboard = (links) => {
+  const link = resolveOpenReportLink(links);
+  return {
+    BUTTONS: [
+      {
+        TEXT: 'Открыть отчёт',
+        LINK: link,
+        DISPLAY: 'BLOCK',
+        BG_COLOR_TOKEN: 'primary'
+      }
+    ]
+  };
+};
+
 const buildDispatchMessage = ({ azsId, slotHHmm, deadlineAt, links }) => {
   const lines = [
     'Порядок на АЗС',
@@ -12,14 +36,6 @@ const buildDispatchMessage = ({ azsId, slotHHmm, deadlineAt, links }) => {
     `Слот: ${slotHHmm}.`,
     `Дедлайн: ${new Date(deadlineAt).toISOString()}.`
   ];
-
-  if (links.restAppUriLink) {
-    lines.push(`Открыть отчёт: ${links.restAppUriLink}`);
-  } else if (links.publicReportUrl) {
-    lines.push(`Открыть отчёт: ${links.publicReportUrl}`);
-  } else {
-    lines.push(`Открыть отчёт: ${links.appPath}`);
-  }
 
   return lines.join('\n');
 };
@@ -29,18 +45,10 @@ const buildDoneMessage = ({ azsId, links }) => {
     `Отчёт АЗС ${String(azsId || '')} завершён и готов к проверке.`
   ];
 
-  if (links.restAppUriLink) {
-    lines.push(`Открыть отчёт: ${links.restAppUriLink}`);
-  } else if (links.publicReportUrl) {
-    lines.push(`Открыть отчёт: ${links.publicReportUrl}`);
-  } else {
-    lines.push(`Открыть отчёт: ${links.appPath}`);
-  }
-
   return lines.join('\n');
 };
 
-const sendViaBot = async ({ bitrixClient, botId, userId, message }) => {
+const sendViaBot = async ({ bitrixClient, botId, userId, message, keyboard = null }) => {
   if (typeof bitrixClient?.callMethod !== 'function') {
     throw new Error('bitrixClient.callMethod is required for bot mode');
   }
@@ -50,6 +58,7 @@ const sendViaBot = async ({ bitrixClient, botId, userId, message }) => {
     dialogId: String(Number(userId)),
     fields: {
       message,
+      ...(keyboard ? { keyboard } : {}),
       urlPreview: true
     }
   });
@@ -81,7 +90,7 @@ export const createNotificationService = ({
   const resolvedBotId = Number(botId);
   let currentBotId = Number.isFinite(resolvedBotId) ? resolvedBotId : 0;
 
-  const notify = async ({ userId, message, fallbackToNotify = true }) => {
+  const notify = async ({ userId, message, keyboard = null, fallbackToNotify = true }) => {
     if (!Number(userId)) {
       throw new Error('notify requires userId');
     }
@@ -98,7 +107,8 @@ export const createNotificationService = ({
           bitrixClient,
           botId: currentBotId,
           userId,
-          message
+          message,
+          keyboard
         });
         return {
           channel: 'bot',
@@ -139,7 +149,11 @@ export const createNotificationService = ({
       deadlineAt,
       links
     });
-    return notify({ userId, message });
+    return notify({
+      userId,
+      message,
+      keyboard: buildOpenReportKeyboard(links)
+    });
   };
 
   const notifyReportDone = async ({
@@ -153,7 +167,11 @@ export const createNotificationService = ({
       publicBaseUrl
     });
     const message = buildDoneMessage({ azsId, links });
-    return notify({ userId, message });
+    return notify({
+      userId,
+      message,
+      keyboard: buildOpenReportKeyboard(links)
+    });
   };
 
   const notifyReportExpired = async ({ userId, reportId, azsId, slotKey }) => {
@@ -165,10 +183,11 @@ export const createNotificationService = ({
     const lines = [
       `Отчёт АЗС ${String(azsId || '')} просрочен (slot ${String(slotKey || '-')}).`
     ];
-    if (links.restAppUriLink) {
-      lines.push(`Открыть отчёт: ${links.restAppUriLink}`);
-    }
-    return notify({ userId, message: lines.join('\n') });
+    return notify({
+      userId,
+      message: lines.join('\n'),
+      keyboard: buildOpenReportKeyboard(links)
+    });
   };
 
   return {
