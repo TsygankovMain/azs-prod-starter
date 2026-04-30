@@ -17,6 +17,7 @@ import createReportsStore from './src/reports/reportsStore.js';
 import createReportsRouter from './src/reports/reportsRoutes.js';
 import createNotificationService from './src/notifications/notificationService.js';
 import createBotRegistryService from './src/notifications/botRegistryService.js';
+import { createAuthContextStore } from './src/auth/authContextStore.js';
 
 const app = express();
 app.use(cors());
@@ -49,6 +50,7 @@ const reportsStore = createReportsStore({ pool, dbType });
 const bitrixClient = createBitrixRestClient();
 const notificationService = createNotificationService({ bitrixClient });
 const botRegistryService = createBotRegistryService({ bitrixClient });
+const authContextStore = createAuthContextStore();
 const timeoutWatcher = createTimeoutWatcher({
   reportsStore,
   bitrixClient,
@@ -101,6 +103,15 @@ app.post('/api/install', async (req, res) => {
     });
   } else if (authId && typeof bitrixClient.setAuthId === 'function') {
     bitrixClient.setAuthId(authId);
+  }
+  if (authId || refreshToken || oauthDomain) {
+    await authContextStore.write({
+      authId,
+      refreshToken,
+      domain: oauthDomain
+    }).catch((error) => {
+      console.error('Failed to persist auth context on /api/install', error);
+    });
   }
 
   const payload = {
@@ -162,6 +173,15 @@ app.post('/api/getToken', async (req, res) => {
   } else if (authId && typeof bitrixClient.setAuthId === 'function') {
     bitrixClient.setAuthId(authId);
   }
+  if (authId || refreshToken || oauthDomain) {
+    await authContextStore.write({
+      authId,
+      refreshToken,
+      domain: oauthDomain
+    }).catch((error) => {
+      console.error('Failed to persist auth context on /api/getToken', error);
+    });
+  }
 
   const userId = Number(req.body?.user_id || 0) || 0;
   const appInfo = {
@@ -180,6 +200,22 @@ const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+authContextStore.read()
+  .then((saved) => {
+    if (!saved || typeof bitrixClient.setAuthContext !== 'function') {
+      return;
+    }
+    bitrixClient.setAuthContext({
+      authId: saved.authId,
+      refreshToken: saved.refreshToken,
+      domain: saved.domain
+    });
+    console.log('Loaded persisted Bitrix auth context');
+  })
+  .catch((error) => {
+    console.error('Failed to load persisted auth context', error);
+  });
 
 dispatchLogStore.ensureSchema()
   .then(() => {
