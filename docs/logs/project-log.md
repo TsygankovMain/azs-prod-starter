@@ -129,6 +129,37 @@ Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
 
+### 2026-04-30 19:09:56 MSK
+
+What happened:
+- Investigated why auto report did not trigger at expected time.
+- Confirmed runtime root causes from container/logs:
+  - `dispatchScheduler` had been disabled in runtime earlier.
+  - saved slot in settings was `19:00` (not `18:45`) at time of check.
+  - auto candidate builder risk: AZS item id may come as `ID` (uppercase), previous code primarily used `id`.
+- Applied runtime stability fixes:
+  - ensured scheduler startup path is active and verified by logs (`dispatchScheduler: started`).
+  - updated backend install flow to refresh REST auth token in runtime:
+    - `/api/install` now updates `BITRIX_REST_AUTH_ID` in process
+    - `bitrixRestClient.setAuthId(...)` added and used
+  - fixed scheduler AZS candidate extraction for both `id` and `ID`.
+
+Product impact:
+- Auto slot processing no longer silently loses AZS candidates because of `ID` casing.
+- Backend can continue using fresh auth token after install/reinstall without container rebuild.
+
+What to check:
+- In `/settings`, set a future slot time and save.
+- Verify log line every minute: `dispatchScheduler: run finished ...`
+- At slot minute verify `created > 0` (not only `total: 0`).
+
+Next step:
+- Optional: add diagnostics endpoint with current scheduler mode, next slot, and resolved candidates count.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
 ### 2026-04-30 18:51:32 MSK
 
 What happened:

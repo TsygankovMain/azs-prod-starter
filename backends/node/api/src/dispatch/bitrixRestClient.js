@@ -34,7 +34,7 @@ export const createBitrixRestClient = ({
 } = {}) => {
   const base = normalizeEndpoint(endpoint);
   const isConfigured = Boolean(base);
-  const restAuthId = String(authId || '').trim();
+  let restAuthId = String(authId || '').trim();
 
   const ensureConfigured = () => {
     if (!isConfigured) {
@@ -78,6 +78,10 @@ export const createBitrixRestClient = ({
     isConfigured,
     callMethod: call,
     callMethodWithAuth: callWithAuth,
+    setAuthId(nextAuthId) {
+      restAuthId = String(nextAuthId || '').trim();
+      return restAuthId;
+    },
 
     async createReportItem({ entityTypeId, fields }) {
       if (!Number(entityTypeId)) {

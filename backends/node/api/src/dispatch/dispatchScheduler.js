@@ -114,7 +114,7 @@ export const createDispatchScheduler = ({
       return [];
     }
 
-    const select = [...new Set(['id', adminField, ...(enabledField ? [enabledField] : [])])];
+    const select = [...new Set(['id', 'ID', adminField, ...(enabledField ? [enabledField] : [])])];
     const rows = await bitrixClient.listCrmItems({
       entityTypeId: azsEntityTypeId,
       select,
@@ -129,7 +129,7 @@ export const createDispatchScheduler = ({
         return !isDisabled(getFieldValue(item, enabledField));
       })
       .map((item) => ({
-        azsId: String(parsePositiveInt(item?.id) || item?.id || '').trim(),
+        azsId: String(parsePositiveInt(item?.id ?? item?.ID) || item?.id || item?.ID || '').trim(),
         adminUserId: parseUserId(getFieldValue(item, adminField))
       }))
       .filter((item) => item.azsId && item.adminUserId > 0);

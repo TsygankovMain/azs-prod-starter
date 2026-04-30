@@ -91,6 +91,12 @@ app.post('/api/install', async (req, res) => {
   console.log('/api/install', req.body);
   const botMode = String(process.env.BITRIX_BOT_MODE || 'notify').trim().toLowerCase();
   const authId = String(req.body?.AUTH_ID || '').trim();
+  if (authId) {
+    process.env.BITRIX_REST_AUTH_ID = authId;
+    if (typeof bitrixClient.setAuthId === 'function') {
+      bitrixClient.setAuthId(authId);
+    }
+  }
 
   const payload = {
     message: 'All success',

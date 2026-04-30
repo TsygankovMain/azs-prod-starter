@@ -83,3 +83,31 @@ test('notifyDispatch falls back to notify channel when bot send fails', async ()
   assert.equal(notifyCalls.length, 1);
   assert.equal(notifyCalls[0].userId, 11);
 });
+
+test('bitrix client auth id can be updated at runtime', async () => {
+  const calls = [];
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    calls.push(JSON.parse(String(options?.body || '{}')));
+    return {
+      ok: true,
+      async json() {
+        return { result: { id: 1 } };
+      }
+    };
+  };
+
+  try {
+    const { createBitrixRestClient } = await import('../src/dispatch/bitrixRestClient.js');
+    const client = createBitrixRestClient({
+      endpoint: 'https://example.bitrix24.ru/rest',
+      authId: 'old-token'
+    });
+    client.setAuthId('new-token');
+    await client.callMethod('imbot.v2.Bot.list', {});
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].auth, 'new-token');
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
