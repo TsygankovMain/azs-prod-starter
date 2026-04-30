@@ -30,19 +30,114 @@ const parseListItems = (result) => {
 export const createBitrixRestClient = ({
   endpoint = process.env.BITRIX_REST_ENDPOINT || '',
   authId = process.env.BITRIX_REST_AUTH_ID || '',
+  refreshToken = process.env.BITRIX_REST_REFRESH_TOKEN || '',
+  oauthDomain = process.env.BITRIX_OAUTH_DOMAIN || '',
+  oauthEndpoint = process.env.BITRIX_OAUTH_ENDPOINT || '',
+  clientId = process.env.CLIENT_ID || '',
+  clientSecret = process.env.CLIENT_SECRET || '',
   logger = console
 } = {}) => {
-  const base = normalizeEndpoint(endpoint);
-  const isConfigured = Boolean(base);
+  let base = normalizeEndpoint(endpoint);
   let restAuthId = String(authId || '').trim();
+  let restRefreshToken = String(refreshToken || '').trim();
+  let restOauthDomain = String(oauthDomain || '').trim();
+  let refreshPromise = null;
+
+  const isExpiredTokenError = (error) => /expired_token/i.test(String(error?.message || error || ''));
 
   const ensureConfigured = () => {
-    if (!isConfigured) {
+    if (!base) {
       throw new Error('BITRIX_REST_ENDPOINT is required in production mode');
     }
   };
 
-  const callInternal = async (method, params = {}, authOverride = '') => {
+  const resolveOauthUrl = () => {
+    const explicit = normalizeEndpoint(oauthEndpoint);
+    if (explicit) {
+      return explicit;
+    }
+    if (restOauthDomain) {
+      return `https://${restOauthDomain}/oauth/token/`;
+    }
+    return 'https://oauth.bitrix.info/oauth/token/';
+  };
+
+  const refreshAccessToken = async () => {
+    if (refreshPromise) {
+      return refreshPromise;
+    }
+    refreshPromise = (async () => {
+      if (!restRefreshToken) {
+        throw new Error('BITRIX_REST_REFRESH_TOKEN is not configured');
+      }
+      if (!clientId || !clientSecret) {
+        throw new Error('CLIENT_ID and CLIENT_SECRET are required for OAuth token refresh');
+      }
+
+      const response = await fetch(resolveOauthUrl(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          client_id: String(clientId),
+          client_secret: String(clientSecret),
+          refresh_token: restRefreshToken
+        })
+      });
+
+      const rawBody = await response.text();
+      let payload = null;
+      try {
+        payload = JSON.parse(rawBody);
+      } catch (_) {
+        payload = null;
+      }
+
+      if (!response.ok || payload?.error) {
+        const reason = payload?.error
+          ? `${payload.error}${payload.error_description ? ` ${payload.error_description}` : ''}`
+          : `HTTP ${response.status}${rawBody ? `: ${rawBody}` : ''}`;
+        throw new Error(`Bitrix OAuth refresh failed: ${reason}`);
+      }
+
+      const nextAccessToken = String(payload?.access_token || '').trim();
+      const nextRefreshToken = String(payload?.refresh_token || '').trim();
+      const nextDomain = String(payload?.domain || '').trim();
+      const nextClientEndpoint = normalizeEndpoint(payload?.client_endpoint || '');
+
+      if (!nextAccessToken) {
+        throw new Error('Bitrix OAuth refresh failed: access_token is missing in response');
+      }
+
+      restAuthId = nextAccessToken;
+      process.env.BITRIX_REST_AUTH_ID = nextAccessToken;
+      if (nextRefreshToken) {
+        restRefreshToken = nextRefreshToken;
+        process.env.BITRIX_REST_REFRESH_TOKEN = nextRefreshToken;
+      }
+      if (nextDomain) {
+        restOauthDomain = nextDomain;
+        process.env.BITRIX_OAUTH_DOMAIN = nextDomain;
+      }
+      if (nextClientEndpoint) {
+        base = nextClientEndpoint;
+        process.env.BITRIX_REST_ENDPOINT = nextClientEndpoint;
+      }
+
+      logger.info('Bitrix OAuth token refreshed');
+      return nextAccessToken;
+    })();
+
+    try {
+      return await refreshPromise;
+    } finally {
+      refreshPromise = null;
+    }
+  };
+
+  const callInternalOnce = async (method, params = {}, authOverride = '') => {
     ensureConfigured();
     const resolvedAuth = String(authOverride || restAuthId || '').trim();
     const requestPayload = resolvedAuth
@@ -71,16 +166,54 @@ export const createBitrixRestClient = ({
     return responsePayload.result ?? responsePayload;
   };
 
+  const callInternal = async (method, params = {}, authOverride = '') => {
+    try {
+      return await callInternalOnce(method, params, authOverride);
+    } catch (error) {
+      const canRefresh = !authOverride && isExpiredTokenError(error);
+      if (!canRefresh) {
+        throw error;
+      }
+      await refreshAccessToken();
+      return callInternalOnce(method, params, authOverride);
+    }
+  };
+
   const call = async (method, params = {}) => callInternal(method, params, '');
   const callWithAuth = async (method, params = {}, authId = '') => callInternal(method, params, authId);
 
   return {
-    isConfigured,
+    isConfigured: Boolean(base),
     callMethod: call,
     callMethodWithAuth: callWithAuth,
     setAuthId(nextAuthId) {
       restAuthId = String(nextAuthId || '').trim();
+      process.env.BITRIX_REST_AUTH_ID = restAuthId;
       return restAuthId;
+    },
+    setAuthContext({ authId: nextAuthId = '', refreshToken: nextRefreshToken = '', domain: nextDomain = '' } = {}) {
+      if (nextAuthId) {
+        restAuthId = String(nextAuthId).trim();
+        process.env.BITRIX_REST_AUTH_ID = restAuthId;
+      }
+      if (nextRefreshToken) {
+        restRefreshToken = String(nextRefreshToken).trim();
+        process.env.BITRIX_REST_REFRESH_TOKEN = restRefreshToken;
+      }
+      if (nextDomain) {
+        restOauthDomain = String(nextDomain).trim();
+        process.env.BITRIX_OAUTH_DOMAIN = restOauthDomain;
+        const domainEndpoint = normalizeEndpoint(`https://${restOauthDomain}/rest`);
+        if (domainEndpoint) {
+          base = domainEndpoint;
+          process.env.BITRIX_REST_ENDPOINT = domainEndpoint;
+        }
+      }
+      return {
+        authId: restAuthId,
+        refreshToken: restRefreshToken,
+        domain: restOauthDomain
+      };
     },
 
     async createReportItem({ entityTypeId, fields }) {

@@ -91,11 +91,16 @@ app.post('/api/install', async (req, res) => {
   console.log('/api/install', req.body);
   const botMode = String(process.env.BITRIX_BOT_MODE || 'notify').trim().toLowerCase();
   const authId = String(req.body?.AUTH_ID || '').trim();
-  if (authId) {
-    process.env.BITRIX_REST_AUTH_ID = authId;
-    if (typeof bitrixClient.setAuthId === 'function') {
-      bitrixClient.setAuthId(authId);
-    }
+  const refreshToken = String(req.body?.REFRESH_TOKEN || req.body?.REFRESH_ID || '').trim();
+  const oauthDomain = String(req.body?.DOMAIN || '').trim();
+  if (typeof bitrixClient.setAuthContext === 'function') {
+    bitrixClient.setAuthContext({
+      authId,
+      refreshToken,
+      domain: oauthDomain
+    });
+  } else if (authId && typeof bitrixClient.setAuthId === 'function') {
+    bitrixClient.setAuthId(authId);
   }
 
   const payload = {
@@ -145,6 +150,19 @@ app.post('/api/install', async (req, res) => {
 
 app.post('/api/getToken', async (req, res) => {
   console.log('/api/getToken', req.body);
+  const authId = String(req.body?.AUTH_ID || '').trim();
+  const refreshToken = String(req.body?.REFRESH_TOKEN || req.body?.REFRESH_ID || '').trim();
+  const oauthDomain = String(req.body?.DOMAIN || '').trim();
+  if (typeof bitrixClient.setAuthContext === 'function') {
+    bitrixClient.setAuthContext({
+      authId,
+      refreshToken,
+      domain: oauthDomain
+    });
+  } else if (authId && typeof bitrixClient.setAuthId === 'function') {
+    bitrixClient.setAuthId(authId);
+  }
+
   const userId = Number(req.body?.user_id || 0) || 0;
   const appInfo = {
     id: userId,
