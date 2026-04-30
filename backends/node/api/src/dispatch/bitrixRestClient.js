@@ -288,7 +288,8 @@ export const createBitrixRestClient = ({
       select = ['id'],
       filter = {},
       order = { id: 'ASC' },
-      limit = 200
+      limit = 200,
+      useOriginalUfNames = 'N'
     }) {
       if (!Number(entityTypeId)) {
         return [];
@@ -305,7 +306,7 @@ export const createBitrixRestClient = ({
           filter,
           order,
           start,
-          useOriginalUfNames: 'Y'
+          useOriginalUfNames
         });
 
         const page = parseListItems(response);

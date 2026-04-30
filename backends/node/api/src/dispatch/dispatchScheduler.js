@@ -82,7 +82,23 @@ export const createDispatchScheduler = ({
     if (!item || !fieldCode) {
       return undefined;
     }
-    return item[fieldCode] ?? item[fieldCode.toLowerCase()] ?? item[fieldCode.toUpperCase()];
+    const normalizedFieldCode = String(fieldCode || '').trim();
+    const aliases = [
+      normalizedFieldCode,
+      normalizedFieldCode.toLowerCase(),
+      normalizedFieldCode.toUpperCase()
+    ];
+    const camelUfMatch = normalizedFieldCode.match(/^ufCrm(\d+)_(\d+)$/i);
+    if (camelUfMatch) {
+      aliases.push(`UF_CRM_${camelUfMatch[1]}_${camelUfMatch[2]}`);
+      aliases.push(`ufCrm${camelUfMatch[1]}_${camelUfMatch[2]}`);
+    }
+    for (const alias of aliases) {
+      if (alias && alias in item) {
+        return item[alias];
+      }
+    }
+    return undefined;
   };
 
   const parseUserId = (value) => {
@@ -102,8 +118,28 @@ export const createDispatchScheduler = ({
   };
 
   const isDisabled = (value) => {
+    if (Array.isArray(value)) {
+      return value.some((row) => isDisabled(row));
+    }
+    if (value && typeof value === 'object') {
+      return isDisabled(value.value ?? value.VALUE ?? value.id ?? value.ID);
+    }
     const raw = String(value ?? '').trim().toLowerCase();
     return raw === 'n' || raw === '0' || raw === 'false' || raw === 'нет';
+  };
+
+  const expandFieldAliases = (fieldCode) => {
+    const code = String(fieldCode || '').trim();
+    if (!code) {
+      return [];
+    }
+    const aliases = new Set([code, code.toLowerCase(), code.toUpperCase()]);
+    const camelUfMatch = code.match(/^ufCrm(\d+)_(\d+)$/i);
+    if (camelUfMatch) {
+      aliases.add(`UF_CRM_${camelUfMatch[1]}_${camelUfMatch[2]}`);
+      aliases.add(`ufCrm${camelUfMatch[1]}_${camelUfMatch[2]}`);
+    }
+    return [...aliases];
   };
 
   const loadCandidatesFromAzs = async (settings) => {
@@ -114,11 +150,25 @@ export const createDispatchScheduler = ({
       return [];
     }
 
-    const select = [...new Set(['id', 'ID', adminField, ...(enabledField ? [enabledField] : [])])];
+    const select = [...new Set([
+      'id',
+      'ID',
+      ...expandFieldAliases(adminField),
+      ...(enabledField ? expandFieldAliases(enabledField) : [])
+    ])];
     const rows = await bitrixClient.listCrmItems({
       entityTypeId: azsEntityTypeId,
       select,
-      limit: 1000
+      limit: 1000,
+      useOriginalUfNames: 'N'
+    });
+
+    logger.info('dispatchScheduler: loaded AZS candidates source', {
+      azsEntityTypeId,
+      rows: rows.length,
+      adminField,
+      enabledField,
+      select
     });
 
     return rows
@@ -183,6 +233,14 @@ export const createDispatchScheduler = ({
     const autoCandidates = Array.isArray(fileCandidates) && fileCandidates.length > 0
       ? fileCandidates
       : await loadCandidatesFromAzs(settings);
+
+    logger.info('dispatchScheduler: slot matched', {
+      slotKey,
+      scheduleTimes,
+      source: Array.isArray(fileCandidates) && fileCandidates.length > 0 ? 'file' : 'azs',
+      candidatesCount: autoCandidates.length
+    });
+
     const candidates = autoCandidates.map((item) => ({
       ...item,
       slotDate: timeParts.dateKey,
