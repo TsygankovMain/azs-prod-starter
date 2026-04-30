@@ -63,8 +63,16 @@ const manualCandidate = reactive({
   azsId: '',
   adminUserId: 0,
   slotDate: '',
-  slotHHmm: ''
+  slotTime: ''
 })
+
+const toSlotHHmm = (value: string): string => {
+  const match = String(value || '').trim().match(/^(\d{2}):(\d{2})$/)
+  if (!match) {
+    return ''
+  }
+  return `${match[1]}${match[2]}`
+}
 
 const statusColor = (status: string) => {
   if (status === 'done') {
@@ -128,7 +136,7 @@ const createManual = async () => {
       azsId: manualCandidate.azsId.trim(),
       adminUserId: Number(manualCandidate.adminUserId),
       slotDate: manualCandidate.slotDate.trim() || undefined,
-      slotHHmm: manualCandidate.slotHHmm.trim() || undefined
+      slotHHmm: toSlotHHmm(manualCandidate.slotTime) || undefined
     })
     const summary = result.summary as Record<string, unknown>
     const duplicates = Array.isArray(result.items)
@@ -164,6 +172,10 @@ onMounted(async () => {
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
     manualCandidate.adminUserId = userStore.id || 1
+    const now = new Date()
+    const to2 = (n: number) => String(n).padStart(2, '0')
+    manualCandidate.slotDate = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
+    manualCandidate.slotTime = `${to2(now.getUTCHours())}:${to2(now.getUTCMinutes())}`
     await $b24.parent.setTitle(PAGE_TITLE)
     await loadReports()
   } catch (error) {
@@ -256,10 +268,19 @@ onMounted(async () => {
           <B24InputNumber v-model="manualCandidate.adminUserId" :min="1" />
         </B24FormField>
         <B24FormField label="Дата слота">
-          <B24Input v-model="manualCandidate.slotDate" placeholder="2026-04-28" />
+          <input
+            v-model="manualCandidate.slotDate"
+            type="date"
+            class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+          >
         </B24FormField>
-        <B24FormField label="Время слота HHmm">
-          <B24Input v-model="manualCandidate.slotHHmm" placeholder="0930" />
+        <B24FormField label="Время слота">
+          <input
+            v-model="manualCandidate.slotTime"
+            type="time"
+            step="60"
+            class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+          >
         </B24FormField>
       </div>
       <template #footer>

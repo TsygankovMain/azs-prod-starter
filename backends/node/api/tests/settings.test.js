@@ -25,6 +25,7 @@ test('mergeSettings overlays saved partial settings over defaults', () => {
   assert.equal(merged.report.entityTypeId, DEFAULT_SETTINGS.report.entityTypeId);
   assert.equal(merged.report.timeoutMinutes, 45);
   assert.equal(merged.report.dispatchJitterMinutes, DEFAULT_SETTINGS.report.dispatchJitterMinutes);
+  assert.deepEqual(merged.report.dispatchTimes, DEFAULT_SETTINGS.report.dispatchTimes);
 });
 
 test('validateSettings rejects invalid timeout and jitter ranges', () => {
@@ -37,6 +38,15 @@ test('validateSettings rejects invalid timeout and jitter ranges', () => {
     () => validateSettings(mergeSettings({ report: { dispatchJitterMinutes: -1 } })),
     /report.dispatchJitterMinutes must be greater than or equal to 0/
   );
+});
+
+test('validateSettings normalizes dispatch times from settings', () => {
+  const normalized = validateSettings(mergeSettings({
+    report: {
+      dispatchTimes: ['18:45', '09:00', '18:45']
+    }
+  }));
+  assert.deepEqual(normalized.report.dispatchTimes, ['09:00', '18:45']);
 });
 
 test('validateSettings requires report.fields.folderId when REST endpoint is configured', () => {

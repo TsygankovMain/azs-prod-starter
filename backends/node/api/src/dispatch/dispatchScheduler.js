@@ -1,17 +1,193 @@
 export const createDispatchScheduler = ({
   dispatchService,
   getCandidates,
+  settingsStore = null,
+  bitrixClient = null,
   timeoutWatcher = null,
   logger = console,
   enabled = false,
-  cronExpression = '*/5 * * * *',
-  timeoutCronExpression = '*/5 * * * *'
+  cronExpression = '* * * * *',
+  timeoutCronExpression = '*/5 * * * *',
+  nowFn = () => new Date()
 }) => {
   let dispatchTask = null;
   let timeoutTask = null;
+  let lastSlotKey = '';
+
+  const parsePositiveInt = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  };
+
+  const parseScheduleTimes = (value) => {
+    const source = Array.isArray(value)
+      ? value
+      : String(value || '').split(/[,\n;]+/g);
+
+    const slots = [...new Set(
+      source
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+        .map((item) => {
+          const time = item.includes(':') ? item : `${item.slice(0, 2)}:${item.slice(2, 4)}`;
+          const match = time.match(/^(\d{1,2}):(\d{2})$/);
+          if (!match) {
+            return '';
+          }
+          const hours = Number(match[1]);
+          const minutes = Number(match[2]);
+          if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+            return '';
+          }
+          return `${String(hours).padStart(2, '0')}${String(minutes).padStart(2, '0')}`;
+        })
+        .filter(Boolean)
+    )];
+
+    return slots.sort();
+  };
+
+  const getTimeParts = (dateValue, timezone) => {
+    try {
+      const formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: timezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23'
+      });
+      const parts = Object.fromEntries(
+        formatter
+          .formatToParts(new Date(dateValue))
+          .filter((part) => part.type !== 'literal')
+          .map((part) => [part.type, part.value])
+      );
+      return {
+        dateKey: `${parts.year}-${parts.month}-${parts.day}`,
+        hhmm: `${parts.hour}${parts.minute}`
+      };
+    } catch {
+      const utc = new Date(dateValue);
+      const pad = (n) => String(n).padStart(2, '0');
+      return {
+        dateKey: `${utc.getUTCFullYear()}-${pad(utc.getUTCMonth() + 1)}-${pad(utc.getUTCDate())}`,
+        hhmm: `${pad(utc.getUTCHours())}${pad(utc.getUTCMinutes())}`
+      };
+    }
+  };
+
+  const getFieldValue = (item, fieldCode) => {
+    if (!item || !fieldCode) {
+      return undefined;
+    }
+    return item[fieldCode] ?? item[fieldCode.toLowerCase()] ?? item[fieldCode.toUpperCase()];
+  };
+
+  const parseUserId = (value) => {
+    if (Array.isArray(value)) {
+      for (const row of value) {
+        const next = parseUserId(row);
+        if (next > 0) {
+          return next;
+        }
+      }
+      return 0;
+    }
+    if (value && typeof value === 'object') {
+      return parseUserId(value.id ?? value.ID ?? value.value ?? value.VALUE);
+    }
+    return parsePositiveInt(value);
+  };
+
+  const isDisabled = (value) => {
+    const raw = String(value ?? '').trim().toLowerCase();
+    return raw === 'n' || raw === '0' || raw === 'false' || raw === 'нет';
+  };
+
+  const loadCandidatesFromAzs = async (settings) => {
+    const azsEntityTypeId = Number(settings?.azs?.entityTypeId || 0);
+    const adminField = String(settings?.azs?.fields?.admin || '').trim();
+    const enabledField = String(settings?.azs?.fields?.enabled || '').trim();
+    if (!azsEntityTypeId || !adminField || typeof bitrixClient?.listCrmItems !== 'function') {
+      return [];
+    }
+
+    const select = [...new Set(['id', adminField, ...(enabledField ? [enabledField] : [])])];
+    const rows = await bitrixClient.listCrmItems({
+      entityTypeId: azsEntityTypeId,
+      select,
+      limit: 1000
+    });
+
+    return rows
+      .filter((item) => {
+        if (!enabledField) {
+          return true;
+        }
+        return !isDisabled(getFieldValue(item, enabledField));
+      })
+      .map((item) => ({
+        azsId: String(parsePositiveInt(item?.id) || item?.id || '').trim(),
+        adminUserId: parseUserId(getFieldValue(item, adminField))
+      }))
+      .filter((item) => item.azsId && item.adminUserId > 0);
+  };
 
   const runOnce = async () => {
-    const candidates = await getCandidates();
+    const settings = settingsStore ? await settingsStore.read() : {};
+    const timezone = String(settings?.timezone || process.env.DEFAULT_TIMEZONE || 'Europe/Moscow').trim();
+    const scheduleTimes = parseScheduleTimes(settings?.report?.dispatchTimes);
+    if (!scheduleTimes.length) {
+      logger.info('dispatchScheduler: report.dispatchTimes is empty, skip run');
+      return {
+        summary: {
+          total: 0,
+          created: 0,
+          duplicates: 0,
+          failed: 0
+        },
+        items: []
+      };
+    }
+
+    const timeParts = getTimeParts(nowFn(), timezone);
+    if (!scheduleTimes.includes(timeParts.hhmm)) {
+      return {
+        summary: {
+          total: 0,
+          created: 0,
+          duplicates: 0,
+          failed: 0
+        },
+        items: []
+      };
+    }
+
+    const slotKey = `${timeParts.dateKey}:${timeParts.hhmm}`;
+    if (slotKey === lastSlotKey) {
+      logger.info('dispatchScheduler: slot already processed, skip duplicate tick', { slotKey });
+      return {
+        summary: {
+          total: 0,
+          created: 0,
+          duplicates: 0,
+          failed: 0
+        },
+        items: []
+      };
+    }
+
+    const fileCandidates = await getCandidates();
+    const autoCandidates = Array.isArray(fileCandidates) && fileCandidates.length > 0
+      ? fileCandidates
+      : await loadCandidatesFromAzs(settings);
+    const candidates = autoCandidates.map((item) => ({
+      ...item,
+      slotDate: timeParts.dateKey,
+      slotHHmm: timeParts.hhmm
+    }));
     if (!Array.isArray(candidates) || candidates.length === 0) {
       logger.info('dispatchScheduler: no candidates found, skip run');
       return {
@@ -24,6 +200,7 @@ export const createDispatchScheduler = ({
         items: []
       };
     }
+    lastSlotKey = slotKey;
     return dispatchService.dispatchBatch({ candidates, trigger: 'auto' });
   };
 

@@ -18,6 +18,15 @@ const parseId = (value) => {
   return Number.isFinite(id) ? id : null;
 };
 
+const parseListItems = (result) => {
+  const rows = Array.isArray(result) ? result : (Array.isArray(result?.items) ? result.items : []);
+  const next = Number(result?.next ?? result?.Next ?? -1);
+  return {
+    items: rows,
+    next: Number.isFinite(next) && next >= 0 ? next : null
+  };
+};
+
 export const createBitrixRestClient = ({
   endpoint = process.env.BITRIX_REST_ENDPOINT || '',
   authId = process.env.BITRIX_REST_AUTH_ID || '',
@@ -135,6 +144,48 @@ export const createBitrixRestClient = ({
       });
 
       return result?.item ?? result ?? null;
+    },
+
+    async listCrmItems({
+      entityTypeId,
+      select = ['id'],
+      filter = {},
+      order = { id: 'ASC' },
+      limit = 200
+    }) {
+      if (!Number(entityTypeId)) {
+        return [];
+      }
+
+      const maxItems = Math.min(Math.max(Number(limit) || 200, 1), 2000);
+      const items = [];
+      let start = 0;
+
+      while (items.length < maxItems) {
+        const response = await call('crm.item.list', {
+          entityTypeId: Number(entityTypeId),
+          select,
+          filter,
+          order,
+          start,
+          useOriginalUfNames: 'Y'
+        });
+
+        const page = parseListItems(response);
+        for (const row of page.items) {
+          items.push(row);
+          if (items.length >= maxItems) {
+            break;
+          }
+        }
+
+        if (page.next === null || page.items.length === 0) {
+          break;
+        }
+        start = page.next;
+      }
+
+      return items;
     },
 
     diskApi: {

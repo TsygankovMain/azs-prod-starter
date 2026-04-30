@@ -37,6 +37,7 @@ type SettingsTree = {
     }
     timeoutMinutes: number
     dispatchJitterMinutes: number
+    dispatchTimes: string[]
   }
   disk: {
     rootFolderId: number
@@ -175,7 +176,8 @@ function makeEmptySettings(): SettingsTree {
         expired: ''
       },
       timeoutMinutes: 0,
-      dispatchJitterMinutes: 0
+      dispatchJitterMinutes: 0,
+      dispatchTimes: []
     },
     disk: {
       rootFolderId: 0,
@@ -231,6 +233,9 @@ function normalizeSettings(
   normalized.report.entityTypeId = Number(normalized.report.entityTypeId || 0)
   normalized.report.timeoutMinutes = Number(normalized.report.timeoutMinutes || 0)
   normalized.report.dispatchJitterMinutes = Number(normalized.report.dispatchJitterMinutes || 0)
+  normalized.report.dispatchTimes = Array.isArray(normalized.report.dispatchTimes)
+    ? normalized.report.dispatchTimes.map((item) => String(item || '').trim()).filter(Boolean)
+    : []
   normalized.disk.rootFolderId = Number(normalized.disk.rootFolderId || 0)
 
   return normalized
@@ -252,7 +257,8 @@ function applySettings(nextSettings: SettingsTree) {
   Object.assign(form.report, {
     entityTypeId: nextSettings.report.entityTypeId,
     timeoutMinutes: nextSettings.report.timeoutMinutes,
-    dispatchJitterMinutes: nextSettings.report.dispatchJitterMinutes
+    dispatchJitterMinutes: nextSettings.report.dispatchJitterMinutes,
+    dispatchTimes: [...nextSettings.report.dispatchTimes]
   })
   Object.assign(form.report.fields, nextSettings.report.fields)
   Object.assign(form.report.stages, nextSettings.report.stages)
@@ -296,7 +302,8 @@ function readSettings(): SettingsTree {
         expired: form.report.stages.expired
       },
       timeoutMinutes: Number(form.report.timeoutMinutes || 0),
-      dispatchJitterMinutes: Number(form.report.dispatchJitterMinutes || 0)
+      dispatchJitterMinutes: Number(form.report.dispatchJitterMinutes || 0),
+      dispatchTimes: [...new Set(form.report.dispatchTimes.map((item) => String(item || '').trim()).filter(Boolean))].sort()
     },
     disk: {
       rootFolderId: Number(form.disk.rootFolderId || 0),
@@ -331,6 +338,17 @@ const statusColor = computed(() => {
 
   return 'air-primary-success'
 })
+
+function addDispatchTimeSlot() {
+  if (!Array.isArray(form.report.dispatchTimes)) {
+    form.report.dispatchTimes = []
+  }
+  form.report.dispatchTimes.push('09:00')
+}
+
+function removeDispatchTimeSlot(index: number) {
+  form.report.dispatchTimes.splice(index, 1)
+}
 
 function getB24Result(data: unknown): unknown {
   const response = data as { getData?: () => unknown }
@@ -995,6 +1013,43 @@ onUnmounted(() => {
               class="w-full"
               :disabled="!isAdminReady"
             />
+          </B24FormField>
+          <B24FormField
+            label="Авто-отправка по времени (часы)"
+            class="w-full sm:col-span-2"
+          >
+            <div class="space-y-2">
+              <div
+                v-for="(slot, index) in form.report.dispatchTimes"
+                :key="`dispatch-time-${index}`"
+                class="flex items-center gap-2"
+              >
+                <input
+                  v-model="form.report.dispatchTimes[index]"
+                  type="time"
+                  step="60"
+                  class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+                  :disabled="!isAdminReady"
+                >
+                <B24Button
+                  size="xs"
+                  color="air-primary-alert"
+                  label="Удалить"
+                  :disabled="!isAdminReady"
+                  @click="removeDispatchTimeSlot(index)"
+                />
+              </div>
+              <B24Button
+                size="xs"
+                color="air-secondary"
+                label="Добавить время"
+                :disabled="!isAdminReady"
+                @click="addDispatchTimeSlot"
+              />
+              <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
+                Выберите время через тайм-пикер. В эти моменты бот автоматически отправит запрос отчёта.
+              </ProseP>
+            </div>
           </B24FormField>
         </div>
       </B24Card>

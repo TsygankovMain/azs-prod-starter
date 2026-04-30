@@ -176,9 +176,11 @@ reportsStore.ensurePhotoSchema()
 const scheduler = createDispatchScheduler({
   dispatchService,
   getCandidates: () => readDispatchCandidates(),
+  settingsStore,
+  bitrixClient,
   timeoutWatcher,
   enabled: String(process.env.SCHEDULER_ENABLED || 'false').toLowerCase() === 'true',
-  cronExpression: process.env.DISPATCH_CRON || '*/5 * * * *',
+  cronExpression: process.env.DISPATCH_CRON || '* * * * *',
   timeoutCronExpression: process.env.TIMEOUT_CRON || '*/5 * * * *'
 });
 

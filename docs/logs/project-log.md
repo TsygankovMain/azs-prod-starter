@@ -129,6 +129,40 @@ Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
 
+### 2026-04-30 18:51:32 MSK
+
+What happened:
+- Implemented automatic report dispatch by time slots from app settings.
+- Added `report.dispatchTimes` (array of `HH:mm`) to backend settings contract.
+- Dispatch scheduler now:
+  - reads `timezone` + `report.dispatchTimes` from `/api/settings`
+  - runs auto-dispatch only when current portal time matches one of configured slots
+  - stamps candidates with `slotDate` + `slotHHmm` for that slot
+  - prevents duplicate processing of the same minute slot within process runtime
+- Added fallback auto-candidate source from AZS smart-process:
+  - when file candidates are empty, backend reads AZS items via `crm.item.list`
+  - uses mapped fields `azs.fields.admin` and optional `azs.fields.enabled`
+- Extended Bitrix REST client with `listCrmItems` pagination helper (`crm.item.list`, `useOriginalUfNames=Y`).
+- Updated UX to avoid manual numeric time/date typing:
+  - Reviewer manual launch now uses calendar (`type=date`) and clock (`type=time`) pickers.
+  - Settings page now uses multiple time pickers for `dispatchTimes` (add/remove slots), no raw HHmm input.
+
+Product impact:
+- PM/admin can configure automatic bot-trigger times in settings without editing JSON or typing HHmm manually.
+- Manual launch is now calendar/clock based and less error-prone.
+
+What to check:
+- In `/settings` add time slot `18:45`, save settings.
+- Ensure `SCHEDULER_ENABLED=true` and scheduler is running.
+- At 18:45 portal timezone, bot should auto-send report request to AZS admin.
+
+Next step:
+- Optional: add explicit backend endpoint to preview "next scheduled run" for easier operational monitoring.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
 ### 2026-04-29 21:07:30 MSK
 
 What happened:

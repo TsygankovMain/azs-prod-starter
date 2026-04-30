@@ -41,7 +41,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
       expired: ''
     },
     timeoutMinutes: 60,
-    dispatchJitterMinutes: 15
+    dispatchJitterMinutes: 15,
+    dispatchTimes: []
   },
   disk: {
     rootFolderId: 0,
@@ -100,6 +101,33 @@ const validateNumber = (value, path, minValue, errors) => {
   }
 };
 
+const normalizeDispatchTimes = (value) => {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[,\n;]+/g);
+
+  const result = [...new Set(
+    source
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+      .map((item) => {
+        const match = item.match(/^(\d{1,2}):(\d{2})$/);
+        if (!match) {
+          return '';
+        }
+        const hours = Number(match[1]);
+        const minutes = Number(match[2]);
+        if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+          return '';
+        }
+        return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+      })
+      .filter(Boolean)
+  )];
+
+  return result.sort();
+};
+
 export const validateSettings = (settings) => {
   const errors = [];
   const isProductionBitrixSync = String(process.env.BITRIX_REST_ENDPOINT || '').trim() !== '';
@@ -132,6 +160,17 @@ export const validateSettings = (settings) => {
     validateNumber(Number(settings.report.dispatchJitterMinutes), 'report.dispatchJitterMinutes', 0, errors);
     validateObject(settings.report, 'fields', errors);
     validateObject(settings.report, 'stages', errors);
+    if (!Array.isArray(settings.report.dispatchTimes)) {
+      errors.push('report.dispatchTimes must be an array of HH:mm strings');
+    } else {
+      const hasInvalidTimes = settings.report.dispatchTimes
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+        .some((item) => !/^\d{1,2}:\d{2}$/.test(item));
+      if (hasInvalidTimes) {
+        errors.push('report.dispatchTimes contains invalid values, expected HH:mm');
+      }
+    }
     if (isProductionBitrixSync) {
       const folderFieldCode = String(settings.report?.fields?.folderId || '').trim();
       if (!folderFieldCode) {
@@ -165,7 +204,8 @@ export const validateSettings = (settings) => {
       ...settings.report,
       entityTypeId: Number(settings.report.entityTypeId),
       timeoutMinutes: Number(settings.report.timeoutMinutes),
-      dispatchJitterMinutes: Number(settings.report.dispatchJitterMinutes)
+      dispatchJitterMinutes: Number(settings.report.dispatchJitterMinutes),
+      dispatchTimes: normalizeDispatchTimes(settings.report.dispatchTimes)
     },
     disk: {
       ...settings.disk,
