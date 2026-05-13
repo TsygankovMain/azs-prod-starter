@@ -44,9 +44,20 @@ type SettingsTree = {
     folderNameTemplate: string
   }
   timezone: string
+  access: {
+    adminUserIds: number[]
+    reviewerUserIds: number[]
+    azsAdminUserIds: number[]
+  }
 }
 
 type JsonObject = Record<string, unknown>
+type AppRole = 'admin' | 'reviewer' | 'azs_admin'
+type AppCapabilities = {
+  settings: boolean
+  reviewer: boolean
+  reports: boolean
+}
 type ModuleKey = 'azs' | 'photoType' | 'report'
 type FieldMapKey =
   | 'admin'
@@ -98,7 +109,6 @@ useHead({ title: PAGE_TITLE })
 const { $logger, initApp, b24Helper, destroyB24Helper, processErrorGlobal } = useAppInit('SettingsPage')
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
-const userStore = useUserStore()
 
 let $b24: null | B24Frame = null
 
@@ -119,6 +129,12 @@ const fieldsByModule = reactive<Record<ModuleKey, CrmFieldOption[]>>({
 const reportStages = ref<StageOption[]>([])
 const portalLoadError = ref('')
 const creatingFieldKey = ref('')
+const currentRole = ref<AppRole>('azs_admin')
+const roleCapabilities = ref<AppCapabilities>({
+  settings: false,
+  reviewer: false,
+  reports: true
+})
 
 const azsFieldRequirements: FieldRequirement[] = [
   { key: 'admin', label: 'Администратор АЗС', type: 'Пользователь', createType: 'employee', createPostfix: 'ADMIN' },
@@ -183,7 +199,12 @@ function makeEmptySettings(): SettingsTree {
       rootFolderId: 0,
       folderNameTemplate: '{yyyy-mm}/{dd}/{azs}'
     },
-    timezone: 'Europe/Moscow'
+    timezone: 'Europe/Moscow',
+    access: {
+      adminUserIds: [],
+      reviewerUserIds: [],
+      azsAdminUserIds: []
+    }
   }
 }
 
@@ -225,6 +246,27 @@ function toPositiveInt(value: unknown, fallback: number, min = 0): number {
     return fallback
   }
   return Math.max(min, Math.trunc(parsed))
+}
+
+function normalizeUserIdList(value: unknown): number[] {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[,\n;]+/g)
+
+  return [...new Set(
+    source
+      .map((item) => Number(item))
+      .filter((item) => Number.isFinite(item) && item > 0)
+      .map((item) => Math.floor(item))
+  )]
+}
+
+function userIdListToInput(value: number[]): string {
+  return normalizeUserIdList(value).join(', ')
+}
+
+function parseUserIdInput(value: string): number[] {
+  return normalizeUserIdList(value)
 }
 
 function isFetchErrorLike(value: unknown): value is { data?: unknown, message?: string } {
@@ -293,6 +335,11 @@ function normalizeSettings(
     : []
   normalized.disk.rootFolderId = toPositiveInt(normalized.disk.rootFolderId, 0, 0)
   normalized.disk.folderNameTemplate = String(normalized.disk.folderNameTemplate || '').trim() || '{yyyy-mm}/{dd}/{azs}'
+  normalized.access = {
+    adminUserIds: normalizeUserIdList(normalized.access?.adminUserIds),
+    reviewerUserIds: normalizeUserIdList(normalized.access?.reviewerUserIds),
+    azsAdminUserIds: normalizeUserIdList(normalized.access?.azsAdminUserIds)
+  }
 
   return normalized
 }
@@ -321,6 +368,11 @@ function applySettings(nextSettings: SettingsTree) {
 
   Object.assign(form.disk, nextSettings.disk)
   form.timezone = nextSettings.timezone
+  Object.assign(form.access, {
+    adminUserIds: [...nextSettings.access.adminUserIds],
+    reviewerUserIds: [...nextSettings.access.reviewerUserIds],
+    azsAdminUserIds: [...nextSettings.access.azsAdminUserIds]
+  })
 }
 
 function readSettings(): SettingsTree {
@@ -365,11 +417,34 @@ function readSettings(): SettingsTree {
       rootFolderId: Number(form.disk.rootFolderId || 0),
       folderNameTemplate: String(form.disk.folderNameTemplate || '').trim() || '{yyyy-mm}/{dd}/{azs}'
     },
-    timezone: form.timezone
+    timezone: form.timezone,
+    access: {
+      adminUserIds: normalizeUserIdList(form.access.adminUserIds),
+      reviewerUserIds: normalizeUserIdList(form.access.reviewerUserIds),
+      azsAdminUserIds: normalizeUserIdList(form.access.azsAdminUserIds)
+    }
   })
 }
 
-const isAdminReady = computed(() => userStore.id > 0 ? userStore.isAdmin : true)
+const isAdminReady = computed(() => roleCapabilities.value.settings)
+const accessAdminInput = computed({
+  get: () => userIdListToInput(form.access.adminUserIds),
+  set: (value: string) => {
+    form.access.adminUserIds = parseUserIdInput(value)
+  }
+})
+const accessReviewerInput = computed({
+  get: () => userIdListToInput(form.access.reviewerUserIds),
+  set: (value: string) => {
+    form.access.reviewerUserIds = parseUserIdInput(value)
+  }
+})
+const accessAzsAdminInput = computed({
+  get: () => userIdListToInput(form.access.azsAdminUserIds),
+  set: (value: string) => {
+    form.access.azsAdminUserIds = parseUserIdInput(value)
+  }
+})
 const isDirty = computed(() => JSON.stringify(readSettings()) !== loadedSnapshot.value)
 const canSave = computed(() => isLoaded.value && isAdminReady.value && !isLoading.value && !isSaving.value)
 const statusLabel = computed(() => {
@@ -631,6 +706,25 @@ async function loadSettings() {
   }
 }
 
+async function loadRoleContext() {
+  try {
+    const response = await apiStore.getMyRole()
+    currentRole.value = response.role || 'azs_admin'
+    roleCapabilities.value = {
+      settings: Boolean(response.capabilities?.settings),
+      reviewer: Boolean(response.capabilities?.reviewer),
+      reports: Boolean(response.capabilities?.reports)
+    }
+  } catch {
+    currentRole.value = 'azs_admin'
+    roleCapabilities.value = {
+      settings: false,
+      reviewer: false,
+      reports: true
+    }
+  }
+}
+
 async function saveSettings() {
   if (!canSave.value) {
     return
@@ -679,6 +773,7 @@ onMounted(async () => {
     isLoading.value = true
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
+    await loadRoleContext()
     await $b24.parent.setTitle(PAGE_TITLE)
     await loadSettings()
     await loadPortalMetadata()
@@ -728,7 +823,7 @@ onUnmounted(() => {
           size="md"
           :color="isAdminReady ? 'air-primary-success' : 'air-primary-alert'"
           inverted
-          :label="isAdminReady ? 'доступ администратора' : 'только просмотр'"
+          :label="isAdminReady ? 'роль: администратор' : `роль: ${currentRole}`"
         />
       </div>
     </div>
@@ -744,7 +839,7 @@ onUnmounted(() => {
       v-if="!isAdminReady && isLoaded"
       color="air-secondary"
       title="Просмотр доступен, редактирование отключено"
-      description="Сохранение настроек доступно только для администратора портала."
+      description="Сохранение настроек доступно только для роли Администратор приложения."
     />
 
     <B24Alert
@@ -1168,6 +1263,66 @@ onUnmounted(() => {
               :disabled="!isAdminReady"
             />
           </B24FormField>
+        </div>
+      </B24Card>
+
+      <B24Card
+        variant="outline"
+        :b24ui="{
+          body: 'p-4 sm:p-5',
+          header: 'p-4 sm:p-5',
+        }"
+      >
+        <template #header>
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <ProseH3 class="mb-1">
+                Роли доступа
+              </ProseH3>
+              <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                Приоритет ролей: Администратор > Проверяющий > Администратор АЗС.
+              </ProseP>
+            </div>
+          </div>
+        </template>
+
+        <div class="grid gap-3 sm:grid-cols-1">
+          <B24FormField
+            label="Администраторы (userId через запятую)"
+            class="w-full"
+          >
+            <B24Input
+              v-model="accessAdminInput"
+              class="w-full"
+              placeholder="1, 7, 42"
+              :disabled="!isAdminReady"
+            />
+          </B24FormField>
+          <B24FormField
+            label="Проверяющие (userId через запятую)"
+            class="w-full"
+          >
+            <B24Input
+              v-model="accessReviewerInput"
+              class="w-full"
+              placeholder="11, 25"
+              :disabled="!isAdminReady"
+            />
+          </B24FormField>
+          <B24FormField
+            label="Администраторы АЗС (userId через запятую, опционально)"
+            class="w-full"
+          >
+            <B24Input
+              v-model="accessAzsAdminInput"
+              class="w-full"
+              placeholder="по умолчанию все пользователи"
+              :disabled="!isAdminReady"
+            />
+          </B24FormField>
+          <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
+            Пользователь вне списков получает роль Администратор АЗС. Администратор портала по умолчанию получает роль Администратор.
+          </ProseP>
         </div>
       </B24Card>
     </div>

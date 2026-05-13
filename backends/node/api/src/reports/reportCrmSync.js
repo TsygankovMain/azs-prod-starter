@@ -46,7 +46,8 @@ export const updateReportCrmItem = async ({
   status,
   photos = [],
   diskFolderId = null,
-  requireReportItem = false
+  requireReportItem = false,
+  context = {}
 }) => {
   const entityTypeId = Number(settings?.report?.entityTypeId || 0);
   const reportItemId = Number(report?.reportItemId || 0);
@@ -78,6 +79,7 @@ export const updateReportCrmItem = async ({
   return bitrixClient.updateReportItem({
     entityTypeId,
     id: reportItemId,
-    fields
+    fields,
+    context
   });
 };

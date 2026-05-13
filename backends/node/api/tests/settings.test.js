@@ -26,6 +26,7 @@ test('mergeSettings overlays saved partial settings over defaults', () => {
   assert.equal(merged.report.timeoutMinutes, 45);
   assert.equal(merged.report.dispatchJitterMinutes, DEFAULT_SETTINGS.report.dispatchJitterMinutes);
   assert.deepEqual(merged.report.dispatchTimes, DEFAULT_SETTINGS.report.dispatchTimes);
+  assert.deepEqual(merged.access.adminUserIds, DEFAULT_SETTINGS.access.adminUserIds);
 });
 
 test('validateSettings rejects invalid timeout and jitter ranges', () => {
@@ -47,6 +48,33 @@ test('validateSettings normalizes dispatch times from settings', () => {
     }
   }));
   assert.deepEqual(normalized.report.dispatchTimes, ['09:00', '18:45']);
+});
+
+test('validateSettings normalizes access role user lists', () => {
+  const normalized = validateSettings(mergeSettings({
+    access: {
+      adminUserIds: [1, 2, 2, 3],
+      reviewerUserIds: [4, 5, 5],
+      azsAdminUserIds: [6, 7, 7]
+    }
+  }));
+
+  assert.deepEqual(normalized.access.adminUserIds, [1, 2, 3]);
+  assert.deepEqual(normalized.access.reviewerUserIds, [4, 5]);
+  assert.deepEqual(normalized.access.azsAdminUserIds, [6, 7]);
+});
+
+test('validateSettings rejects invalid access role lists', () => {
+  assert.throws(
+    () => validateSettings(mergeSettings({
+      access: {
+        adminUserIds: [1],
+        reviewerUserIds: ['bad'],
+        azsAdminUserIds: [3]
+      }
+    })),
+    /access.reviewerUserIds contains invalid values/
+  );
 });
 
 test('validateSettings requires report.fields.folderId when REST endpoint is configured', () => {

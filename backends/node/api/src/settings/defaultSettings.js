@@ -48,7 +48,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
     rootFolderId: 0,
     folderNameTemplate: '{yyyy-mm}/{dd}/{azs}'
   },
-  timezone: 'Europe/Moscow'
+  timezone: 'Europe/Moscow',
+  access: {
+    adminUserIds: [],
+    reviewerUserIds: [],
+    azsAdminUserIds: []
+  }
 });
 
 const isPlainObject = (value) => (
@@ -101,6 +106,34 @@ const validateNumber = (value, path, minValue, errors) => {
   }
 };
 
+const normalizeUserIdList = (value) => {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[,\n;]+/g);
+
+  return [...new Set(
+    source
+      .map((item) => Number(item))
+      .filter((item) => Number.isFinite(item) && item > 0)
+      .map((item) => Math.floor(item))
+  )];
+};
+
+const validateUserIdList = (value, path, errors) => {
+  if (!Array.isArray(value)) {
+    errors.push(`${path} must be an array of positive integers`);
+    return;
+  }
+
+  const hasInvalid = value.some((item) => {
+    const parsed = Number(item);
+    return !Number.isFinite(parsed) || parsed <= 0 || Math.floor(parsed) !== parsed;
+  });
+  if (hasInvalid) {
+    errors.push(`${path} contains invalid values, expected positive integers`);
+  }
+};
+
 const normalizeDispatchTimes = (value) => {
   const source = Array.isArray(value)
     ? value
@@ -136,7 +169,7 @@ export const validateSettings = (settings) => {
     throw new SettingsValidationError(['settings must be a JSON object']);
   }
 
-  for (const key of ['azs', 'photoType', 'report', 'disk']) {
+  for (const key of ['azs', 'photoType', 'report', 'disk', 'access']) {
     validateObject(settings, key, errors);
   }
 
@@ -186,6 +219,12 @@ export const validateSettings = (settings) => {
     }
   }
 
+  if (isPlainObject(settings.access)) {
+    validateUserIdList(settings.access.adminUserIds, 'access.adminUserIds', errors);
+    validateUserIdList(settings.access.reviewerUserIds, 'access.reviewerUserIds', errors);
+    validateUserIdList(settings.access.azsAdminUserIds, 'access.azsAdminUserIds', errors);
+  }
+
   if (errors.length > 0) {
     throw new SettingsValidationError(errors);
   }
@@ -211,7 +250,12 @@ export const validateSettings = (settings) => {
       ...settings.disk,
       rootFolderId: Number(settings.disk.rootFolderId)
     },
-    timezone: settings.timezone.trim()
+    timezone: settings.timezone.trim(),
+    access: {
+      adminUserIds: normalizeUserIdList(settings.access.adminUserIds),
+      reviewerUserIds: normalizeUserIdList(settings.access.reviewerUserIds),
+      azsAdminUserIds: normalizeUserIdList(settings.access.azsAdminUserIds)
+    }
   };
 };
 

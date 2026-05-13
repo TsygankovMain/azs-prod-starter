@@ -104,7 +104,8 @@ test('timeout watcher updates Bitrix report stage when crm report id exists', as
     id: 7001,
     fields: {
       stageId: 'DT163_1:EXPIRED'
-    }
+    },
+    context: {}
   }]);
 });
 

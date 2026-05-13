@@ -14,6 +14,7 @@ type ReportRow = {
   scheduledAt: string | null
   deadlineAt: string | null
   errorText: string | null
+  diskFolderId: number | null
   createdAt: string | null
   updatedAt: string | null
 }
@@ -26,6 +27,20 @@ type ReportsSummary = {
   expired: number
   failed: number
   byStatus: Record<string, number>
+}
+
+type AppCapabilities = {
+  settings: boolean
+  reviewer: boolean
+  reports: boolean
+}
+
+type AppRole = 'admin' | 'reviewer' | 'azs_admin'
+
+type AzsOption = {
+  id: string
+  title: string
+  adminUserId: number
 }
 
 export const useApiStore = defineStore(
@@ -41,15 +56,75 @@ export const useApiStore = defineStore(
       return tokenJWT.value.length > 2
     })
 
-    const $api = $fetch.create({
-      baseURL: apiUrl
-    })
+    // In-flight refresh promise — concurrent 401s collapse into a single
+    // /api/getToken call instead of stampeding the backend with N parallel
+    // re-issues. Cleared in .finally so a subsequent 401 can re-trigger it.
+    let reinitInFlight: Promise<void> | null = null
+
+    const ensureFreshToken = async (): Promise<void> => {
+      if (!reinitInFlight) {
+        reinitInFlight = reinitToken().finally(() => {
+          reinitInFlight = null
+        })
+      }
+      return reinitInFlight
+    }
+
+    const baseFetch = $fetch.create({ baseURL: apiUrl })
+
+    /**
+     * Wrapper around $fetch that transparently re-issues the JWT on 401 and
+     * retries the original request once. Token-issuance endpoints
+     * (/api/getToken, /api/install) bypass the wrapper to avoid recursion.
+     *
+     * Without this wrapper, after the 1h JWT TTL the next API call would
+     * throw, breaking any open admin/reviewer screen until the user reloads.
+     */
+    type ApiFetchOptions = NonNullable<Parameters<typeof baseFetch>[1]> & {
+      _retried?: boolean
+    }
+    const getFetchStatus = (error: unknown): number => {
+      if (!error || typeof error !== 'object') {
+        return 0
+      }
+      const payload = error as {
+        response?: { status?: number }
+        status?: number
+      }
+      return Number(payload.response?.status ?? payload.status ?? 0)
+    }
+
+    const $api = (async <T = unknown>(request: string, options: ApiFetchOptions = {}): Promise<T> => {
+      const url = String(request || '')
+      const isAuthEndpoint = url.includes('/api/getToken') || url.includes('/api/install')
+
+      try {
+        return await baseFetch<T>(request, options)
+      } catch (error: unknown) {
+        const status = getFetchStatus(error)
+        if (status !== 401 || isAuthEndpoint || options._retried) {
+          throw error
+        }
+        await ensureFreshToken()
+        const retryHeaders = {
+          ...(options.headers || {}),
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+        return await baseFetch<T>(request, {
+          ...options,
+          headers: retryHeaders,
+          _retried: true
+        })
+      }
+    }) as typeof baseFetch
 
     // Health check
     const checkHealth = async (): Promise<{
       status: string
       backend: string
       timestamp: number
+      role?: AppRole | null
+      capabilities?: Partial<AppCapabilities> | null
     }> => {
       try {
         return await $api('/api/health', {
@@ -125,13 +200,43 @@ export const useApiStore = defineStore(
       })
     }
 
-    const createManualReport = async (candidate: JsonObject): Promise<{
+    const getMyActiveReport = async (limit = 20): Promise<{
+      item: ReportRow | null
+      items: ReportRow[]
+      total: number
+    }> => {
+      return await $api('/api/reports/my-active', {
+        query: { limit },
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
+    const getAzsOptions = async (filters: {
+      search?: string
+      limit?: number
+    } = {}): Promise<{ items: AzsOption[] }> => {
+      return await $api('/api/reports/azs-options', {
+        query: filters,
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
+    const createManualReport = async (payload: {
+      candidates?: JsonObject[]
+      azsIds?: string[]
+      slotDate?: string
+      slotHHmm?: string
+    }): Promise<{
       summary: JsonObject
       items: JsonObject[]
     }> => {
       return await $api('/api/reports/manual', {
         method: 'POST',
-        body: { candidate },
+        body: payload,
         headers: {
           Authorization: `Bearer ${tokenJWT.value}`
         }
@@ -154,6 +259,15 @@ export const useApiStore = defineStore(
       return await $api(`/api/reports/${reportId}/photo`, {
         method: 'POST',
         body: form,
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
+    const submitReport = async (reportId: number): Promise<{ item: JsonObject }> => {
+      return await $api(`/api/reports/${reportId}/submit`, {
+        method: 'POST',
         headers: {
           Authorization: `Bearer ${tokenJWT.value}`
         }
@@ -183,6 +297,22 @@ export const useApiStore = defineStore(
       return await $api('/api/getToken', {
         method: 'POST',
         body: data,
+      })
+    }
+
+    const getMyRole = async (): Promise<{
+      role: AppRole
+      capabilities: AppCapabilities
+      access?: {
+        adminUserIds: number[]
+        reviewerUserIds: number[]
+        azsAdminUserIds: number[]
+      }
+    }> => {
+      return await $api('/api/me/role', {
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
       })
     }
 
@@ -232,11 +362,16 @@ export const useApiStore = defineStore(
       getReports,
       getReportsSummary,
       getReportById,
+      getMyActiveReport,
       postInstall,
       createManualReport,
+      getAzsOptions,
       runTimeoutWatcher,
       uploadReportPhoto,
+      submitReport,
       saveSettings,
+      getMyRole,
+      reinitToken
     }
   }
 )

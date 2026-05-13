@@ -118,6 +118,7 @@ test('updateReportCrmItem sends crm.item.update payload', async () => {
       stageId: 'DT163_1:IN_PROGRESS',
       UF_FOLDER: '501',
       UF_PHOTOS: [42]
-    }
+    },
+    context: {}
   }]);
 });

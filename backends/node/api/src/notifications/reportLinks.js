@@ -1,4 +1,5 @@
 const trimTrailingSlash = (value) => String(value || '').replace(/\/+$/, '');
+const trimLeadingSlash = (value) => String(value || '').replace(/^\/+/, '');
 
 const parsePositiveInt = (value) => {
   const n = Number(value);
@@ -29,6 +30,17 @@ export const buildRestAppUriLink = ({ appCode, reportId }) => {
   return `/marketplace/view/${encodeURIComponent(code)}/?${params.toString()}`;
 };
 
+const normalizePortalBaseUrl = (portalDomain) => {
+  const raw = trimTrailingSlash(portalDomain);
+  if (!raw) {
+    return '';
+  }
+  if (/^https?:\/\//i.test(raw)) {
+    return raw;
+  }
+  return `https://${trimLeadingSlash(raw)}`;
+};
+
 export const buildPublicReportUrl = ({ baseUrl, reportId }) => {
   const base = trimTrailingSlash(baseUrl);
   if (!base) {
@@ -37,10 +49,14 @@ export const buildPublicReportUrl = ({ baseUrl, reportId }) => {
   return `${base}${buildAppReportPath(reportId)}`;
 };
 
-export const buildReportLinks = ({ appCode, reportId, publicBaseUrl }) => {
+export const buildReportLinks = ({ appCode, reportId, publicBaseUrl, portalDomain = '' }) => {
+  const restAppUriPath = buildRestAppUriLink({ appCode, reportId });
+  const portalBaseUrl = normalizePortalBaseUrl(portalDomain);
   return {
     appPath: buildAppReportPath(reportId),
-    restAppUriLink: buildRestAppUriLink({ appCode, reportId }),
+    restAppUriLink: portalBaseUrl
+      ? `${portalBaseUrl}${restAppUriPath}`
+      : restAppUriPath,
     publicReportUrl: buildPublicReportUrl({ baseUrl: publicBaseUrl, reportId })
   };
 };

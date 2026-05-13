@@ -91,7 +91,7 @@ export const createDispatchService = ({
     throw new Error('dispatchLogStore, settingsStore, bitrixClient and notificationService are required');
   }
 
-  const dispatchCandidate = async ({ candidate, settings, trigger = 'auto' }) => {
+  const dispatchCandidate = async ({ candidate, settings, trigger = 'auto', context = {} }) => {
     if (!candidate?.azsId) {
       throw new Error('candidate.azsId is required');
     }
@@ -143,17 +143,10 @@ export const createDispatchService = ({
 
       const reportResult = await bitrixClient.createReportItem({
         entityTypeId: Number(settings.report?.entityTypeId || 0),
-        fields
+        fields,
+        context
       });
       reportItemId = reportResult.reportItemId;
-
-      await notificationService.notifyDispatch({
-        userId: Number(candidate.adminUserId),
-        reportId: reserve.id,
-        azsId: candidate.azsId,
-        slotHHmm,
-        deadlineAt
-      });
 
       await dispatchLogStore.markDone({
         id: reserve.id,
@@ -162,6 +155,24 @@ export const createDispatchService = ({
         scheduledAt,
         deadlineAt
       });
+
+      try {
+        await notificationService.notifyDispatch({
+          userId: Number(candidate.adminUserId),
+          reportId: reserve.id,
+          azsId: candidate.azsId,
+          slotHHmm,
+          deadlineAt,
+          context
+        });
+      } catch (notifyError) {
+        logger.warn('dispatchCandidate notification failed', {
+          slotKey,
+          azsId: candidate.azsId,
+          reportId: reserve.id,
+          error: notifyError?.message || String(notifyError)
+        });
+      }
 
       return {
         ok: true,
@@ -191,7 +202,7 @@ export const createDispatchService = ({
     }
   };
 
-  const dispatchBatch = async ({ candidates, trigger = 'auto' } = {}) => {
+  const dispatchBatch = async ({ candidates, trigger = 'auto', context = {} } = {}) => {
     if (!Array.isArray(candidates)) {
       throw new Error('candidates must be an array');
     }
@@ -199,7 +210,7 @@ export const createDispatchService = ({
     const settings = await settingsStore.read();
     const items = [];
     for (const candidate of candidates) {
-      items.push(await dispatchCandidate({ candidate, settings, trigger }));
+      items.push(await dispatchCandidate({ candidate, settings, trigger, context }));
     }
 
     const summary = {

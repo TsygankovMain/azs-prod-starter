@@ -14,8 +14,11 @@ type ReportRow = {
 type SlotState = {
   key: string
   title: string
-  done: boolean
+  confirmed: boolean
+  uploaded: boolean
   uploading: boolean
+  previewUrl: string
+  file: File | null
   fileName: string
   error: string
 }
@@ -47,23 +50,54 @@ const cameraError = ref('')
 const cameraBusy = ref(false)
 const cameraVideoEl = ref<HTMLVideoElement | null>(null)
 const cameraStream = ref<MediaStream | null>(null)
+const isSubmitting = ref(false)
+const submitError = ref('')
 
 const photoSlots = reactive<SlotState[]>([])
 
-const completedCount = computed(() => photoSlots.filter((slot) => slot.done).length)
-const allCompleted = computed(() => completedCount.value === photoSlots.length)
+const confirmedCount = computed(() => photoSlots.filter((slot) => slot.confirmed).length)
+const uploadedCount = computed(() => photoSlots.filter((slot) => slot.uploaded).length)
+const allConfirmed = computed(() => photoSlots.length > 0 && confirmedCount.value === photoSlots.length)
+const allUploaded = computed(() => photoSlots.length > 0 && uploadedCount.value === photoSlots.length)
+const hasUploading = computed(() => photoSlots.some((slot) => slot.uploading))
+const hasUploadErrors = computed(() => photoSlots.some((slot) => Boolean(slot.error) && slot.confirmed && !slot.uploaded))
+const currentSlotIndex = computed(() => {
+  const index = photoSlots.findIndex((slot) => !slot.confirmed)
+  return index >= 0 ? index : photoSlots.length
+})
+const canSubmitReport = computed(() => (
+  allConfirmed.value
+  && allUploaded.value
+  && !hasUploading.value
+  && !hasUploadErrors.value
+  && !isSubmitting.value
+  && report.value?.status !== 'done'
+))
 const isCameraOpen = computed(() => Boolean(activeCameraSlotKey.value))
 
 const makeSlot = (photo: RequiredPhoto): SlotState => ({
   key: String(photo.code || '').trim().toLowerCase(),
   title: String(photo.title || photo.code || '').trim(),
-  done: false,
+  confirmed: false,
+  uploaded: false,
   uploading: false,
+  previewUrl: '',
+  file: null,
   fileName: '',
   error: ''
 })
 
+const revokeSlotPreview = (slot: SlotState) => {
+  if (slot.previewUrl) {
+    URL.revokeObjectURL(slot.previewUrl)
+    slot.previewUrl = ''
+  }
+}
+
 const applyRequiredPhotos = (requiredPhotos: RequiredPhoto[] = []) => {
+  for (const slot of photoSlots) {
+    revokeSlotPreview(slot)
+  }
   const nextSlots = requiredPhotos
     .map(makeSlot)
     .filter((slot) => slot.key)
@@ -156,8 +190,10 @@ const loadReport = async () => {
     applyRequiredPhotos(response.requiredPhotos || [])
     const uploaded = new Set((response.photos || []).map((photo) => String(photo.photoCode || '').toLowerCase()))
     for (const slot of photoSlots) {
-      slot.done = uploaded.has(slot.key)
-      if (!slot.done) {
+      const isUploaded = uploaded.has(slot.key)
+      slot.confirmed = isUploaded
+      slot.uploaded = isUploaded
+      if (!slot.uploaded) {
         slot.fileName = ''
       }
       slot.error = ''
@@ -182,7 +218,7 @@ const uploadSlotFile = async (slot: SlotState, file: File) => {
   slot.error = ''
 
   if (file.size > 10 * 1024 * 1024) {
-    slot.done = false
+    slot.uploaded = false
     slot.fileName = ''
     slot.error = 'Файл больше 10 МБ'
     return
@@ -201,16 +237,14 @@ const uploadSlotFile = async (slot: SlotState, file: File) => {
       photoCode: slot.key,
       file
     })
-    slot.done = true
+    slot.uploaded = true
     slot.fileName = file.name
     const status = String((response.item as Record<string, unknown>).status || '')
-    if (status === 'done') {
-      saveSuccess.value = 'Все обязательные фото загружены. Отчёт переведён в DONE.'
+    if (status === 'in_progress') {
+      saveSuccess.value = 'Фото загружено в фоне.'
     }
-    await loadReport()
   } catch (error) {
-    slot.done = false
-    slot.fileName = ''
+    slot.uploaded = false
     const responseData = (error as {
       data?: {
         message?: string
@@ -230,7 +264,7 @@ const uploadSlotFile = async (slot: SlotState, file: File) => {
   }
 }
 
-const captureAndUpload = async (slot: SlotState) => {
+const captureSlotPreview = async (slot: SlotState) => {
   slot.error = ''
   cameraError.value = ''
 
@@ -268,10 +302,85 @@ const captureAndUpload = async (slot: SlotState) => {
   }
 
   const file = new File([blob], `${slot.key}_${Date.now()}.jpg`, { type: 'image/jpeg' })
-  await uploadSlotFile(slot, file)
-  if (slot.done) {
-    closeCamera()
+  revokeSlotPreview(slot)
+  slot.file = file
+  slot.previewUrl = URL.createObjectURL(file)
+  slot.confirmed = false
+  slot.uploaded = false
+  slot.fileName = file.name
+  closeCamera()
+}
+
+const acceptSlotPhoto = (slot: SlotState) => {
+  if (!slot.file) {
+    slot.error = 'Сначала сделайте фото'
+    return
   }
+
+  slot.confirmed = true
+  slot.uploaded = false
+  slot.error = ''
+  void uploadSlotFile(slot, slot.file)
+}
+
+const retakeSlotPhoto = async (slot: SlotState) => {
+  revokeSlotPreview(slot)
+  slot.file = null
+  slot.confirmed = false
+  slot.uploaded = false
+  slot.fileName = ''
+  slot.error = ''
+  await startCameraForSlot(slot)
+}
+
+const retrySlotUpload = (slot: SlotState) => {
+  if (!slot.file) {
+    slot.error = 'Локальный файл недоступен, переснимите фото'
+    return
+  }
+  slot.error = ''
+  void uploadSlotFile(slot, slot.file)
+}
+
+const submitReport = async () => {
+  if (!canSubmitReport.value) {
+    return
+  }
+
+  const id = Number(route.params.reportId)
+  if (!Number.isFinite(id) || id <= 0) {
+    submitError.value = 'Некорректный reportId'
+    return
+  }
+
+  isSubmitting.value = true
+  submitError.value = ''
+  saveSuccess.value = ''
+  try {
+    await apiStore.submitReport(id)
+    saveSuccess.value = 'Отчёт отправлен. Статус переведён в DONE.'
+    await loadReport()
+  } catch (error) {
+    const responseData = (error as {
+      data?: {
+        message?: string
+        error?: string
+      }
+    })?.data
+    submitError.value = responseData?.message || responseData?.error || (error instanceof Error ? error.message : 'Не удалось отправить отчёт')
+  } finally {
+    isSubmitting.value = false
+  }
+}
+
+const leaveReport = async () => {
+  closeCamera()
+  await navigateTo('/')
+}
+
+const openSettings = async () => {
+  closeCamera()
+  await navigateTo('/settings')
 }
 
 onMounted(async () => {
@@ -287,6 +396,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   closeCamera()
+  for (const slot of photoSlots) {
+    revokeSlotPreview(slot)
+  }
 })
 </script>
 
@@ -295,17 +407,33 @@ onBeforeUnmount(() => {
     <B24Card>
       <template #header>
         <div class="flex items-center justify-between">
-          <ProseH2>Экран Администратора АЗС</ProseH2>
-          <B24Badge :color="allCompleted ? 'air-primary-success' : 'air-secondary'">
-            {{ completedCount }}/{{ photoSlots.length }} загружено
+          <div class="space-y-2">
+            <ProseH2>Экран Администратора АЗС</ProseH2>
+            <div class="flex flex-wrap items-center gap-2">
+              <B24Button
+                color="air-secondary"
+                variant="outline"
+                label="Выйти из отчёта"
+                @click="leaveReport"
+              />
+              <B24Button
+                color="air-primary"
+                variant="solid"
+                label="В настройки"
+                @click="openSettings"
+              />
+            </div>
+          </div>
+          <B24Badge :color="allUploaded ? 'air-primary-success' : 'air-secondary'">
+            {{ uploadedCount }}/{{ photoSlots.length }} загружено
           </B24Badge>
         </div>
       </template>
 
       <B24Alert
         color="air-secondary"
-        title="Мобильный сбор фото"
-        description="Фото отправляются в отчёт и сохраняются в папку Bitrix24 Диска."
+        title="Пошаговый сбор фото"
+        description="Сделайте фото, проверьте кадр, подтвердите его. После подтверждения фото загрузится в фоне."
       />
     </B24Card>
 
@@ -339,6 +467,12 @@ onBeforeUnmount(() => {
       title="Ошибка загрузки"
       :description="saveError"
     />
+    <B24Alert
+      v-if="submitError"
+      color="air-primary-alert"
+      title="Ошибка отправки отчёта"
+      :description="submitError"
+    />
 
     <B24Card v-if="report">
       <template #header>
@@ -352,22 +486,44 @@ onBeforeUnmount(() => {
       </div>
     </B24Card>
 
-    <B24Card v-for="slot in photoSlots" :key="slot.key" variant="outline">
+    <B24Card
+      v-for="(slot, index) in photoSlots"
+      :key="slot.key"
+      variant="outline"
+      :class="index > currentSlotIndex ? 'opacity-60' : ''"
+    >
       <template #header>
         <div class="flex items-center justify-between">
-          <ProseH3>{{ slot.title }}</ProseH3>
-          <B24Badge :color="slot.done ? 'air-primary-success' : 'air-secondary'">
-            {{ slot.uploading ? 'загрузка...' : (slot.done ? 'загружено' : 'ожидает фото') }}
+          <div>
+            <ProseH3>{{ index + 1 }}. {{ slot.title }}</ProseH3>
+            <ProseP v-if="index > currentSlotIndex" class="mb-0 text-[13px] text-gray-500">
+              Откроется после предыдущего фото
+            </ProseP>
+          </div>
+          <B24Badge :color="slot.uploaded ? 'air-primary-success' : (slot.error ? 'air-primary-alert' : 'air-secondary')">
+            {{ slot.uploading ? 'загрузка...' : (slot.uploaded ? 'загружено' : (slot.confirmed ? 'ожидает загрузки' : 'ожидает фото')) }}
           </B24Badge>
         </div>
       </template>
 
       <div class="space-y-2">
+        <div
+          v-if="slot.previewUrl"
+          class="rounded overflow-hidden bg-black"
+        >
+          <img
+            :src="slot.previewUrl"
+            :alt="slot.title"
+            class="w-full max-h-[420px] object-contain"
+          >
+        </div>
+
         <div class="flex flex-wrap gap-2">
           <B24Button
+            v-if="index <= currentSlotIndex && !slot.previewUrl && !slot.confirmed"
             color="air-primary"
             :label="activeCameraSlotKey === slot.key ? 'Камера активна' : 'Открыть камеру'"
-            :disabled="slot.uploading || cameraBusy"
+            :disabled="slot.uploading || cameraBusy || index > currentSlotIndex"
             loading-auto
             @click="startCameraForSlot(slot)"
           />
@@ -377,7 +533,7 @@ onBeforeUnmount(() => {
             label="Сделать фото"
             :disabled="slot.uploading"
             loading-auto
-            @click="captureAndUpload(slot)"
+            @click="captureSlotPreview(slot)"
           />
           <B24Button
             v-if="activeCameraSlotKey === slot.key"
@@ -386,6 +542,30 @@ onBeforeUnmount(() => {
             :disabled="slot.uploading"
             loading-auto
             @click="closeCamera"
+          />
+          <B24Button
+            v-if="slot.previewUrl && !slot.confirmed"
+            color="air-primary-success"
+            label="Использовать фото"
+            :disabled="slot.uploading"
+            loading-auto
+            @click="acceptSlotPhoto(slot)"
+          />
+          <B24Button
+            v-if="slot.previewUrl && !slot.uploaded"
+            color="air-secondary"
+            label="Переснять"
+            :disabled="slot.uploading || cameraBusy"
+            loading-auto
+            @click="retakeSlotPhoto(slot)"
+          />
+          <B24Button
+            v-if="slot.error && slot.confirmed && !slot.uploaded"
+            color="air-primary"
+            label="Повторить загрузку"
+            :disabled="slot.uploading"
+            loading-auto
+            @click="retrySlotUpload(slot)"
           />
         </div>
         <div v-if="activeCameraSlotKey === slot.key" class="rounded overflow-hidden bg-black">
@@ -416,6 +596,41 @@ onBeforeUnmount(() => {
           title="Ошибка файла"
           :description="slot.error"
         />
+      </div>
+    </B24Card>
+
+    <B24Card v-if="photoSlots.length > 0" variant="outline">
+      <template #header>
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <ProseH3>Отправка отчёта</ProseH3>
+            <ProseP class="mb-0 text-[13px] text-gray-500">
+              Отчёт можно отправить после подтверждения и фоновой загрузки всех фото.
+            </ProseP>
+          </div>
+          <B24Badge :color="canSubmitReport ? 'air-primary-success' : 'air-secondary'">
+            {{ confirmedCount }}/{{ photoSlots.length }} подтверждено
+          </B24Badge>
+        </div>
+      </template>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <B24Button
+          color="air-primary-success"
+          label="Отправить отчёт"
+          :disabled="!canSubmitReport"
+          loading-auto
+          @click="submitReport"
+        />
+        <B24Badge v-if="hasUploading" color="air-secondary">
+          идёт фоновая загрузка
+        </B24Badge>
+        <B24Badge v-if="hasUploadErrors" color="air-primary-alert">
+          есть ошибки загрузки
+        </B24Badge>
+        <B24Badge v-if="report?.status === 'done'" color="air-primary-success">
+          отчёт отправлен
+        </B24Badge>
       </div>
     </B24Card>
   </div>

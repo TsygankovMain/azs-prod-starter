@@ -12,6 +12,7 @@ type ReportRow = {
   scheduledAt: string | null
   deadlineAt: string | null
   errorText: string | null
+  diskFolderId: number | null
   createdAt: string | null
   updatedAt: string | null
 }
@@ -28,6 +29,17 @@ type Summary = {
 type AzsOption = {
   value: string
   label: string
+  adminUserId: number
+}
+
+type ManualResultItem = {
+  azsId?: string
+  ok?: boolean
+  duplicate?: boolean
+  reportItemId?: number
+  reportId?: number
+  slotKey?: string
+  error?: string
 }
 
 const PAGE_TITLE = 'Проверка отчётов АЗС'
@@ -37,17 +49,22 @@ const { locales: localesI18n, setLocale } = useI18n()
 const { initApp, processErrorGlobal } = useAppInit('ReviewerPage')
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
-const userStore = useUserStore()
 
 let $b24: null | B24Frame = null
 
 const isLoading = ref(false)
 const loadError = ref('')
 const manualError = ref('')
+const manualErrorDetails = ref<string[]>([])
 const manualSuccess = ref('')
 const timeoutMessage = ref('')
+const hasReviewerAccess = ref(false)
 const reports = ref<ReportRow[]>([])
 const azsOptions = ref<AzsOption[]>([])
+const azsSearch = ref('')
+const manualResults = ref<ManualResultItem[]>([])
+const portalDomain = ref('')
+const reportEntityTypeId = ref(0)
 const summary = ref<Summary>({
   total: 0,
   overdue: 0,
@@ -66,8 +83,7 @@ const filters = reactive({
 })
 
 const manualCandidate = reactive({
-  azsId: '',
-  adminUserId: 0,
+  azsIds: [] as string[],
   slotDate: '',
   slotTime: ''
 })
@@ -90,6 +106,16 @@ const statusColor = (status: string) => {
   return 'air-secondary'
 }
 
+const manualResultStatusColor = (item: ManualResultItem) => {
+  if (item.ok && !item.duplicate) {
+    return 'air-primary-success'
+  }
+  if (item.duplicate) {
+    return 'air-secondary'
+  }
+  return 'air-primary-alert'
+}
+
 const summaryCards = computed(() => ([
   { key: 'total', label: 'Всего', value: summary.value.total, color: 'air-secondary' },
   { key: 'open', label: 'В работе', value: summary.value.open, color: 'air-primary' },
@@ -105,72 +131,51 @@ const azsQuery = computed(() => {
   return ids.length > 0 ? ids.join(',') : undefined
 })
 
-const getB24Result = (data: unknown): unknown => {
-  const response = data as { getData?: () => unknown }
-  const payload = typeof response?.getData === 'function' ? response.getData() : data
-  return (payload as { result?: unknown })?.result ?? payload
-}
+const filteredAzsOptions = computed(() => {
+  const query = azsSearch.value.trim().toLowerCase()
+  const selected = new Set([
+    ...filters.azsIds,
+    ...manualCandidate.azsIds
+  ].map((item) => String(item || '').trim()).filter(Boolean))
 
-const callB24 = async (method: string, params: Record<string, unknown> = {}) => {
-  if (!$b24) {
-    throw new Error('Bitrix24 frame is not initialized')
-  }
-  const response = await $b24.callMethod(method, params)
-  return getB24Result(response)
-}
+  return azsOptions.value.filter((item) => (
+    selected.has(item.value)
+    || !query
+    || item.label.toLowerCase().includes(query)
+    || item.value.includes(query)
+  ))
+})
 
-const toAzsOption = (row: Record<string, unknown>): AzsOption | null => {
-  const id = String(row.id ?? row.ID ?? '').trim()
-  if (!id) {
-    return null
-  }
-  const title = String(row.title ?? row.TITLE ?? `АЗС ${id}`).trim()
-  return {
-    value: id,
-    label: `${title} (${id})`
-  }
-}
+const selectedManualAzsOptions = computed(() => {
+  const selected = new Set(manualCandidate.azsIds.map((item) => String(item || '').trim()).filter(Boolean))
+  return azsOptions.value.filter((item) => selected.has(item.value))
+})
 
 const loadAzsOptions = async () => {
   try {
-    const settingsResponse = await apiStore.getSettings()
-    const settings = (settingsResponse.settings ?? {}) as Record<string, unknown>
-    const azs = (settings.azs ?? {}) as Record<string, unknown>
-    const entityTypeId = Number(azs.entityTypeId || 0)
-    if (!Number.isFinite(entityTypeId) || entityTypeId <= 0) {
-      azsOptions.value = []
-      return
-    }
-
-    const items: Record<string, unknown>[] = []
-    let start = 0
-    while (start >= 0) {
-      const result = await callB24('crm.item.list', {
-        entityTypeId,
-        select: ['id', 'title'],
-        order: { id: 'ASC' },
-        start,
-        useOriginalUfNames: 'N'
-      })
-      const pageItems = Array.isArray((result as { items?: unknown[] })?.items)
-        ? (result as { items: unknown[] }).items
-        : (Array.isArray(result) ? result : [])
-      items.push(...pageItems.filter((row) => Boolean(row) && typeof row === 'object') as Record<string, unknown>[])
-      const next = Number((result as { next?: unknown })?.next ?? -1)
-      if (!Number.isFinite(next) || next < 0 || pageItems.length === 0) {
-        break
-      }
-      start = next
-    }
-
-    azsOptions.value = items
-      .map(toAzsOption)
-      .filter((item): item is AzsOption => Boolean(item))
+    const response = await apiStore.getAzsOptions({
+      search: azsSearch.value.trim() || undefined,
+      limit: 500
+    })
+    azsOptions.value = response.items
+      .map((item) => ({
+        value: String(item.id || '').trim(),
+        label: `${String(item.title || `АЗС ${item.id}`).trim()} (${String(item.id)})${Number(item.adminUserId || 0) > 0 ? ` · админ ${String(item.adminUserId)}` : ''}`,
+        adminUserId: Number(item.adminUserId || 0)
+      }))
+      .filter((item) => item.value)
       .sort((a, b) => a.label.localeCompare(b.label, 'ru'))
   } catch (error) {
     console.warn('Failed to load AZS options for reviewer filter', error)
     azsOptions.value = []
   }
+}
+
+const loadReviewerSettings = async () => {
+  const response = await apiStore.getSettings()
+  const settings = (response.settings ?? {}) as Record<string, unknown>
+  const report = (settings.report ?? {}) as Record<string, unknown>
+  reportEntityTypeId.value = Number(report.entityTypeId || 0)
 }
 
 const loadSummary = async () => {
@@ -211,28 +216,49 @@ const applyStatusFilter = async (status: string) => {
 
 const createManual = async () => {
   manualError.value = ''
+  manualErrorDetails.value = []
   manualSuccess.value = ''
+  manualResults.value = []
   try {
+    const selectedAzsIds = manualCandidate.azsIds.map((item) => String(item || '').trim()).filter(Boolean)
     const result = await apiStore.createManualReport({
-      azsId: manualCandidate.azsId.trim(),
-      adminUserId: Number(manualCandidate.adminUserId),
+      candidates: selectedAzsIds.map((azsId) => {
+        const option = azsOptions.value.find((item) => item.value === azsId)
+        return {
+          azsId,
+          adminUserId: Number(option?.adminUserId || 0)
+        }
+      }),
       slotDate: manualCandidate.slotDate.trim() || undefined,
       slotHHmm: toSlotHHmm(manualCandidate.slotTime) || undefined
     })
     const summary = result.summary as Record<string, unknown>
-    const duplicates = Array.isArray(result.items)
-      ? result.items.filter((item) => Boolean((item as Record<string, unknown>).duplicate))
+    manualResults.value = Array.isArray(result.items)
+      ? result.items.map((item) => item as ManualResultItem)
       : []
+    const duplicates = manualResults.value.filter((item) => Boolean(item.duplicate))
     const duplicateSlots = duplicates
-      .map((item) => String((item as Record<string, unknown>).slotKey || ''))
+      .map((item) => String(item.slotKey || ''))
       .filter(Boolean)
       .slice(0, 3)
       .join(', ')
+    const failed = Number(summary.failed || 0)
 
-    manualSuccess.value = `Создано: ${String(summary.created || 0)}, дублей: ${String(summary.duplicates || 0)}${duplicateSlots ? `. Дубли слотов: ${duplicateSlots}` : ''}`
+    manualSuccess.value = `Создано: ${String(summary.created || 0)}, дублей: ${String(summary.duplicates || 0)}, ошибок: ${String(failed)}${duplicateSlots ? `. Дубли слотов: ${duplicateSlots}` : ''}`
     await loadReports()
   } catch (error) {
-    manualError.value = error instanceof Error ? error.message : 'Не удалось создать ручной отчёт'
+    const responseData = (error as {
+      data?: {
+        message?: string
+        error?: string
+        details?: string[]
+      }
+      message?: string
+    })?.data
+    manualError.value = responseData?.message || responseData?.error || (error instanceof Error ? error.message : 'Не удалось создать ручной отчёт')
+    manualErrorDetails.value = Array.isArray(responseData?.details)
+      ? responseData.details.map((item) => String(item || '').trim()).filter(Boolean)
+      : []
   }
 }
 
@@ -248,16 +274,55 @@ const runTimeout = async () => {
   }
 }
 
+const openExternalUrl = (url: string) => {
+  if (!url) {
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+const openReportCrmCard = (item: ReportRow) => {
+  if (!portalDomain.value || !reportEntityTypeId.value || !item.reportItemId) {
+    return
+  }
+  openExternalUrl(`https://${portalDomain.value}/crm/type/${reportEntityTypeId.value}/details/${item.reportItemId}/`)
+}
+
+const openPhotoFolder = (item: ReportRow) => {
+  if (!portalDomain.value || !item.diskFolderId) {
+    return
+  }
+  openExternalUrl(`https://${portalDomain.value}/docs/?folderId=${item.diskFolderId}`)
+}
+
+const loadRoleAccess = async () => {
+  try {
+    const response = await apiStore.getMyRole()
+    hasReviewerAccess.value = Boolean(response.capabilities?.reviewer || response.capabilities?.settings)
+  } catch {
+    hasReviewerAccess.value = false
+  }
+}
+
 onMounted(async () => {
   try {
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
-    manualCandidate.adminUserId = userStore.id || 1
+    const authData = $b24.auth.getAuthData()
+    portalDomain.value = authData === false
+      ? ''
+      : String(authData.domain || '').replace(/^https?:\/\//, '').replace(/\/+$/, '')
+    await loadRoleAccess()
+    if (!hasReviewerAccess.value) {
+      loadError.value = 'Недостаточно прав: раздел проверки доступен только ролям Администратор и Проверяющий.'
+      return
+    }
     const now = new Date()
     const to2 = (n: number) => String(n).padStart(2, '0')
     manualCandidate.slotDate = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
     manualCandidate.slotTime = `${to2(now.getUTCHours())}:${to2(now.getUTCMinutes())}`
     await $b24.parent.setTitle(PAGE_TITLE)
+    await loadReviewerSettings()
     await loadAzsOptions()
     await loadReports()
   } catch (error) {
@@ -268,6 +333,14 @@ onMounted(async () => {
 
 <template>
   <div class="w-full max-w-[1280px] mx-auto px-4 py-4 space-y-4">
+    <B24Alert
+      v-if="!hasReviewerAccess"
+      color="air-primary-alert"
+      title="Доступ запрещён"
+      description="Раздел проверки доступен только ролям Администратор и Проверяющий."
+    />
+
+    <template v-else>
     <B24Card>
       <template #header>
         <div class="flex items-center justify-between">
@@ -291,13 +364,19 @@ onMounted(async () => {
           <B24Input v-model="filters.status" placeholder="done/reserved/failed" />
         </B24FormField>
         <B24FormField label="АЗС (множественный выбор)">
+          <B24Input
+            v-model="azsSearch"
+            class="mb-2"
+            placeholder="Поиск по названию или ID"
+            @change="loadAzsOptions"
+          />
           <select
             v-model="filters.azsIds"
             multiple
             class="h-[92px] w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
           >
             <option
-              v-for="item in azsOptions"
+              v-for="item in filteredAzsOptions"
               :key="item.value"
               :value="item.value"
             >
@@ -354,12 +433,30 @@ onMounted(async () => {
       <template #header>
         <ProseH3>Ручной запуск отчёта</ProseH3>
       </template>
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-2">
-        <B24FormField label="АЗС ID">
-          <B24Input v-model="manualCandidate.azsId" placeholder="azs-17" />
-        </B24FormField>
-        <B24FormField label="Админ user id">
-          <B24InputNumber v-model="manualCandidate.adminUserId" :min="1" />
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+        <B24FormField label="АЗС для запуска">
+          <B24Input
+            v-model="azsSearch"
+            class="mb-2"
+            placeholder="Поиск АЗС"
+            @change="loadAzsOptions"
+          />
+          <select
+            v-model="manualCandidate.azsIds"
+            multiple
+            class="h-[132px] w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+          >
+            <option
+              v-for="item in filteredAzsOptions"
+              :key="item.value"
+              :value="item.value"
+            >
+              {{ item.label }}
+            </option>
+          </select>
+          <ProseP class="mb-0 mt-1 text-xs text-gray-500">
+            Выбрано: {{ selectedManualAzsOptions.length }}
+          </ProseP>
         </B24FormField>
         <B24FormField label="Дата слота">
           <input
@@ -394,6 +491,45 @@ onMounted(async () => {
       title="Ошибка ручного запуска"
       :description="manualError"
     />
+    <B24Card v-if="manualErrorDetails.length" variant="outline">
+      <template #header>
+        <ProseH3>Что исправить</ProseH3>
+      </template>
+      <ul class="list-disc pl-5 text-sm">
+        <li v-for="detail in manualErrorDetails" :key="detail">
+          {{ detail }}
+        </li>
+      </ul>
+    </B24Card>
+    <B24Card v-if="manualResults.length" variant="outline">
+      <template #header>
+        <ProseH3>Результат ручного запуска</ProseH3>
+      </template>
+      <div class="overflow-auto">
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="text-left border-b border-gray-200">
+              <th class="py-2 pr-3">АЗС</th>
+              <th class="py-2 pr-3">Статус</th>
+              <th class="py-2 pr-3">Слот</th>
+              <th class="py-2 pr-3">Ошибка</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(item, index) in manualResults" :key="`${item.azsId || 'row'}-${index}`" class="border-b border-gray-100">
+              <td class="py-2 pr-3">{{ item.azsId || '—' }}</td>
+              <td class="py-2 pr-3">
+                <B24Badge :color="manualResultStatusColor(item)">
+                  {{ item.duplicate ? 'дубль' : (item.ok ? 'создан' : 'ошибка') }}
+                </B24Badge>
+              </td>
+              <td class="py-2 pr-3">{{ item.slotKey || '—' }}</td>
+              <td class="py-2 pr-3">{{ item.error || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </B24Card>
     <B24Alert
       v-if="timeoutMessage"
       color="air-secondary"
@@ -419,6 +555,7 @@ onMounted(async () => {
               <th class="py-2 pr-3">Дедлайн</th>
               <th class="py-2 pr-3">Статус</th>
               <th class="py-2 pr-3">Отчёт CRM</th>
+              <th class="py-2 pr-3">Папка фото</th>
               <th class="py-2 pr-3">Действие</th>
             </tr>
           </thead>
@@ -435,18 +572,38 @@ onMounted(async () => {
               </td>
               <td class="py-2 pr-3">{{ item.reportItemId || '—' }}</td>
               <td class="py-2 pr-3">
+                {{ item.diskFolderId || '—' }}
+              </td>
+              <td class="py-2 pr-3">
+                <div class="flex flex-wrap gap-1">
                 <B24Button
                   size="xs"
                   color="air-secondary"
-                  label="Открыть экран админа"
+                  label="Экран админа"
                   loading-auto
                   @click="navigateTo(`/admin/${item.id}`)"
                 />
+                <B24Button
+                  size="xs"
+                  color="air-secondary"
+                  label="Карточка отчёта"
+                  :disabled="!item.reportItemId || !reportEntityTypeId || !portalDomain"
+                  @click="openReportCrmCard(item)"
+                />
+                <B24Button
+                  size="xs"
+                  color="air-secondary"
+                  label="Папка фото"
+                  :disabled="!item.diskFolderId || !portalDomain"
+                  @click="openPhotoFolder(item)"
+                />
+                </div>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
     </B24Card>
+    </template>
   </div>
 </template>

@@ -25,6 +25,16 @@ class ReportSyncError extends Error {
   }
 }
 
+class ManualReportValidationError extends Error {
+  constructor(details) {
+    super('Заполните обязательные поля');
+    this.name = 'ManualReportValidationError';
+    this.code = 'manual_report_validation_failed';
+    this.statusCode = 400;
+    this.details = details;
+  }
+}
+
 const normalizeDateFilter = (value) => {
   const raw = String(value || '').trim();
   if (!raw) {
@@ -54,6 +64,19 @@ const normalizeAzsIds = (value) => {
 };
 
 const normalizePhotoCode = (value) => String(value || '').trim().toLowerCase();
+
+const normalizeSlotHHmm = (value) => {
+  const raw = String(value || '').replace(/[^0-9]/g, '').slice(0, 4);
+  if (raw.length !== 4) {
+    return '';
+  }
+  const hours = Number(raw.slice(0, 2));
+  const minutes = Number(raw.slice(2, 4));
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return '';
+  }
+  return `${String(hours).padStart(2, '0')}${String(minutes).padStart(2, '0')}`;
+};
 
 const parseCrmItemId = (value) => {
   const direct = Number(value);
@@ -87,7 +110,129 @@ const getFieldValue = (item, fieldCode) => {
   return item[fieldCode] ?? item[fieldCode.toLowerCase()] ?? item[fieldCode.toUpperCase()];
 };
 
-const readRequiredPhotos = async ({ bitrixClient, settings, azsId }) => {
+const extractFirstUserId = (value) => {
+  const ids = extractMultipleIds(value);
+  return ids.length ? Number(ids[0]) : 0;
+};
+
+const normalizeAzsOption = ({ row, adminField }) => {
+  const id = parseCrmItemId(row?.id ?? row?.ID);
+  if (!id) {
+    return null;
+  }
+  const title = String(row?.title ?? row?.TITLE ?? `АЗС ${id}`).trim();
+  return {
+    id: String(id),
+    title,
+    adminUserId: adminField ? extractFirstUserId(getFieldValue(row, adminField)) : 0
+  };
+};
+
+const makeManualValidationError = (details) => new ManualReportValidationError([...new Set(
+  details.map((item) => String(item || '').trim()).filter(Boolean)
+)]);
+
+export const resolveManualCandidates = async ({
+  payload,
+  settings,
+  bitrixClient,
+  context = {}
+}) => {
+  const details = [];
+  const rawCandidates = Array.isArray(payload?.candidates)
+    ? payload.candidates
+    : (payload?.candidate ? [payload.candidate] : []);
+  const azsIdsFromPayload = normalizeAzsIds(payload?.azsIds);
+  const candidateSources = rawCandidates.length > 0
+    ? rawCandidates
+    : azsIdsFromPayload.map((azsId) => ({ azsId }));
+  const firstCandidate = candidateSources[0] || {};
+  const slotDate = String(payload?.slotDate || firstCandidate.slotDate || '').trim();
+  const slotHHmm = normalizeSlotHHmm(payload?.slotHHmm || payload?.slotTime || firstCandidate.slotHHmm || firstCandidate.slotTime);
+
+  if (!candidateSources.length) {
+    details.push('Выберите хотя бы одну АЗС');
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(slotDate)) {
+    details.push('Укажите дату запуска');
+  }
+  if (!slotHHmm) {
+    details.push('Укажите время запуска');
+  }
+  if (!Number(settings?.report?.entityTypeId || 0)) {
+    details.push('В настройках не выбран смарт-процесс отчётов');
+  }
+  if (!Number(settings?.azs?.entityTypeId || 0)) {
+    details.push('В настройках не выбран смарт-процесс АЗС');
+  }
+
+  if (details.length) {
+    throw makeManualValidationError(details);
+  }
+
+  const adminField = String(settings?.azs?.fields?.admin || '').trim();
+  const candidates = [];
+  const failedItems = [];
+
+  for (const source of candidateSources) {
+    const azsId = String(source?.azsId ?? source?.id ?? '').trim();
+    const azsItemId = parseCrmItemId(azsId);
+    if (!azsItemId) {
+      failedItems.push({
+        ok: false,
+        azsId,
+        error: 'Некорректный ID АЗС'
+      });
+      continue;
+    }
+
+    let adminUserId = Number(source?.adminUserId || 0);
+    if (!Number.isFinite(adminUserId) || adminUserId <= 0) {
+      if (!adminField) {
+        failedItems.push({
+          ok: false,
+          azsId: String(azsItemId),
+          error: 'В настройках не сопоставлено поле "Администратор АЗС"'
+        });
+        continue;
+      }
+
+      const azsItem = await bitrixClient.getCrmItem({
+        entityTypeId: Number(settings.azs.entityTypeId),
+        id: azsItemId,
+        context
+      });
+      adminUserId = extractFirstUserId(getFieldValue(azsItem, adminField));
+    }
+
+    if (!Number.isFinite(adminUserId) || adminUserId <= 0) {
+      failedItems.push({
+        ok: false,
+        azsId: String(azsItemId),
+        error: 'В карточке АЗС не указан администратор'
+      });
+      continue;
+    }
+
+    candidates.push({
+      azsId: String(azsItemId),
+      adminUserId: Math.floor(adminUserId),
+      slotDate,
+      slotHHmm
+    });
+  }
+
+  if (!candidates.length && failedItems.length) {
+    throw makeManualValidationError(failedItems.map((item) => `${item.azsId || 'АЗС'}: ${item.error}`));
+  }
+
+  return {
+    candidates,
+    failedItems
+  };
+};
+
+const readRequiredPhotos = async ({ bitrixClient, settings, azsId, context = {} }) => {
   const azsEntityTypeId = Number(settings.azs?.entityTypeId || 0);
   const photoSetField = String(settings.azs?.fields?.photoSet || '').trim();
   const photoTypeEntityTypeId = Number(settings.photoType?.entityTypeId || 0);
@@ -115,7 +260,8 @@ const readRequiredPhotos = async ({ bitrixClient, settings, azsId }) => {
 
   const azsItem = await bitrixClient.getCrmItem({
     entityTypeId: azsEntityTypeId,
-    id: azsItemId
+    id: azsItemId,
+    context
   });
   if (!azsItem) {
     throw new ReportConfigError(
@@ -134,7 +280,8 @@ const readRequiredPhotos = async ({ bitrixClient, settings, azsId }) => {
 
   const items = await Promise.all(photoTypeIds.map((id) => bitrixClient.getCrmItem({
     entityTypeId: photoTypeEntityTypeId,
-    id
+    id,
+    context
   })));
 
   const requiredPhotos = items
@@ -206,6 +353,29 @@ const ensureFolderFieldMapping = (settings) => {
   return folderFieldCode;
 };
 
+const ensureCurrentUserOwnsReport = ({ req, report }) => {
+  const currentUserId = extractUserId(req.user);
+  if (!currentUserId || currentUserId !== Number(report.adminUserId)) {
+    const error = new Error('Current user is not report administrator');
+    error.code = 'forbidden_user';
+    error.statusCode = 403;
+    error.currentUserId = currentUserId;
+    error.expectedAdminUserId = Number(report.adminUserId);
+    throw error;
+  }
+  return currentUserId;
+};
+
+const canUseReviewerTools = (req) => (
+  Boolean(req.accessContext?.capabilities?.reviewer)
+  || Boolean(req.accessContext?.capabilities?.settings)
+);
+
+const canUseAdminReportTools = (req) => (
+  Boolean(req.accessContext?.capabilities?.reports)
+  || Boolean(req.accessContext?.capabilities?.settings)
+);
+
 export const createReportsRouter = ({
   reportsStore,
   dispatchService,
@@ -226,6 +396,13 @@ export const createReportsRouter = ({
   });
 
   router.get('/', async (req, res) => {
+    if (!canUseReviewerTools(req)) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: 'Reviewer access is required'
+      });
+    }
+
     try {
       const items = await reportsStore.list({
         dateFrom: normalizeDateFilter(req.query.dateFrom),
@@ -248,6 +425,13 @@ export const createReportsRouter = ({
   });
 
   router.get('/summary', async (req, res) => {
+    if (!canUseReviewerTools(req)) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: 'Reviewer access is required'
+      });
+    }
+
     try {
       const summary = await reportsStore.getSummary({
         dateFrom: normalizeDateFilter(req.query.dateFrom),
@@ -264,7 +448,117 @@ export const createReportsRouter = ({
     }
   });
 
+  router.get('/azs-options', async (req, res) => {
+    if (!canUseReviewerTools(req)) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: 'Reviewer access is required'
+      });
+    }
+
+    try {
+      const settings = await settingsStore.read();
+      const entityTypeId = Number(settings?.azs?.entityTypeId || 0);
+      if (!entityTypeId) {
+        return res.status(400).json({
+          error: 'azs_settings_not_configured',
+          message: 'В настройках не выбран смарт-процесс АЗС'
+        });
+      }
+      if (typeof bitrixClient.listCrmItems !== 'function') {
+        return res.status(501).json({
+          error: 'bitrix_client_not_supported',
+          message: 'Bitrix client does not support crm.item.list'
+        });
+      }
+
+      const adminField = String(settings?.azs?.fields?.admin || '').trim();
+      const search = String(req.query.search || '').trim().toLowerCase();
+      const limit = Math.min(Math.max(Number(req.query.limit || 200), 1), 500);
+      const select = ['id', 'ID', 'title', 'TITLE'];
+      if (adminField) {
+        select.push(adminField, adminField.toLowerCase(), adminField.toUpperCase());
+      }
+
+      const rows = await bitrixClient.listCrmItems({
+        entityTypeId,
+        select,
+        order: { id: 'ASC' },
+        limit: 500,
+        useOriginalUfNames: 'N',
+        context: req.bitrixContext || {}
+      });
+
+      const items = rows
+        .map((row) => normalizeAzsOption({ row, adminField }))
+        .filter(Boolean)
+        .filter((item) => {
+          if (!search) {
+            return true;
+          }
+          return item.title.toLowerCase().includes(search) || item.id.includes(search);
+        })
+        .slice(0, limit);
+
+      return res.json({ items });
+    } catch (error) {
+      return res.status(502).json({
+        error: 'azs_options_failed',
+        message: error.message
+      });
+    }
+  });
+
+  router.get('/my-active', async (req, res) => {
+    if (!canUseAdminReportTools(req)) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: 'AZS administrator access is required'
+      });
+    }
+
+    try {
+      const currentUserId = extractUserId(req.user);
+      if (!currentUserId) {
+        return res.status(401).json({
+          error: 'unauthorized_user',
+          message: 'Unable to resolve current user id from JWT'
+        });
+      }
+
+      if (typeof reportsStore.listActiveByAdminUserId !== 'function') {
+        return res.status(501).json({
+          error: 'reports_active_not_supported',
+          message: 'reportsStore.listActiveByAdminUserId is not implemented'
+        });
+      }
+
+      const items = await reportsStore.listActiveByAdminUserId({
+        adminUserId: currentUserId,
+        limit: normalizeLimit(req.query.limit)
+      });
+
+      return res.json({
+        item: items[0] || null,
+        items,
+        total: items.length
+      });
+    } catch (error) {
+      return res.status(500).json({
+        error: 'reports_my_active_failed',
+        message: error.message
+      });
+    }
+  });
+
   router.get('/:id', async (req, res) => {
+    if (!canUseAdminReportTools(req)) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: 'AZS administrator access is required'
+      });
+    }
+
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id) || id <= 0) {
@@ -287,7 +581,8 @@ export const createReportsRouter = ({
         readRequiredPhotos({
           bitrixClient,
           settings,
-          azsId: item.azsId
+          azsId: item.azsId,
+          context: req.bitrixContext || {}
         })
       ]);
       return res.json({ item, photos, requiredPhotos });
@@ -301,30 +596,61 @@ export const createReportsRouter = ({
   });
 
   router.post('/manual', async (req, res) => {
-    try {
-      const candidate = req.body?.candidate;
-      if (!candidate || typeof candidate !== 'object') {
-        return res.status(400).json({
-          error: 'invalid_candidate',
-          message: 'POST /api/reports/manual expects body.candidate'
-        });
-      }
+    if (!canUseReviewerTools(req)) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: 'Reviewer access is required'
+      });
+    }
 
-      const result = await dispatchService.dispatchBatch({
-        candidates: [candidate],
-        trigger: 'manual'
+    try {
+      const settings = await settingsStore.read();
+      const { candidates, failedItems } = await resolveManualCandidates({
+        payload: req.body || {},
+        settings,
+        bitrixClient,
+        context: req.bitrixContext || {}
       });
 
-      return res.json(result);
+      const result = await dispatchService.dispatchBatch({
+        candidates,
+        trigger: 'manual',
+        context: req.bitrixContext || {}
+      });
+
+      const items = [
+        ...result.items,
+        ...failedItems
+      ];
+      const summary = {
+        total: items.length,
+        created: Number(result.summary?.created || 0),
+        duplicates: Number(result.summary?.duplicates || 0),
+        failed: Number(result.summary?.failed || 0) + failedItems.length
+      };
+
+      return res.json({
+        summary,
+        items
+      });
     } catch (error) {
-      return res.status(500).json({
-        error: 'manual_report_failed',
-        message: error.message
+      const statusCode = Number(error?.statusCode || 500);
+      return res.status(statusCode).json({
+        error: error?.code || 'manual_report_failed',
+        message: error.message,
+        details: error?.details || undefined
       });
     }
   });
 
   router.post('/:id/photo', upload.single('photo'), async (req, res) => {
+    if (!canUseAdminReportTools(req)) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: 'AZS administrator access is required'
+      });
+    }
+
     try {
       const reportId = Number(req.params.id);
       if (!Number.isFinite(reportId) || reportId <= 0) {
@@ -356,22 +682,15 @@ export const createReportsRouter = ({
         });
       }
 
-      const currentUserId = extractUserId(req.user);
-      if (!currentUserId || currentUserId !== Number(report.adminUserId)) {
-        return res.status(403).json({
-          error: 'forbidden_user',
-          message: 'Current user is not report administrator',
-          currentUserId,
-          expectedAdminUserId: Number(report.adminUserId)
-        });
-      }
+      const currentUserId = ensureCurrentUserOwnsReport({ req, report });
 
       const settings = await settingsStore.read();
       const folderFieldCode = ensureFolderFieldMapping(settings);
       const requiredPhotos = await readRequiredPhotos({
         bitrixClient,
         settings,
-        azsId: report.azsId
+        azsId: report.azsId,
+        context: req.bitrixContext || {}
       });
       const requiredCodes = requiredPhotos.map((item) => item.code);
       if (!requiredCodes.includes(photoCode)) {
@@ -395,7 +714,7 @@ export const createReportsRouter = ({
         configuredRootFolderId: Number(settings.disk?.rootFolderId || 0),
         storageRootId: Number(process.env.BITRIX_DISK_STORAGE_ROOT_ID || 1),
         appFolderName: process.env.BITRIX_DISK_APP_FOLDER || 'AZS-Photo-Reports'
-      });
+      }, req.bitrixContext || {});
 
       const slotHHmm = String(report.slotKey || '').split(':')[1] || '0000';
       const uploaded = await uploadPhoto(bitrixClient.diskApi, {
@@ -407,7 +726,7 @@ export const createReportsRouter = ({
         extension: file.originalname.split('.').pop() || 'jpg',
         content: file.buffer,
         folderNameTemplate: settings.disk?.folderNameTemplate || '{yyyy-mm}/{dd}/{azs}'
-      });
+      }, req.bitrixContext || {});
 
       await reportsStore.upsertPhoto({
         reportId,
@@ -422,8 +741,7 @@ export const createReportsRouter = ({
       const currentPhotos = await reportsStore.listPhotos(reportId);
       const uploadedCodes = new Set(currentPhotos.map((photo) => normalizePhotoCode(photo.photoCode)));
       const allRequiredUploaded = requiredCodes.every((code) => uploadedCodes.has(code));
-
-      const nextStatus = allRequiredUploaded ? 'done' : 'in_progress';
+      const nextStatus = 'in_progress';
       await reportsStore.setReportStatus({
         reportId,
         status: nextStatus
@@ -436,12 +754,14 @@ export const createReportsRouter = ({
         status: nextStatus,
         photos: currentPhotos,
         diskFolderId: uploaded.folderId,
-        requireReportItem: true
+        requireReportItem: true,
+        context: req.bitrixContext || {}
       });
 
       const syncedCrmItem = await bitrixClient.getCrmItem({
         entityTypeId: Number(settings.report?.entityTypeId || 0),
-        id: Number(report.reportItemId || 0)
+        id: Number(report.reportItemId || 0),
+        context: req.bitrixContext || {}
       });
       const syncedFolderId = String(getFieldValue(syncedCrmItem, folderFieldCode) ?? '').trim();
       if (syncedFolderId !== String(uploaded.folderId)) {
@@ -449,17 +769,6 @@ export const createReportsRouter = ({
           `Report CRM folder field "${folderFieldCode}" was not synced. Expected "${String(uploaded.folderId)}", got "${syncedFolderId || '<empty>'}"`,
           'report_folder_sync_failed'
         );
-      }
-
-      if (allRequiredUploaded) {
-        const reviewerId = Number(process.env.REPORT_REVIEWER_USER_ID || 0);
-        if (reviewerId > 0) {
-          await notificationService.notifyReportDone({
-            userId: reviewerId,
-            reportId,
-            azsId: report.azsId
-          });
-        }
       }
 
       return res.json({
@@ -470,7 +779,8 @@ export const createReportsRouter = ({
           fileName: uploaded.fileName,
           folderId: uploaded.folderId,
           status: nextStatus,
-          completed: allRequiredUploaded,
+          completed: false,
+          allUploaded: allRequiredUploaded,
           uploadedCount: uploadedCodes.size,
           requiredCount: requiredCodes.length,
           requiredPhotos
@@ -480,7 +790,127 @@ export const createReportsRouter = ({
       const statusCode = Number(error?.statusCode || 500);
       return res.status(statusCode).json({
         error: error?.code || 'report_photo_upload_failed',
-        message: error.message
+        message: error.message,
+        currentUserId: error?.currentUserId,
+        expectedAdminUserId: error?.expectedAdminUserId
+      });
+    }
+  });
+
+  router.post('/:id/submit', async (req, res) => {
+    if (!canUseAdminReportTools(req)) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: 'AZS administrator access is required'
+      });
+    }
+
+    try {
+      const reportId = Number(req.params.id);
+      if (!Number.isFinite(reportId) || reportId <= 0) {
+        return res.status(400).json({
+          error: 'invalid_report_id',
+          message: 'report id must be a positive number'
+        });
+      }
+
+      const report = await reportsStore.getById(reportId);
+      if (!report) {
+        return res.status(404).json({
+          error: 'report_not_found'
+        });
+      }
+
+      ensureCurrentUserOwnsReport({ req, report });
+
+      const settings = await settingsStore.read();
+      const folderFieldCode = ensureFolderFieldMapping(settings);
+      const requiredPhotos = await readRequiredPhotos({
+        bitrixClient,
+        settings,
+        azsId: report.azsId,
+        context: req.bitrixContext || {}
+      });
+      const requiredCodes = requiredPhotos.map((item) => item.code);
+      const currentPhotos = await reportsStore.listPhotos(reportId);
+      const uploadedCodes = new Set(currentPhotos.map((photo) => normalizePhotoCode(photo.photoCode)));
+      const missingCodes = requiredCodes.filter((code) => !uploadedCodes.has(code));
+
+      if (missingCodes.length > 0) {
+        return res.status(409).json({
+          error: 'report_photos_missing',
+          message: `Cannot submit report: missing photos ${missingCodes.join(', ')}`,
+          missingCodes
+        });
+      }
+
+      const diskFolderId = currentPhotos
+        .map((photo) => Number(photo.diskFolderId))
+        .find((folderId) => Number.isFinite(folderId) && folderId > 0);
+
+      if (!diskFolderId) {
+        throw new ReportSyncError(
+          'Cannot submit report: uploaded photos do not contain Bitrix24 Disk folder id',
+          'report_folder_missing'
+        );
+      }
+
+      await reportsStore.setReportStatus({
+        reportId,
+        status: 'done'
+      });
+
+      await updateReportCrmItem({
+        bitrixClient,
+        settings,
+        report,
+        status: 'done',
+        photos: currentPhotos,
+        diskFolderId,
+        requireReportItem: true,
+        context: req.bitrixContext || {}
+      });
+
+      const syncedCrmItem = await bitrixClient.getCrmItem({
+        entityTypeId: Number(settings.report?.entityTypeId || 0),
+        id: Number(report.reportItemId || 0),
+        context: req.bitrixContext || {}
+      });
+      const syncedFolderId = String(getFieldValue(syncedCrmItem, folderFieldCode) ?? '').trim();
+      if (syncedFolderId !== String(diskFolderId)) {
+        throw new ReportSyncError(
+          `Report CRM folder field "${folderFieldCode}" was not synced. Expected "${String(diskFolderId)}", got "${syncedFolderId || '<empty>'}"`,
+          'report_folder_sync_failed'
+        );
+      }
+
+      const reviewerId = Number(process.env.REPORT_REVIEWER_USER_ID || 0);
+      if (reviewerId > 0) {
+        await notificationService.notifyReportDone({
+          userId: reviewerId,
+          reportId,
+          azsId: report.azsId,
+          context: req.bitrixContext || {}
+        });
+      }
+
+      return res.json({
+        item: {
+          reportId,
+          status: 'done',
+          completed: true,
+          uploadedCount: uploadedCodes.size,
+          requiredCount: requiredCodes.length,
+          folderId: diskFolderId
+        }
+      });
+    } catch (error) {
+      const statusCode = Number(error?.statusCode || 500);
+      return res.status(statusCode).json({
+        error: error?.code || 'report_submit_failed',
+        message: error.message,
+        currentUserId: error?.currentUserId,
+        expectedAdminUserId: error?.expectedAdminUserId
       });
     }
   });

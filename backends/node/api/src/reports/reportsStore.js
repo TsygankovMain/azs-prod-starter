@@ -24,9 +24,17 @@ const toViewModel = (row) => ({
   scheduledAt: normalizeDate(row.scheduled_at),
   deadlineAt: normalizeDate(row.deadline_at),
   errorText: row.error_text || null,
+  diskFolderId: row.disk_folder_id ? Number(row.disk_folder_id) : null,
   createdAt: normalizeDate(row.created_at),
   updatedAt: normalizeDate(row.updated_at)
 });
+
+const ACTIVE_STATUS_ORDER_SQL = `CASE status
+  WHEN 'in_progress' THEN 0
+  WHEN 'new' THEN 1
+  WHEN 'reserved' THEN 2
+  ELSE 9
+END`;
 
 const createPostgresStore = (pool) => ({
   async ensurePhotoSchema() {
@@ -87,10 +95,11 @@ const createPostgresStore = (pool) => ({
 
     params.push(Math.min(Number(limit) || 200, 500));
     const sql = `
-      SELECT *
-      FROM dispatch_log
+      SELECT d.*,
+             (SELECT MAX(rp.disk_folder_id) FROM report_photo rp WHERE rp.report_id = d.id) AS disk_folder_id
+      FROM dispatch_log d
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY id DESC
+      ORDER BY d.id DESC
       LIMIT $${idx}
     `;
     const result = await pool.query(sql, params);
@@ -103,6 +112,28 @@ const createPostgresStore = (pool) => ({
       return null;
     }
     return toViewModel(result.rows[0]);
+  },
+
+  async listActiveByAdminUserId({ adminUserId, limit = 20 } = {}) {
+    const userId = Number(adminUserId);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return [];
+    }
+
+    const maxLimit = Math.min(Math.max(Math.floor(Number(limit) || 20), 1), 100);
+    const sql = `
+      SELECT *
+      FROM dispatch_log
+      WHERE admin_user_id = $1
+        AND status IN ('new', 'in_progress', 'reserved')
+      ORDER BY
+        ${ACTIVE_STATUS_ORDER_SQL},
+        deadline_at ASC NULLS LAST,
+        id DESC
+      LIMIT $2
+    `;
+    const result = await pool.query(sql, [userId, maxLimit]);
+    return result.rows.map(toViewModel);
   },
 
   async upsertPhoto({
@@ -290,10 +321,11 @@ const createMysqlStore = (pool) => ({
 
     params.push(Math.min(Number(limit) || 200, 500));
     const sql = `
-      SELECT *
-      FROM dispatch_log
+      SELECT d.*,
+             (SELECT MAX(rp.disk_folder_id) FROM report_photo rp WHERE rp.report_id = d.id) AS disk_folder_id
+      FROM dispatch_log d
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY id DESC
+      ORDER BY d.id DESC
       LIMIT ?
     `;
     const [rows] = await pool.execute(sql, params);
@@ -306,6 +338,29 @@ const createMysqlStore = (pool) => ({
       return null;
     }
     return toViewModel(rows[0]);
+  },
+
+  async listActiveByAdminUserId({ adminUserId, limit = 20 } = {}) {
+    const userId = Number(adminUserId);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return [];
+    }
+
+    const maxLimit = Math.min(Math.max(Math.floor(Number(limit) || 20), 1), 100);
+    const [rows] = await pool.execute(
+      `SELECT *
+       FROM dispatch_log
+       WHERE admin_user_id = ?
+         AND status IN ('new', 'in_progress', 'reserved')
+       ORDER BY
+         ${ACTIVE_STATUS_ORDER_SQL},
+         (deadline_at IS NULL) ASC,
+         deadline_at ASC,
+         id DESC
+       LIMIT ?`,
+      [userId, maxLimit]
+    );
+    return rows.map(toViewModel);
   },
 
   async upsertPhoto({

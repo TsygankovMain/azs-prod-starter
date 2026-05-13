@@ -77,7 +77,7 @@ export const buildPhotoFileName = ({
   return `${safeSlot}_${safeCode}_${iso}.${safeExt}`;
 };
 
-export const ensureFolderPath = async (diskApi, { rootFolderId, path }) => {
+export const ensureFolderPath = async (diskApi, { rootFolderId, path }, context = {}) => {
   if (!diskApi || typeof diskApi.findChildFolder !== 'function' || typeof diskApi.createFolder !== 'function') {
     throw new Error('diskApi must provide findChildFolder and createFolder');
   }
@@ -89,13 +89,13 @@ export const ensureFolderPath = async (diskApi, { rootFolderId, path }) => {
   let currentFolderId = Number(rootFolderId);
 
   for (const segment of segments) {
-    const existing = await diskApi.findChildFolder(currentFolderId, segment);
+    const existing = await diskApi.findChildFolder(currentFolderId, segment, context);
     if (existing?.id) {
       currentFolderId = Number(existing.id);
       continue;
     }
 
-    const created = await diskApi.createFolder(currentFolderId, segment);
+    const created = await diskApi.createFolder(currentFolderId, segment, context);
     if (!created?.id) {
       throw new Error(`Unable to create folder "${segment}" under ${currentFolderId}`);
     }
@@ -109,7 +109,7 @@ export const ensureRootFolder = async (diskApi, {
   configuredRootFolderId = 0,
   storageRootId,
   appFolderName = 'AZS-Photo-Reports'
-}) => {
+}, context = {}) => {
   if (configuredRootFolderId && Number(configuredRootFolderId) > 0) {
     return Number(configuredRootFolderId);
   }
@@ -120,7 +120,7 @@ export const ensureRootFolder = async (diskApi, {
   return ensureFolderPath(diskApi, {
     rootFolderId: Number(storageRootId),
     path: sanitizeSegment(appFolderName)
-  });
+  }, context);
 };
 
 export const uploadPhoto = async (diskApi, {
@@ -132,7 +132,7 @@ export const uploadPhoto = async (diskApi, {
   extension = 'jpg',
   content,
   folderNameTemplate = DEFAULT_FOLDER_TEMPLATE
-}) => {
+}, context = {}) => {
   if (!diskApi || typeof diskApi.uploadFile !== 'function') {
     throw new Error('diskApi must provide uploadFile');
   }
@@ -141,9 +141,9 @@ export const uploadPhoto = async (diskApi, {
   }
 
   const folderPath = buildFolderPath({ capturedAt, azsName, folderNameTemplate });
-  const targetFolderId = await ensureFolderPath(diskApi, { rootFolderId, path: folderPath });
+  const targetFolderId = await ensureFolderPath(diskApi, { rootFolderId, path: folderPath }, context);
   const fileName = buildPhotoFileName({ slotHHmm, photoCode, capturedAt, extension });
-  const uploaded = await diskApi.uploadFile(targetFolderId, { fileName, content });
+  const uploaded = await diskApi.uploadFile(targetFolderId, { fileName, content }, context);
 
   return {
     folderId: targetFolderId,
@@ -158,4 +158,3 @@ export const diskNaming = {
   DEFAULT_FOLDER_TEMPLATE,
   sanitizeSegment
 };
-

@@ -21,7 +21,7 @@ export const createTimeoutWatcher = ({
     throw new Error('reportsStore, bitrixClient and notificationService are required');
   }
 
-  const runOnce = async ({ limit = 200 } = {}) => {
+  const runOnce = async ({ limit = 200, context = {} } = {}) => {
     const candidates = await reportsStore.listOverdueReports({
       now: nowFn(),
       limit: normalizeLimit(limit)
@@ -49,7 +49,8 @@ export const createTimeoutWatcher = ({
           bitrixClient,
           settings,
           report,
-          status: 'expired'
+          status: 'expired',
+          context
         });
         expired += 1;
 
@@ -58,7 +59,8 @@ export const createTimeoutWatcher = ({
             userId: reviewerUserId,
             reportId: report.id,
             azsId: report.azsId,
-            slotKey: report.slotKey
+            slotKey: report.slotKey,
+            context
           });
           notified += 1;
         }

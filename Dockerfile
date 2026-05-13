@@ -1,0 +1,62 @@
+# syntax=docker/dockerfile:1.7
+
+FROM node:20-alpine AS frontend-builder
+WORKDIR /app/frontend
+RUN npm install -g pnpm@9
+COPY frontend/.npmrc ./
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY frontend ./
+RUN pnpm run generate
+
+FROM node:20-alpine AS api-builder
+WORKDIR /app/backends/node/api
+RUN npm install -g pnpm@9
+COPY backends/node/api/.npmrc ./
+COPY backends/node/api/package.json backends/node/api/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --prod
+COPY backends/node/api ./
+
+FROM node:20-bookworm-slim AS runtime
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NODE_ENV=production
+ENV DB_HOST=127.0.0.1
+ENV DB_PORT=5432
+ENV DB_NAME=appdb
+ENV DB_USER=appuser
+ENV DB_PASSWORD=apppass
+ENV DB_TYPE=postgresql
+ENV PORT=8000
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    nginx \
+    postgresql \
+    postgresql-contrib \
+    supervisor \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf
+
+WORKDIR /opt/app
+
+COPY --from=frontend-builder /app/frontend/.output/public /var/www/frontend
+COPY --from=api-builder /app/backends/node/api /opt/app/backends/node/api
+COPY infrastructure/database/init.sql /opt/app/infrastructure/database/init.sql
+COPY infrastructure/timeweb/nginx.conf /etc/nginx/nginx.conf
+COPY infrastructure/timeweb/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY infrastructure/timeweb/start-postgres.sh /usr/local/bin/start-postgres.sh
+COPY infrastructure/timeweb/init-db.sh /usr/local/bin/init-db.sh
+COPY infrastructure/timeweb/start-backend.sh /usr/local/bin/start-backend.sh
+
+RUN chmod +x \
+  /usr/local/bin/start-postgres.sh \
+  /usr/local/bin/init-db.sh \
+  /usr/local/bin/start-backend.sh
+
+EXPOSE 8080
+
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

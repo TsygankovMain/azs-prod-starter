@@ -28,6 +28,13 @@ test('dispatch scheduler runs only on configured slot and maps slotDate/slotHHmm
         };
       }
     },
+    getRuntimeContext: async () => ({
+      authId: 'test-access',
+      refreshToken: 'test-refresh',
+      domain: 'nfr-mainsoft.bitrix24.ru',
+      memberId: 'm1',
+      userId: 1
+    }),
     nowFn: () => new Date('2026-04-30T15:45:00.000Z') // 18:45 MSK
   });
 
@@ -76,6 +83,13 @@ test('dispatch scheduler can build auto candidates from AZS crm rows with upperc
         ];
       }
     },
+    getRuntimeContext: async () => ({
+      authId: 'test-access',
+      refreshToken: 'test-refresh',
+      domain: 'nfr-mainsoft.bitrix24.ru',
+      memberId: 'm1',
+      userId: 1
+    }),
     nowFn: () => new Date('2026-04-30T15:45:00.000Z')
   });
 
@@ -107,6 +121,13 @@ test('dispatch scheduler skips run when current time is not in configured slots'
         };
       }
     },
+    getRuntimeContext: async () => ({
+      authId: 'test-access',
+      refreshToken: 'test-refresh',
+      domain: 'nfr-mainsoft.bitrix24.ru',
+      memberId: 'm1',
+      userId: 1
+    }),
     nowFn: () => new Date('2026-04-30T15:44:00.000Z')
   });
 

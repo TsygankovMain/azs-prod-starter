@@ -3,6 +3,7 @@ export const createDispatchScheduler = ({
   getCandidates,
   settingsStore = null,
   bitrixClient = null,
+  getRuntimeContext = async () => ({}),
   timeoutWatcher = null,
   logger = console,
   enabled = false,
@@ -142,7 +143,7 @@ export const createDispatchScheduler = ({
     return [...aliases];
   };
 
-  const loadCandidatesFromAzs = async (settings) => {
+  const loadCandidatesFromAzs = async (settings, context = {}) => {
     const azsEntityTypeId = Number(settings?.azs?.entityTypeId || 0);
     const adminField = String(settings?.azs?.fields?.admin || '').trim();
     const enabledField = String(settings?.azs?.fields?.enabled || '').trim();
@@ -160,7 +161,8 @@ export const createDispatchScheduler = ({
       entityTypeId: azsEntityTypeId,
       select,
       limit: 1000,
-      useOriginalUfNames: 'N'
+      useOriginalUfNames: 'N',
+      context
     });
 
     logger.info('dispatchScheduler: loaded AZS candidates source', {
@@ -187,6 +189,7 @@ export const createDispatchScheduler = ({
 
   const runOnce = async () => {
     const settings = settingsStore ? await settingsStore.read() : {};
+    const context = await getRuntimeContext().catch(() => ({}));
     const timezone = String(settings?.timezone || process.env.DEFAULT_TIMEZONE || 'Europe/Moscow').trim();
     const scheduleTimes = parseScheduleTimes(settings?.report?.dispatchTimes);
     if (!scheduleTimes.length) {
@@ -229,10 +232,26 @@ export const createDispatchScheduler = ({
       };
     }
 
+    if (!String(context?.authId || '').trim()) {
+      logger.warn('dispatchScheduler: auth_context_unavailable', {
+        slotKey,
+        reason: 'missing_auth_id'
+      });
+      return {
+        summary: {
+          total: 0,
+          created: 0,
+          duplicates: 0,
+          failed: 0
+        },
+        items: []
+      };
+    }
+
     const fileCandidates = await getCandidates();
     const autoCandidates = Array.isArray(fileCandidates) && fileCandidates.length > 0
       ? fileCandidates
-      : await loadCandidatesFromAzs(settings);
+      : await loadCandidatesFromAzs(settings, context);
 
     logger.info('dispatchScheduler: slot matched', {
       slotKey,
@@ -259,7 +278,7 @@ export const createDispatchScheduler = ({
       };
     }
     lastSlotKey = slotKey;
-    return dispatchService.dispatchBatch({ candidates, trigger: 'auto' });
+    return dispatchService.dispatchBatch({ candidates, trigger: 'auto', context });
   };
 
   const start = async () => {
@@ -290,7 +309,8 @@ export const createDispatchScheduler = ({
     if (timeoutWatcher && typeof timeoutWatcher.runOnce === 'function') {
       timeoutTask = cron.schedule(timeoutCronExpression, async () => {
         try {
-          const summary = await timeoutWatcher.runOnce();
+          const context = await getRuntimeContext().catch(() => ({}));
+          const summary = await timeoutWatcher.runOnce({ context });
           logger.info('timeoutScheduler: run finished', summary);
         } catch (error) {
           logger.error('timeoutScheduler: run failed', { error: error.message });

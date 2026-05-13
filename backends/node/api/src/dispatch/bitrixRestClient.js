@@ -27,6 +27,19 @@ const parseListItems = (result) => {
   };
 };
 
+const normalizeContext = (context = {}) => {
+  const source = context && typeof context === 'object' ? context : {};
+  return {
+    key: String(source.key || '').trim(),
+    memberId: String(source.memberId || source.member_id || '').trim(),
+    domain: String(source.domain || '').trim().toLowerCase(),
+    userId: Number(source.userId ?? source.user_id ?? 0) || 0,
+    authId: String(source.authId || source.auth_id || '').trim(),
+    refreshToken: String(source.refreshToken || source.refresh_token || '').trim(),
+    appSid: String(source.appSid || source.app_sid || '').trim()
+  };
+};
+
 export const createBitrixRestClient = ({
   endpoint = process.env.BITRIX_REST_ENDPOINT || '',
   authId = process.env.BITRIX_REST_AUTH_ID || '',
@@ -35,46 +48,112 @@ export const createBitrixRestClient = ({
   oauthEndpoint = process.env.BITRIX_OAUTH_ENDPOINT || '',
   clientId = process.env.CLIENT_ID || '',
   clientSecret = process.env.CLIENT_SECRET || '',
+  onTokenRefreshed = null,
   logger = console
 } = {}) => {
-  let base = normalizeEndpoint(endpoint);
-  let restAuthId = String(authId || '').trim();
-  let restRefreshToken = String(refreshToken || '').trim();
-  let restOauthDomain = String(oauthDomain || '').trim();
-  let refreshPromise = null;
+  let defaultEndpoint = normalizeEndpoint(endpoint);
+  let defaultAuthId = String(authId || '').trim();
+  let defaultRefreshToken = String(refreshToken || '').trim();
+  let defaultOauthDomain = String(oauthDomain || '').trim().toLowerCase();
+  const refreshInFlight = new Map();
 
-  const isExpiredTokenError = (error) => /expired_token/i.test(String(error?.message || error || ''));
+  // Bitrix returns several distinct strings when the access token is no longer
+  // accepted. We treat all of them as "refreshable" so the on-demand refresh
+  // cycle kicks in instead of bubbling 502 to the caller.
+  const REFRESHABLE_AUTH_ERROR_PATTERN = /(expired_token|invalid_token|NO_AUTH_FOUND|Authorization required|wrong_client_id|wrong_token|INVALID_CREDENTIALS|unauthorized)/i;
+  const isRefreshableAuthError = (error) => REFRESHABLE_AUTH_ERROR_PATTERN.test(String(error?.message || error || ''));
 
-  const ensureConfigured = () => {
-    if (!base) {
+  // `invalid_client` from the OAuth token endpoint means CLIENT_ID/SECRET is
+  // wrong — no point in retrying, surface it loudly so ops can rotate creds.
+  const isOauthClientInvalid = (error) => /invalid_client/i.test(String(error?.message || error || ''));
+
+  const resolveRuntimeContext = (context = {}) => {
+    const input = normalizeContext(context);
+    const domain = input.domain || defaultOauthDomain;
+    const runtimeEndpoint = normalizeEndpoint(
+      context?.endpoint
+      || (domain ? `https://${domain}/rest` : '')
+      || defaultEndpoint
+    );
+    return {
+      ...input,
+      endpoint: runtimeEndpoint,
+      authId: input.authId || defaultAuthId,
+      refreshToken: input.refreshToken || defaultRefreshToken,
+      domain
+    };
+  };
+
+  const ensureConfigured = (runtime) => {
+    if (!runtime.endpoint) {
       throw new Error('BITRIX_REST_ENDPOINT is required in production mode');
     }
   };
 
-  const resolveOauthUrl = () => {
+  const resolveOauthUrl = (runtime) => {
     const explicit = normalizeEndpoint(oauthEndpoint);
     if (explicit) {
       return explicit;
     }
-    if (restOauthDomain) {
-      return `https://${restOauthDomain}/oauth/token/`;
+    if (runtime.domain) {
+      return `https://${runtime.domain}/oauth/token/`;
     }
     return 'https://oauth.bitrix.info/oauth/token/';
   };
 
-  const refreshAccessToken = async () => {
-    if (refreshPromise) {
-      return refreshPromise;
+  const persistRefreshResult = async (runtime, payload) => {
+    const nextContext = normalizeContext({
+      ...runtime,
+      authId: String(payload?.access_token || '').trim() || runtime.authId,
+      refreshToken: String(payload?.refresh_token || '').trim() || runtime.refreshToken,
+      domain: String(payload?.domain || '').trim().toLowerCase() || runtime.domain
+    });
+    const clientEndpoint = normalizeEndpoint(payload?.client_endpoint || '');
+    if (clientEndpoint) {
+      nextContext.endpoint = clientEndpoint;
+    } else if (nextContext.domain) {
+      nextContext.endpoint = normalizeEndpoint(`https://${nextContext.domain}/rest`);
     }
-    refreshPromise = (async () => {
-      if (!restRefreshToken) {
+
+    if (typeof onTokenRefreshed === 'function') {
+      await onTokenRefreshed(nextContext);
+    }
+
+    // Update module-level defaults only for the bootstrap (no per-user key)
+    // refresh flow. Never mutate process.env — that would race across users.
+    if (!runtime.key) {
+      if (nextContext.authId) {
+        defaultAuthId = nextContext.authId;
+      }
+      if (nextContext.refreshToken) {
+        defaultRefreshToken = nextContext.refreshToken;
+      }
+      if (nextContext.domain) {
+        defaultOauthDomain = nextContext.domain;
+      }
+      if (nextContext.endpoint) {
+        defaultEndpoint = nextContext.endpoint;
+      }
+    }
+
+    return nextContext;
+  };
+
+  const refreshAccessToken = async (runtime) => {
+    const refreshKey = runtime.key || `global:${runtime.domain}:${runtime.userId}`;
+    if (refreshInFlight.has(refreshKey)) {
+      return refreshInFlight.get(refreshKey);
+    }
+
+    const promise = (async () => {
+      if (!runtime.refreshToken) {
         throw new Error('BITRIX_REST_REFRESH_TOKEN is not configured');
       }
       if (!clientId || !clientSecret) {
         throw new Error('CLIENT_ID and CLIENT_SECRET are required for OAuth token refresh');
       }
 
-      const response = await fetch(resolveOauthUrl(), {
+      const response = await fetch(resolveOauthUrl(runtime), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded'
@@ -83,7 +162,7 @@ export const createBitrixRestClient = ({
           grant_type: 'refresh_token',
           client_id: String(clientId),
           client_secret: String(clientSecret),
-          refresh_token: restRefreshToken
+          refresh_token: runtime.refreshToken
         })
       });
 
@@ -102,50 +181,35 @@ export const createBitrixRestClient = ({
         throw new Error(`Bitrix OAuth refresh failed: ${reason}`);
       }
 
-      const nextAccessToken = String(payload?.access_token || '').trim();
-      const nextRefreshToken = String(payload?.refresh_token || '').trim();
-      const nextDomain = String(payload?.domain || '').trim();
-      const nextClientEndpoint = normalizeEndpoint(payload?.client_endpoint || '');
-
-      if (!nextAccessToken) {
+      if (!String(payload?.access_token || '').trim()) {
         throw new Error('Bitrix OAuth refresh failed: access_token is missing in response');
       }
 
-      restAuthId = nextAccessToken;
-      process.env.BITRIX_REST_AUTH_ID = nextAccessToken;
-      if (nextRefreshToken) {
-        restRefreshToken = nextRefreshToken;
-        process.env.BITRIX_REST_REFRESH_TOKEN = nextRefreshToken;
-      }
-      if (nextDomain) {
-        restOauthDomain = nextDomain;
-        process.env.BITRIX_OAUTH_DOMAIN = nextDomain;
-      }
-      if (nextClientEndpoint) {
-        base = nextClientEndpoint;
-        process.env.BITRIX_REST_ENDPOINT = nextClientEndpoint;
-      }
-
-      logger.info('Bitrix OAuth token refreshed');
-      return nextAccessToken;
+      const updated = await persistRefreshResult(runtime, payload);
+      logger.info('Bitrix OAuth token refreshed', {
+        userId: updated.userId || null,
+        domain: updated.domain || null
+      });
+      return updated;
     })();
 
+    refreshInFlight.set(refreshKey, promise);
     try {
-      return await refreshPromise;
+      return await promise;
     } finally {
-      refreshPromise = null;
+      refreshInFlight.delete(refreshKey);
     }
   };
 
-  const callInternalOnce = async (method, params = {}, authOverride = '') => {
-    ensureConfigured();
-    const resolvedAuth = String(authOverride || restAuthId || '').trim();
+  const callInternalOnce = async (method, params = {}, options = {}) => {
+    const runtime = resolveRuntimeContext(options.context);
+    ensureConfigured(runtime);
+    const resolvedAuth = String(options.authOverride || runtime.authId || '').trim();
     const requestPayload = resolvedAuth
       ? { ...params, auth: resolvedAuth }
       : params;
 
-    const url = `${base}/${method}.json`;
-    const response = await fetch(url, {
+    const response = await fetch(`${runtime.endpoint}/${method}.json`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -166,57 +230,82 @@ export const createBitrixRestClient = ({
     return responsePayload.result ?? responsePayload;
   };
 
-  const callInternal = async (method, params = {}, authOverride = '') => {
+  const callInternal = async (method, params = {}, options = {}) => {
     try {
-      return await callInternalOnce(method, params, authOverride);
+      return await callInternalOnce(method, params, options);
     } catch (error) {
-      const canRefresh = !authOverride && isExpiredTokenError(error);
+      const canRefresh = !options.authOverride && isRefreshableAuthError(error);
       if (!canRefresh) {
         throw error;
       }
-      await refreshAccessToken();
-      return callInternalOnce(method, params, authOverride);
+      const runtime = resolveRuntimeContext(options.context);
+      let refreshedContext;
+      try {
+        refreshedContext = await refreshAccessToken(runtime);
+      } catch (refreshError) {
+        if (isOauthClientInvalid(refreshError)) {
+          logger.error('oauth_client_invalid', {
+            method,
+            domain: runtime.domain || null,
+            userId: runtime.userId || null,
+            message: refreshError.message
+          });
+        }
+        throw refreshError;
+      }
+      return callInternalOnce(method, params, {
+        ...options,
+        context: refreshedContext
+      });
     }
   };
 
-  const call = async (method, params = {}) => callInternal(method, params, '');
-  const callWithAuth = async (method, params = {}, authId = '') => callInternal(method, params, authId);
+  const call = async (method, params = {}, context = {}) => callInternal(method, params, { context });
+  const callWithAuth = async (method, params = {}, authOverride = '', context = {}) => callInternal(method, params, {
+    context,
+    authOverride
+  });
+
+  // Bootstrap context is the fallback used ONLY when a per-request `context`
+  // is not supplied (e.g. the very first /api/install before a JWT exists).
+  // We deliberately do NOT mutate `process.env.*` here — concurrent users
+  // and the dispatch scheduler must rely on `req.bitrixContext` so a tick
+  // of one user can never overwrite another's auth state mid-flight.
+  const setBootstrapContext = ({
+    authId: nextAuthId = '',
+    refreshToken: nextRefreshToken = '',
+    domain: nextDomain = ''
+  } = {}) => {
+    if (nextAuthId) {
+      defaultAuthId = String(nextAuthId).trim();
+    }
+    if (nextRefreshToken) {
+      defaultRefreshToken = String(nextRefreshToken).trim();
+    }
+    if (nextDomain) {
+      defaultOauthDomain = String(nextDomain).trim().toLowerCase();
+      defaultEndpoint = normalizeEndpoint(`https://${defaultOauthDomain}/rest`);
+    }
+    return {
+      authId: defaultAuthId,
+      refreshToken: defaultRefreshToken,
+      domain: defaultOauthDomain
+    };
+  };
 
   return {
-    isConfigured: Boolean(base),
+    isConfigured: Boolean(defaultEndpoint),
     callMethod: call,
     callMethodWithAuth: callWithAuth,
+    // Back-compat: same as setBootstrapContext, no longer mutates process.env.
     setAuthId(nextAuthId) {
-      restAuthId = String(nextAuthId || '').trim();
-      process.env.BITRIX_REST_AUTH_ID = restAuthId;
-      return restAuthId;
+      defaultAuthId = String(nextAuthId || '').trim();
+      return defaultAuthId;
     },
-    setAuthContext({ authId: nextAuthId = '', refreshToken: nextRefreshToken = '', domain: nextDomain = '' } = {}) {
-      if (nextAuthId) {
-        restAuthId = String(nextAuthId).trim();
-        process.env.BITRIX_REST_AUTH_ID = restAuthId;
-      }
-      if (nextRefreshToken) {
-        restRefreshToken = String(nextRefreshToken).trim();
-        process.env.BITRIX_REST_REFRESH_TOKEN = restRefreshToken;
-      }
-      if (nextDomain) {
-        restOauthDomain = String(nextDomain).trim();
-        process.env.BITRIX_OAUTH_DOMAIN = restOauthDomain;
-        const domainEndpoint = normalizeEndpoint(`https://${restOauthDomain}/rest`);
-        if (domainEndpoint) {
-          base = domainEndpoint;
-          process.env.BITRIX_REST_ENDPOINT = domainEndpoint;
-        }
-      }
-      return {
-        authId: restAuthId,
-        refreshToken: restRefreshToken,
-        domain: restOauthDomain
-      };
-    },
+    setAuthContext: setBootstrapContext,
+    setBootstrapContext,
 
-    async createReportItem({ entityTypeId, fields }) {
+    async createReportItem({ entityTypeId, fields, context = {} }) {
       if (!Number(entityTypeId)) {
         throw new Error('report.entityTypeId is required for crm.item.add');
       }
@@ -224,7 +313,7 @@ export const createBitrixRestClient = ({
       const result = await call('crm.item.add', {
         entityTypeId: Number(entityTypeId),
         fields
-      });
+      }, context);
       const reportItemId = parseReportItemId(result);
       if (!reportItemId) {
         throw new Error('crm.item.add response does not include item id');
@@ -236,7 +325,7 @@ export const createBitrixRestClient = ({
       };
     },
 
-    async updateReportItem({ entityTypeId, id, fields }) {
+    async updateReportItem({ entityTypeId, id, fields, context = {} }) {
       if (!Number(entityTypeId)) {
         throw new Error('report.entityTypeId is required for crm.item.update');
       }
@@ -248,7 +337,7 @@ export const createBitrixRestClient = ({
         entityTypeId: Number(entityTypeId),
         id: Number(id),
         fields
-      });
+      }, context);
 
       return {
         reportItemId: Number(id),
@@ -256,7 +345,7 @@ export const createBitrixRestClient = ({
       };
     },
 
-    async notifyUser({ userId, message }) {
+    async notifyUser({ userId, message, context = {} }) {
       if (!Number(userId)) {
         throw new Error('notifyUser requires userId');
       }
@@ -264,13 +353,13 @@ export const createBitrixRestClient = ({
       const result = await call('im.notify.personal.add', {
         USER_ID: Number(userId),
         MESSAGE: String(message || '')
-      });
+      }, context);
 
       logger.info('dispatch notify sent', { userId });
       return result;
     },
 
-    async getCrmItem({ entityTypeId, id }) {
+    async getCrmItem({ entityTypeId, id, context = {} }) {
       if (!Number(entityTypeId) || !Number(id)) {
         return null;
       }
@@ -278,7 +367,7 @@ export const createBitrixRestClient = ({
       const result = await call('crm.item.get', {
         entityTypeId: Number(entityTypeId),
         id: Number(id)
-      });
+      }, context);
 
       return result?.item ?? result ?? null;
     },
@@ -289,7 +378,8 @@ export const createBitrixRestClient = ({
       filter = {},
       order = { id: 'ASC' },
       limit = 200,
-      useOriginalUfNames = 'N'
+      useOriginalUfNames = 'N',
+      context = {}
     }) {
       if (!Number(entityTypeId)) {
         return [];
@@ -307,7 +397,7 @@ export const createBitrixRestClient = ({
           order,
           start,
           useOriginalUfNames
-        });
+        }, context);
 
         const page = parseListItems(response);
         for (const row of page.items) {
@@ -327,10 +417,10 @@ export const createBitrixRestClient = ({
     },
 
     diskApi: {
-      async findChildFolder(parentId, name) {
+      async findChildFolder(parentId, name, context = {}) {
         const result = await call('disk.folder.getchildren', {
           id: Number(parentId)
-        });
+        }, context);
 
         const items = Array.isArray(result) ? result : (Array.isArray(result.items) ? result.items : []);
         const match = items.find((item) => String(item.NAME || item.name || '').trim() === String(name));
@@ -338,13 +428,13 @@ export const createBitrixRestClient = ({
         return matchId ? { id: matchId } : null;
       },
 
-      async createFolder(parentId, name) {
+      async createFolder(parentId, name, context = {}) {
         const result = await call('disk.folder.addsubfolder', {
           id: Number(parentId),
           data: {
             NAME: String(name)
           }
-        });
+        }, context);
         const folderId = parseId(result?.ID ?? result?.id);
         if (!folderId) {
           throw new Error('disk.folder.addsubfolder response does not include folder id');
@@ -352,7 +442,7 @@ export const createBitrixRestClient = ({
         return { id: folderId };
       },
 
-      async uploadFile(folderId, { fileName, content }) {
+      async uploadFile(folderId, { fileName, content }, context = {}) {
         const base64 = Buffer.isBuffer(content)
           ? content.toString('base64')
           : Buffer.from(content).toString('base64');
@@ -363,7 +453,7 @@ export const createBitrixRestClient = ({
             NAME: String(fileName)
           },
           fileContent: base64
-        });
+        }, context);
 
         const fileId = parseId(result?.ID ?? result?.id);
         if (!fileId) {
@@ -376,3 +466,4 @@ export const createBitrixRestClient = ({
 };
 
 export default createBitrixRestClient;
+

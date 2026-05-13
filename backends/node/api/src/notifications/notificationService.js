@@ -48,7 +48,7 @@ const buildDoneMessage = ({ azsId, links }) => {
   return lines.join('\n');
 };
 
-const sendViaBot = async ({ bitrixClient, botId, userId, message, keyboard = null }) => {
+const sendViaBot = async ({ bitrixClient, botId, userId, message, keyboard = null, context = {} }) => {
   if (typeof bitrixClient?.callMethod !== 'function') {
     throw new Error('bitrixClient.callMethod is required for bot mode');
   }
@@ -61,16 +61,17 @@ const sendViaBot = async ({ bitrixClient, botId, userId, message, keyboard = nul
       ...(keyboard ? { keyboard } : {}),
       urlPreview: true
     }
-  });
+  }, context);
 };
 
-const sendViaNotify = async ({ bitrixClient, userId, message }) => {
+const sendViaNotify = async ({ bitrixClient, userId, message, context = {} }) => {
   if (typeof bitrixClient?.notifyUser !== 'function') {
     throw new Error('bitrixClient.notifyUser is required for notify mode');
   }
   return bitrixClient.notifyUser({
     userId: Number(userId),
-    message
+    message,
+    context
   });
 };
 
@@ -90,7 +91,7 @@ export const createNotificationService = ({
   const resolvedBotId = Number(botId);
   let currentBotId = Number.isFinite(resolvedBotId) ? resolvedBotId : 0;
 
-  const notify = async ({ userId, message, keyboard = null, fallbackToNotify = true }) => {
+  const notify = async ({ userId, message, keyboard = null, context = {}, fallbackToNotify = true }) => {
     if (!Number(userId)) {
       throw new Error('notify requires userId');
     }
@@ -108,7 +109,8 @@ export const createNotificationService = ({
           botId: currentBotId,
           userId,
           message,
-          keyboard
+          keyboard,
+          context
         });
         return {
           channel: 'bot',
@@ -124,7 +126,7 @@ export const createNotificationService = ({
       }
     }
 
-    const result = await sendViaNotify({ bitrixClient, userId, message });
+    const result = await sendViaNotify({ bitrixClient, userId, message, context });
     return {
       channel: 'notify',
       result
@@ -136,12 +138,14 @@ export const createNotificationService = ({
     reportId,
     azsId,
     slotHHmm,
-    deadlineAt
+    deadlineAt,
+    context = {}
   }) => {
     const links = buildReportLinks({
       appCode,
       reportId,
-      publicBaseUrl
+      publicBaseUrl,
+      portalDomain: context?.domain || ''
     });
     const message = buildDispatchMessage({
       azsId,
@@ -152,6 +156,7 @@ export const createNotificationService = ({
     return notify({
       userId,
       message,
+      context,
       keyboard: buildOpenReportKeyboard(links)
     });
   };
@@ -159,26 +164,30 @@ export const createNotificationService = ({
   const notifyReportDone = async ({
     userId,
     reportId,
-    azsId
+    azsId,
+    context = {}
   }) => {
     const links = buildReportLinks({
       appCode,
       reportId,
-      publicBaseUrl
+      publicBaseUrl,
+      portalDomain: context?.domain || ''
     });
     const message = buildDoneMessage({ azsId, links });
     return notify({
       userId,
       message,
+      context,
       keyboard: buildOpenReportKeyboard(links)
     });
   };
 
-  const notifyReportExpired = async ({ userId, reportId, azsId, slotKey }) => {
+  const notifyReportExpired = async ({ userId, reportId, azsId, slotKey, context = {} }) => {
     const links = buildReportLinks({
       appCode,
       reportId,
-      publicBaseUrl
+      publicBaseUrl,
+      portalDomain: context?.domain || ''
     });
     const lines = [
       `Отчёт АЗС ${String(azsId || '')} просрочен (slot ${String(slotKey || '-')}).`
@@ -186,6 +195,7 @@ export const createNotificationService = ({
     return notify({
       userId,
       message: lines.join('\n'),
+      context,
       keyboard: buildOpenReportKeyboard(links)
     });
   };

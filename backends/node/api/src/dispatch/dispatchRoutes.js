@@ -1,6 +1,10 @@
 import express from 'express';
 
 const normalizeTrigger = (value) => String(value || 'manual').trim().toLowerCase();
+const canUseReviewerTools = (req) => (
+  Boolean(req.accessContext?.capabilities?.reviewer)
+  || Boolean(req.accessContext?.capabilities?.settings)
+);
 
 export const createDispatchRouter = ({ dispatchService }) => {
   if (!dispatchService) {
@@ -10,6 +14,13 @@ export const createDispatchRouter = ({ dispatchService }) => {
   const router = express.Router();
 
   router.post('/dispatch', async (req, res) => {
+    if (!canUseReviewerTools(req)) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: 'Reviewer access is required'
+      });
+    }
+
     try {
       const candidates = req.body?.candidates;
       const trigger = normalizeTrigger(req.body?.trigger || 'manual');
@@ -21,7 +32,11 @@ export const createDispatchRouter = ({ dispatchService }) => {
         });
       }
 
-      const result = await dispatchService.dispatchBatch({ candidates, trigger });
+      const result = await dispatchService.dispatchBatch({
+        candidates,
+        trigger,
+        context: req.bitrixContext || {}
+      });
       return res.json(result);
     } catch (error) {
       return res.status(500).json({
@@ -32,6 +47,13 @@ export const createDispatchRouter = ({ dispatchService }) => {
   });
 
   router.post('/timeout', async (req, res) => {
+    if (!canUseReviewerTools(req)) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: 'Reviewer access is required'
+      });
+    }
+
     try {
       if (!dispatchService.timeoutWatcher || typeof dispatchService.timeoutWatcher.runOnce !== 'function') {
         return res.status(501).json({
@@ -41,7 +63,8 @@ export const createDispatchRouter = ({ dispatchService }) => {
       }
 
       const summary = await dispatchService.timeoutWatcher.runOnce({
-        limit: Number(req.body?.limit || 200)
+        limit: Number(req.body?.limit || 200),
+        context: req.bitrixContext || {}
       });
 
       return res.json({ summary });

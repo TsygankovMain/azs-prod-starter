@@ -129,6 +129,322 @@ Commit/task:
 - Bitrix24 task: 6475.
 - Commit: pending.
 
+### 2026-05-11 17:04:26 MSK
+
+What happened:
+- Updated VM requirements document to be client-ready without additional editing.
+- Reduced VM minimum sizing to `2 vCPU / 4 GB RAM / 20 GB SSD`.
+- Removed internal wording and kept only client-facing infrastructure requirements, security rules, backup, monitoring, manual update process and readiness criteria.
+
+Product impact:
+- The document can now be sent directly to the client's IT department.
+- Infrastructure requirements are aligned with the expected MVP load and Bitrix24 Disk photo storage model.
+
+What to check:
+- Replace example domain `azs-app.company.ru` with the real production domain if it is already known.
+- Confirm the client accepts Ubuntu 22.04/24.04 and Docker Compose.
+
+Next step:
+- Prepare a first-installation runbook after VM details are confirmed.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-05-04 12:35:00 MSK
+
+What happened:
+- Improved reviewer manual report launch.
+- Backend:
+  - added `GET /api/reports/azs-options` for AZS search/select data;
+  - changed `POST /api/reports/manual` to accept multiple candidates;
+  - added validation for empty AZS/date/time/settings and returns `400` with `details` instead of generic `500`;
+  - resolves missing `adminUserId` from AZS card using mapped `azs.fields.admin`;
+  - returns partial result when some selected AZS cannot be launched.
+- Frontend:
+  - replaced manual AZS ID/admin ID inputs with searchable multi-select;
+  - date uses calendar input, time uses time input;
+  - manual launch result is shown as a table;
+  - report table now includes quick actions for admin screen, CRM report card, and photo folder.
+- Reports list now includes `diskFolderId` from uploaded photos for quick folder access.
+
+Product impact:
+- Reviewer can create reports for several AZS in one action.
+- Empty/invalid form gives clear PM-readable errors.
+- Reviewer can quickly open both the report CRM card and the photo folder from the dashboard.
+
+What to check:
+- Click `Создать сейчас` with no AZS/date/time and confirm a clear validation message.
+- Select multiple AZS, choose date/time, and create reports.
+- Confirm partial failures are displayed per AZS.
+- After photos are uploaded, verify `Папка фото` button opens the folder.
+- Verify `Карточка отчёта` opens the smart-process item.
+
+Next step:
+- Validate exact Bitrix24 Disk folder URL behavior in desktop and mobile; if `/docs/?folderId=` is not stable, switch to a REST-resolved folder URL.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-05-04 12:00:00 MSK
+
+What happened:
+- Changed AZS admin report flow from immediate per-shot completion to strict step-by-step capture.
+- New frontend flow:
+  - user opens only the current required photo slot;
+  - user captures photo from camera;
+  - photo is shown as local preview;
+  - user can retake without saving the rejected photo to Bitrix24;
+  - after `Использовать фото`, upload starts in background;
+  - next slot opens after confirmation;
+  - final `Отправить отчёт` is enabled only after every confirmed photo is uploaded.
+- Changed backend lifecycle:
+  - `POST /api/reports/:id/photo` uploads one confirmed photo and keeps report `in_progress`;
+  - new `POST /api/reports/:id/submit` validates that all required photos are uploaded, then syncs CRM and moves report to `done`.
+
+Product impact:
+- Admin works in strict photo order and can review/retake each photo before it is saved.
+- Upload is resilient to mobile network issues because files are uploaded one by one in the background.
+- Report completion is explicit and user-controlled.
+
+What to check:
+- Open active report as AZS admin.
+- Capture first photo, retake it, confirm it.
+- Verify only confirmed photo appears in Bitrix24 Disk.
+- Confirm every slot and wait for all background uploads.
+- Click `Отправить отчёт` and verify CRM report stage becomes DONE.
+
+Next step:
+- Separately validate Bitrix24 CRM file field format for `Загруженные фото`, because Disk file IDs may not be the correct payload for a CRM file field.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-05-01 20:05:00 MSK
+
+What happened:
+- Fixed production issue where `dispatch_log.report_item_id` could stay `NULL`.
+- Root cause: report was created in CRM, but if notify step failed, code moved row to `failed` before persisting `reportItemId`.
+- Changed dispatch flow:
+  - persist `reportItemId` immediately after `crm.item.add` (`markDone`),
+  - notification failure is now non-blocking (warning log only).
+- Added regression test `dispatch persists report item id even when notification fails`.
+- Fixed home navigation for AZS admin: removed hardcoded `/admin/1` open and now route opens current user active report via API.
+
+Product impact:
+- New reports keep valid CRM link even if bot/IM notification is temporarily unavailable.
+- Admin photo upload no longer breaks for fresh reports due to missing `reportItemId`.
+- Users no longer accidentally open stale report `#1` from home card.
+
+What to check:
+- Trigger a new auto/manual report.
+- Verify in reviewer table the report has normal lifecycle and photo upload syncs to CRM.
+- If bot is down, report should still be created and usable.
+
+Next step:
+- Clean up historical `failed/new` reports created before this fix (with `reportItemId=NULL`) by recreating them.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-05-01 12:30:00 MSK
+
+What happened:
+- Implemented one-embedding role model with settings-driven access lists.
+- Added backend role resolver and access context with priority `admin > reviewer > azs_admin`.
+- Added `GET /api/me/role` and enriched `/api/health` with role/capabilities.
+- Added role ACL on APIs:
+  - `PUT /api/settings`: admin only
+  - reviewer APIs (`/api/reports`, `/api/reports/summary`, `/api/reports/manual`, `/api/jobs/dispatch`, `/api/jobs/timeout`): admin or reviewer
+  - AZS admin APIs (`/api/reports/my-active`, `/api/reports/:id`, `/api/reports/:id/photo`): admin or azs_admin
+- Extended settings schema with `access` block:
+  - `adminUserIds`
+  - `reviewerUserIds`
+  - `azsAdminUserIds`
+- Updated home UI to show sections by capabilities, not by static menu.
+- Updated settings UI to edit role lists in one place.
+- Added tests for role resolver and settings access validation.
+
+Product impact:
+- App remains in one placement and now supports explicit product roles with backend-enforced permissions.
+- PM/admin can control who sees settings/reviewer/report areas without splitting into multiple embedded pages.
+
+What to check:
+- Login as 3 users (portal admin, reviewer, AZS admin) and verify section visibility on home.
+- Verify non-admin cannot save settings.
+- Verify reviewer can open reviewer dashboard but cannot open admin report upload routes.
+- Verify AZS admin can open active report and upload photos but cannot call reviewer routes.
+
+Next step:
+- Run regression in Bitrix24 iframe/mobile for role transitions after settings update and JWT reinit.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-05-01 17:33:06 MSK
+
+What happened:
+- Added explicit navigation controls on admin report screen:
+  - `Выйти из отчёта` -> `/`
+  - `В настройки` -> `/settings`
+- Both actions close active camera stream before navigation to avoid locked camera in mobile WebView.
+
+Product impact:
+- Administrator can now leave report capture flow and open settings without relying on deep links or browser back behavior.
+
+What to check:
+- Open `/admin/{reportId}` in mobile container.
+- Press `Выйти из отчёта` and verify transition to app home.
+- Press `В настройки` and verify transition to settings page.
+
+Next step:
+- Optional: duplicate a compact `Настройки` shortcut in bottom area if operators often scroll deep in long report forms.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-05-01 17:27:55 MSK
+
+What happened:
+- Implemented mobile-safe fallback flow without deep links:
+  - Added backend query for active reports of current user (`new`, `in_progress`, `reserved`) with priority:
+    1) `in_progress`
+    2) nearest deadline
+    3) latest id
+  - Added API endpoint `GET /api/reports/my-active`.
+  - Added frontend API method `getMyActiveReport()`.
+  - Updated home page startup flow:
+    - first tries reportId from `REST_APP_URI` params,
+    - if no reportId, calls `/api/reports/my-active`,
+    - if active report exists, auto-opens `/admin/{reportId}`.
+- Backend tests passed: `37/37`.
+
+Product impact:
+- In mobile scenarios where direct report deep-link is unavailable, app can still open into the current active report for the logged-in administrator.
+
+What to check:
+- Open app from bot button in mobile.
+- If link params are missing, verify auto-navigation to active report still happens.
+- If there is no active report for user, verify home screen remains visible.
+
+Next step:
+- Optional UX enhancement: if user has more than one active report, show quick chooser instead of opening the first one automatically.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-04-30 21:58:31 MSK
+
+What happened:
+- Investigated user-story failure: bot button opened wrong page (`/marketplace/app/60/?install_finished=Y`) and on mobile could open external browser.
+- Verified portal placements with app auth:
+  - before fix, `placement.get` returned only legacy demo placement `CRM_DEAL_DETAIL_TAB`;
+  - required `REST_APP_URI` placement was missing.
+- Implemented install-time registration of `REST_APP_URI` via `placement.bind` with handler `https://simply-staid-mollusk.cloudpub.ru/`.
+- Added idempotent binding logic:
+  - checks existing placements via `placement.get`,
+  - handles `ERROR_PLACEMENT_MAX_COUNT` safely by re-checking `REST_APP_URI`.
+- Updated bot link builder:
+  - keeps `REST_APP_URI` format with `params[reportId]` and `params[path]`,
+  - now prefers absolute portal URL (`https://<portal>/marketplace/view/<app_code>/?...`) when context domain is available.
+- Runtime verification:
+  - `/api/install` returns `200` and `placement.restAppUri=true`;
+  - repeated install returns `alreadyExists=true`.
+
+Product impact:
+- Button from bot now points to correctly registered `REST_APP_URI` handler.
+- Opening flow is aligned with Bitrix24 slider entrypoint contract for app links.
+
+What to check:
+- Trigger new dispatch/manual report so a fresh bot message is sent.
+- Click button in web and in Bitrix24 mobile app:
+  - expected path starts with `/marketplace/view/local.69f0c4a7dc8632.03848830/`,
+  - app should open and redirect to `/admin/{reportId}`.
+
+Next step:
+- If mobile still opens external browser on specific OS/device, add fallback deep-link strategy and device-specific open flow.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-04-30 21:45:13 MSK
+
+What happened:
+- Investigated `POST /api/install` 500 after app reinstall in Bitrix24.
+- Root cause confirmed from runtime logs: `nodemon` restarted backend on every write to `backends/node/api/data/auth-context.json` (writes are done by `/api/getToken` and `/api/install`), which interrupted install flow.
+- Added dedicated `nodemon` config to watch only code paths:
+  - `server.js`
+  - `src/**/*`
+  - `utils/**/*`
+- Excluded data files from restarts and forced usage of config in dev script:
+  - `nodemon --config nodemon.json server.js`
+- Added top-level `try/catch` for `/api/install` to return structured JSON error instead of unhandled 500.
+- Ran backend tests: `37/37` passed.
+- Runtime check in container:
+  - writing `/app/data/auth-context.json` no longer changes Node PID,
+  - `POST /api/install` now returns HTTP `200` with successful bot registration payload.
+
+Product impact:
+- Reinstall flow is stable: install/getToken requests no longer break due process restarts.
+- Auth context can be persisted continuously without interrupting scheduler/API runtime.
+
+What to check:
+- Reinstall app in Bitrix24 again.
+- Confirm browser no longer shows `500` on `/api/install`.
+- Confirm install page finishes and app opens normally.
+
+Next step:
+- Continue production auth flow validation (`/api/getToken` -> settings save -> timed bot dispatch) in portal.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-04-30 21:36:30 MSK
+
+What happened:
+- Completed auth refactor to per-user Bitrix24 context + JWT contract.
+- `/api/getToken` now validates OAuth context with Bitrix REST:
+  - `profile`
+  - `app.info`
+- `/api/getToken` now requires and validates:
+  - `AUTH_ID`
+  - `REFRESH_TOKEN`
+  - `DOMAIN`
+  - `member_id`
+  - `user_id`
+- Added per-user auth context persistence keyed by `member_id:domain:user_id` in JSON storage.
+- Replaced global auth singleton behavior in middleware/API path:
+  - JWT middleware resolves context by `sub/domain/member_id`
+  - request context is attached as `req.bitrixContext`
+- Updated Bitrix REST client to use request context per call and persist refreshed tokens back to the same user context.
+- Scheduler/Cron now uses the last valid admin context from storage; if not available it logs `auth_context_unavailable` and skips tick without crashing.
+- Updated unit/integration tests for the new contract and added dedicated JWT middleware tests.
+
+Product impact:
+- Token expiry and user-mix issues are isolated per portal user instead of breaking the whole runtime auth state.
+- Protected API endpoints now execute against the correct Bitrix24 user context from JWT.
+- Cron dispatch has deterministic behavior when no valid admin auth context exists.
+
+What to check:
+- Open app in Bitrix24 iframe and call `/api/getToken`, then `/api/health` with returned JWT.
+- Reopen app as another user and verify independent JWT/context behavior.
+- Wait for dispatch slot and verify cron run logs with valid admin context.
+
+Next step:
+- Run runtime smoke in cloudpub with real portal flow (`/api/getToken` -> `/api/settings` save -> dispatch tick) and monitor logs for refresh cycles.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
 ### 2026-04-30 19:09:56 MSK
 
 What happened:
@@ -780,6 +1096,146 @@ What to check:
 
 Next step:
 - Continue Sprint 6/7 hardening around real Bitrix24 report creation, upload lifecycle, DONE/EXPIRED and portal acceptance testing.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-05-05 21:24:29 MSK
+
+What happened:
+- Prepared MVP documentation package for `Фото-отчёт АЗС`.
+- Replaced starter root `README.md` with product-specific entrypoint.
+- Added documentation index: `docs/README.md`.
+- Added client/product description: `docs/client-product-description.md`.
+- Added compact spec-kit:
+  - overview and lifecycle;
+  - roles and access;
+  - user journeys;
+  - Bitrix24 portal setup;
+  - architecture;
+  - API contracts;
+  - data/settings;
+  - testing and acceptance;
+  - operations.
+- Converted `docs/bitrix24-portal-setup.md` into an alias to the new spec-kit setup document.
+
+Product impact:
+- Client, product manager, Bitrix24 specialist and developer now have separate entrypoints into the MVP documentation.
+- Portal setup instructions are aligned with the current app model: one embedding, role-based access, bot notifications, manual/auto launch, strict photo sequence, background upload and explicit submit.
+
+What to check:
+- Open `docs/README.md` and verify all linked spec-kit files are present.
+- Review `docs/spec-kit/03-bitrix24-setup.md` against the actual portal configuration.
+- Confirm Markdown docs do not contain real tokens, secrets, OAuth refresh tokens or Cloudpub credentials.
+
+Next step:
+- If documentation is accepted, commit and push docs together with the current MVP changes.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-05-11 16:31:58 MSK
+
+What happened:
+- Added short server preparation requirements for deployment: `docs/deployment-server-requirements.md`.
+- Documented minimal server specs, required software, production `.env` groups, reverse proxy, Docker Compose startup, GitHub Actions SSH deploy flow, health-check, rollback and backup requirements.
+- Linked the new deployment document from `docs/README.md`.
+
+Product impact:
+- Infrastructure specialist now has a compact checklist to prepare a server for the MVP.
+- The project has a clear baseline for automatic deploy from GitHub while explicitly separating it from true zero-downtime deployment.
+
+What to check:
+- Confirm target production domain and whether deploy should use `main` or `master`.
+- Confirm whether deployment should remain Docker Compose based or move to blue-green later.
+
+Next step:
+- If approved, create GitHub Actions workflow and server-side deploy script.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-05-11 16:47:42 MSK
+
+What happened:
+- Reworked server deployment document into strict VM requirements for the client's IT department.
+- Removed GitHub hot deploy requirement from the document.
+- Added explicit requirements for OS, VM sizing, DNS, firewall, SSH hardening, reverse proxy, HTTPS, production env storage, manual update procedure, backup, monitoring and rollback.
+- Updated documentation index label from GitHub deploy to VM placement requirements.
+
+Product impact:
+- Client IT now receives a stricter infrastructure checklist suitable for controlled production deployment.
+- Deployment model is now manual and controlled, not automatic on GitHub push.
+
+What to check:
+- Confirm final production domain.
+- Confirm whether client IT uses nginx or caddy.
+- Confirm backup storage and monitoring tooling on the client's side.
+
+Next step:
+- If approved, prepare a separate operational runbook for first production installation.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-05-12 10:26:46 MSK
+
+What happened:
+- Added short contract technical assignment: `docs/contract-technical-assignment.md`.
+- Documented scope, goal, functionality, integrations, hosting requirements, deliverables, acceptance criteria, exclusions and assumptions.
+- Linked the contract attachment document from `docs/README.md`.
+
+Product impact:
+- There is now a compact client-facing document suitable for attaching to a contract.
+- The document fixes MVP boundaries and acceptance criteria in business-readable form.
+
+What to check:
+- Review wording with legal/commercial team before attaching to the final contract.
+- Replace generic responsibilities if the contract assigns infrastructure preparation differently.
+
+Next step:
+- If approved, use this file as the contract appendix baseline.
+
+Commit/task:
+- Bitrix24 task: 6475.
+- Commit: pending.
+
+### 2026-05-13 17:34:27 MSK
+
+What happened:
+- Implemented Timeweb App Platform production packaging in Dockerfile-only mode with single-container topology.
+- Added root `.dockerignore` and root `Dockerfile` (multi-stage build for frontend static assets + node API runtime).
+- Added one-container process orchestration via `supervisord`:
+  - PostgreSQL (local only, `127.0.0.1`)
+  - DB init script
+  - Node API
+  - Nginx reverse proxy on `:8080`
+- Added infra files:
+  - `infrastructure/timeweb/supervisord.conf`
+  - `infrastructure/timeweb/nginx.conf`
+  - `infrastructure/timeweb/start-postgres.sh`
+  - `infrastructure/timeweb/init-db.sh`
+  - `infrastructure/timeweb/start-backend.sh`
+- Added public technical endpoint `GET /api/healthz` and kept `GET /api/health` JWT-protected.
+- Added Timeweb env template: `.env.timeweb.example`.
+- Added deploy guide: `docs/timeweb-app-platform-deploy.md` and linked it from docs index and root README.
+
+Product impact:
+- Repo now contains a deploy-ready Dockerfile contract for Timeweb App Platform without docker-compose.
+- Health check contract for platform is explicit (`/api/healthz`), while protected app health remains unchanged.
+- Production risk remains explicit: PostgreSQL in-container is non-persistent across redeploy/replacement.
+
+What to check:
+- Verify production env values in Timeweb App settings before first release.
+- Verify Bitrix24 app URL and domain match `APP_BASE_URL`/`APP_PUBLIC_BASE_URL`.
+- Confirm acceptance of in-container DB data loss risk.
+
+Next step:
+- Deploy selected release commit/tag in Timeweb and run full Bitrix24 smoke scenario from `docs/timeweb-app-platform-deploy.md`.
 
 Commit/task:
 - Bitrix24 task: 6475.

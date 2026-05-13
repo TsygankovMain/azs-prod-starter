@@ -54,6 +54,13 @@ export const createSettingsRouter = ({ store = createFileSettingsStore() } = {})
   });
 
   router.put('/', async (req, res) => {
+    if (!req.accessContext?.capabilities?.settings) {
+      return res.status(403).json({
+        error: 'forbidden',
+        message: 'Only application administrators can change settings'
+      });
+    }
+
     if (getStorageType() === 'bitrix') {
       return sendBitrixStorageNotImplemented(res);
     }

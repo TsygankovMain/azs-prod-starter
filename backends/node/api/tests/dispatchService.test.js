@@ -154,3 +154,61 @@ test('manual trigger does not block auto slot for same azs and hhmm', async () =
   assert.equal(autoResult.summary.duplicates, 0);
   assert.equal(createdReports.length, 2);
 });
+
+test('dispatch persists report item id even when notification fails', async () => {
+  const store = createStoreFake();
+  const warnLogs = [];
+
+  const service = createDispatchService({
+    dispatchLogStore: store,
+    settingsStore: {
+      async read() {
+        return {
+          report: {
+            entityTypeId: 163,
+            timeoutMinutes: 60,
+            dispatchJitterMinutes: 0,
+            fields: {
+              azs: 'UF_AZS',
+              trigger: 'UF_TRIGGER'
+            },
+            stages: {
+              new: 'DT163_1:NEW'
+            }
+          }
+        };
+      }
+    },
+    bitrixClient: {
+      async createReportItem() {
+        return { reportItemId: 9090 };
+      }
+    },
+    notificationService: {
+      async notifyDispatch() {
+        throw new Error('notify failed');
+      }
+    },
+    nowFn: () => new Date('2026-04-28T00:00:00.000Z'),
+    logger: {
+      warn(payload, meta) {
+        warnLogs.push({ payload, meta });
+      },
+      error() {}
+    }
+  });
+
+  const result = await service.dispatchBatch({
+    candidates: [
+      { azsId: 'azs-77', adminUserId: 11, slotDate: '2026-04-28', slotHHmm: '1845' }
+    ],
+    trigger: 'auto'
+  });
+
+  assert.equal(result.summary.created, 1);
+  assert.equal(result.summary.failed, 0);
+  assert.equal(result.items[0].reportItemId, 9090);
+  const state = [...store.states.values()][0];
+  assert.equal(state.reportItemId, 9090);
+  assert.equal(warnLogs.length, 1);
+});
