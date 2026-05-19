@@ -86,7 +86,7 @@ export const createBitrixRestClient = ({
 
   const ensureConfigured = (runtime) => {
     if (!runtime.endpoint) {
-      throw new Error('BITRIX_REST_ENDPOINT is required in production mode');
+      throw new Error('Bitrix portal domain or BITRIX_REST_ENDPOINT is required');
     }
   };
 
@@ -466,4 +466,3 @@ export const createBitrixRestClient = ({
 };
 
 export default createBitrixRestClient;
-

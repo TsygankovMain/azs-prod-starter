@@ -100,3 +100,27 @@ test('validateSettings requires report.fields.folderId when REST endpoint is con
     }
   }
 });
+
+test('validateSettings requires report.fields.folderId when Bitrix sync is required without portal hardcode', () => {
+  const previous = process.env.BITRIX_SYNC_REQUIRED;
+  process.env.BITRIX_SYNC_REQUIRED = 'true';
+
+  try {
+    assert.throws(
+      () => validateSettings(mergeSettings({
+        report: {
+          fields: {
+            folderId: ''
+          }
+        }
+      })),
+      /report.fields.folderId is required when Bitrix sync is enabled/
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.BITRIX_SYNC_REQUIRED;
+    } else {
+      process.env.BITRIX_SYNC_REQUIRED = previous;
+    }
+  }
+});

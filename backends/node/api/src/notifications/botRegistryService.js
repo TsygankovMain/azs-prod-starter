@@ -23,7 +23,7 @@ export const createBotRegistryService = ({
     throw new Error('bitrixClient.callMethodWithAuth is required');
   }
 
-  const registerBot = async ({ authId = '' } = {}) => {
+  const registerBot = async ({ authId = '', context = {} } = {}) => {
     const runtimeAuthId = normalizeAuthId(authId);
     if (!runtimeAuthId) {
       throw new Error('AUTH_ID is required to register bot during install');
@@ -39,7 +39,7 @@ export const createBotRegistryService = ({
         type: 'bot',
         eventMode: 'fetch'
       }
-    }, runtimeAuthId);
+    }, runtimeAuthId, context);
 
     const botId = parseBotId(result);
     if (!botId) {
@@ -53,7 +53,7 @@ export const createBotRegistryService = ({
     };
   };
 
-  const listBots = async ({ authId = '' } = {}) => {
+  const listBots = async ({ authId = '', context = {} } = {}) => {
     const runtimeAuthId = normalizeAuthId(authId);
     if (!runtimeAuthId) {
       throw new Error('AUTH_ID is required to list bots during install');
@@ -64,7 +64,7 @@ export const createBotRegistryService = ({
         type: 'bot'
       },
       limit: 50
-    }, runtimeAuthId);
+    }, runtimeAuthId, context);
 
     const bots = Array.isArray(result?.bots) ? result.bots : [];
     return bots.map((bot) => ({
@@ -75,9 +75,43 @@ export const createBotRegistryService = ({
     }));
   };
 
+  const ensureBot = async ({ authId = '', context = {} } = {}) => {
+    const runtimeAuthId = normalizeAuthId(authId);
+    if (!runtimeAuthId) {
+      throw new Error('AUTH_ID is required to ensure bot during install');
+    }
+
+    const expectedCode = String(botCode || '').trim();
+    const existingBots = await listBots({ authId: runtimeAuthId, context }).catch((error) => {
+      logger.warn('bot list failed before registration', { error: error.message });
+      return [];
+    });
+    const existing = existingBots.find((bot) => bot.id && bot.code === expectedCode);
+    if (existing) {
+      logger.info('bot reused', { botId: existing.id, botCode: expectedCode });
+      return {
+        botId: existing.id,
+        reused: true,
+        registered: false,
+        bots: existingBots,
+        raw: existing.raw
+      };
+    }
+
+    const registration = await registerBot({ authId: runtimeAuthId, context });
+    const botsAfterRegistration = await listBots({ authId: runtimeAuthId, context }).catch(() => []);
+    return {
+      ...registration,
+      reused: false,
+      registered: true,
+      bots: botsAfterRegistration
+    };
+  };
+
   return {
     registerBot,
-    listBots
+    listBots,
+    ensureBot
   };
 };
 

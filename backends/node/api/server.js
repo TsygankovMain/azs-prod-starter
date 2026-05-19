@@ -178,8 +178,18 @@ const bitrixClient = createBitrixRestClient({
     });
   }
 });
-const notificationService = createNotificationService({ bitrixClient });
 const botRegistryService = createBotRegistryService({ bitrixClient });
+const notificationService = createNotificationService({
+  bitrixClient,
+  resolveBotId: async (context = {}) => {
+    const authId = String(context?.authId || context?.auth_id || '').trim();
+    if (!authId) {
+      return 0;
+    }
+    const registration = await botRegistryService.ensureBot({ authId, context });
+    return registration.botId;
+  }
+});
 const timeoutWatcher = createTimeoutWatcher({
   reportsStore,
   bitrixClient,
@@ -335,19 +345,19 @@ app.post('/api/install', async (req, res) => {
     }
 
     try {
-      const registration = await botRegistryService.registerBot({ authId });
+      const registration = await botRegistryService.ensureBot({ authId, context: installContext });
       process.env.BITRIX_BOT_ID = String(registration.botId);
       if (typeof notificationService.setBotId === 'function') {
         notificationService.setBotId(registration.botId);
       }
-      const bots = await botRegistryService.listBots({ authId }).catch(() => []);
       return res.json({
         ...payload,
         bot: {
           mode: botMode,
-          registered: true,
+          registered: Boolean(registration.registered),
+          reused: Boolean(registration.reused),
           botId: registration.botId,
-          bots
+          bots: registration.bots || []
         }
       });
     } catch (error) {

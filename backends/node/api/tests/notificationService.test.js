@@ -88,6 +88,46 @@ test('notifyDispatch falls back to notify channel when bot send fails', async ()
   assert.equal(notifyCalls[0].userId, 11);
 });
 
+test('notifyDispatch resolves bot id dynamically when env bot id is empty', async () => {
+  const botCalls = [];
+
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod(method, payload) {
+        botCalls.push({ method, payload });
+        return { id: 5002 };
+      },
+      async notifyUser() {
+        throw new Error('notify fallback should not be called');
+      }
+    },
+    mode: 'bot',
+    botId: 0,
+    appCode: 'local.69f0c4a7dc8632.03848830',
+    publicBaseUrl: 'https://simply-staid-mollusk.cloudpub.ru',
+    async resolveBotId(context) {
+      assert.equal(context.domain, 'example.bitrix24.ru');
+      return 88;
+    }
+  });
+
+  const result = await service.notifyDispatch({
+    userId: 11,
+    reportId: 17,
+    azsId: 'azs-10',
+    slotHHmm: '1045',
+    deadlineAt: '2026-04-29T10:45:00.000Z',
+    context: {
+      domain: 'example.bitrix24.ru',
+      authId: 'runtime-token'
+    }
+  });
+
+  assert.equal(result.channel, 'bot');
+  assert.equal(botCalls.length, 1);
+  assert.equal(botCalls[0].payload.botId, 88);
+});
+
 test('bitrix client auth id can be updated at runtime', async () => {
   const calls = [];
   const fetchOriginal = globalThis.fetch;

@@ -81,6 +81,7 @@ export const createNotificationService = ({
   botId = Number(process.env.BITRIX_BOT_ID || 0),
   appCode = process.env.BITRIX_APP_CODE || '',
   publicBaseUrl = process.env.APP_PUBLIC_BASE_URL || process.env.VIRTUAL_HOST || '',
+  resolveBotId = null,
   logger = console
 }) => {
   if (!bitrixClient) {
@@ -91,6 +92,22 @@ export const createNotificationService = ({
   const resolvedBotId = Number(botId);
   let currentBotId = Number.isFinite(resolvedBotId) ? resolvedBotId : 0;
 
+  const ensureBotId = async (context = {}) => {
+    if (currentBotId) {
+      return currentBotId;
+    }
+    if (typeof resolveBotId !== 'function') {
+      return 0;
+    }
+
+    const nextBotId = Number(await resolveBotId(context));
+    if (Number.isFinite(nextBotId) && nextBotId > 0) {
+      currentBotId = Math.floor(nextBotId);
+      process.env.BITRIX_BOT_ID = String(currentBotId);
+    }
+    return currentBotId;
+  };
+
   const notify = async ({ userId, message, keyboard = null, context = {}, fallbackToNotify = true }) => {
     if (!Number(userId)) {
       throw new Error('notify requires userId');
@@ -100,13 +117,14 @@ export const createNotificationService = ({
     }
 
     if (resolvedMode === 'bot') {
-      if (!currentBotId) {
-        throw new Error('BITRIX_BOT_ID is required when BITRIX_BOT_MODE=bot');
-      }
       try {
+        const runtimeBotId = await ensureBotId(context);
+        if (!runtimeBotId) {
+          throw new Error('BITRIX_BOT_ID is required when BITRIX_BOT_MODE=bot');
+        }
         const result = await sendViaBot({
           bitrixClient,
-          botId: currentBotId,
+          botId: runtimeBotId,
           userId,
           message,
           keyboard,

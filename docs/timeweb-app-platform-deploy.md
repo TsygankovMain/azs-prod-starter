@@ -10,7 +10,7 @@
 ## Что подготовить
 
 1. Репозиторий с корневым `Dockerfile`.
-2. Production значения переменных окружения (база: `.env.timeweb.example`).
+2. Production значения переменных окружения (база: `.env.timeweb.example` или локальный файл `.env.timeweb`).
 3. Домен приложения, совпадающий с настройками Bitrix24 app.
 
 ## Шаги в Timeweb
@@ -18,9 +18,25 @@
 1. `App Platform` -> `Создать` -> тип `Dockerfile`.
 2. Подключить репозиторий и выбрать ветку.
 3. Отключить опцию автодеплоя (ручной релиз по commit/tag).
-4. Указать env-переменные из `.env.timeweb.example`.
-   Для single-container режима оставить `SERVER_HOST=http://127.0.0.1:8000` и пустой `NUXT_PUBLIC_API_URL`.
-5. Запустить деплой.
+4. Указать env-переменные из `.env.timeweb`.
+   Для single-container режима оставить `SERVER_HOST=http://127.0.0.1:8000`.
+   Если Timeweb не дает оставить публичную переменную пустой, укажите `NUXT_PUBLIC_API_URL=https://<domain>`.
+5. Не указывать `BITRIX_REST_ENDPOINT`: портал берется из OAuth-контекста Bitrix24 при установке и работе пользователя.
+6. Запустить деплой.
+
+## Поля локального приложения Bitrix24
+
+Для текущего домена Timeweb:
+
+- `Путь вашего обработчика`: `https://tsygankovmain-azs-prod-starter-fb7c.twc1.net`
+- `Путь для первоначальной установки`: `https://tsygankovmain-azs-prod-starter-fb7c.twc1.net/install`
+- `Код приложения (client_id)`: значение `CLIENT_ID` из env.
+- `Ключ приложения (client_secret)`: значение `CLIENT_SECRET` из env.
+- `Использует только API`: выключено.
+- `Поддерживает BitrixMobile`: включено.
+- `Название пункта меню Русский (ru)`: `Фото-отчет АЗС`.
+
+Публичный URL должен быть HTTPS и без `:8080`. Порт `8080` используется только внутри контейнера Timeweb.
 
 ## Что проверять после деплоя
 
