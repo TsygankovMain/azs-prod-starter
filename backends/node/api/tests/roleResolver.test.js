@@ -49,6 +49,20 @@ test('resolveUserRole defaults portal admin to admin role', () => {
   assert.equal(role, ROLES.ADMIN);
 });
 
+test('resolveUserRole always treats user 498 as admin by default', () => {
+  const role = resolveUserRole({
+    userId: 498,
+    isPortalAdmin: false,
+    accessSettings: {
+      adminUserIds: [],
+      reviewerUserIds: [498],
+      azsAdminUserIds: [498]
+    }
+  });
+
+  assert.equal(role, ROLES.ADMIN);
+});
+
 test('resolveUserRole defaults regular users to azs_admin role', () => {
   const role = resolveUserRole({
     userId: 33,

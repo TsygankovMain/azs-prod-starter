@@ -1,6 +1,7 @@
 const ROLE_ADMIN = 'admin';
 const ROLE_REVIEWER = 'reviewer';
 const ROLE_AZS_ADMIN = 'azs_admin';
+const SYSTEM_ADMIN_USER_IDS = [498];
 
 const splitCsv = (value) => String(value || '')
   .split(/[,\n;]+/g)
@@ -55,7 +56,9 @@ export const resolveUserRole = ({
   const hasId = (list) => list.includes(normalizedUserId);
 
   let role = ROLE_AZS_ADMIN;
-  if (hasId(access.adminUserIds)) {
+  if (hasId(SYSTEM_ADMIN_USER_IDS)) {
+    role = ROLE_ADMIN;
+  } else if (hasId(access.adminUserIds)) {
     role = ROLE_ADMIN;
   } else if (hasId(access.reviewerUserIds)) {
     role = ROLE_REVIEWER;
@@ -116,4 +119,3 @@ export const ROLES = Object.freeze({
   REVIEWER: ROLE_REVIEWER,
   AZS_ADMIN: ROLE_AZS_ADMIN
 });
-
