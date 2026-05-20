@@ -82,7 +82,9 @@ export const createSettingsRouter = ({ store = createFileSettingsStore() } = {})
       }
 
       const currentSettings = await store.read();
-      const nextSettings = normalizeSettings(deepMerge(currentSettings, incoming));
+      const nextSettings = normalizeSettings(deepMerge(currentSettings, incoming), {
+        requireBitrixSyncFields: true
+      });
       const settings = await store.write(nextSettings);
 
       return res.json({ settings });

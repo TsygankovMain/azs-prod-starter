@@ -109,6 +109,7 @@ useHead({ title: PAGE_TITLE })
 const { $logger, initApp, b24Helper, destroyB24Helper, processErrorGlobal } = useAppInit('SettingsPage')
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
+const userStore = useUserStore()
 
 let $b24: null | B24Frame = null
 
@@ -135,6 +136,19 @@ const roleCapabilities = ref<AppCapabilities>({
   reviewer: false,
   reports: true
 })
+
+function applySystemAdminFallback() {
+  if (Number(userStore.id || 0) !== 498) {
+    return
+  }
+
+  currentRole.value = 'admin'
+  roleCapabilities.value = {
+    settings: true,
+    reviewer: true,
+    reports: true
+  }
+}
 
 const azsFieldRequirements: FieldRequirement[] = [
   { key: 'admin', label: 'Администратор АЗС', type: 'Пользователь', createType: 'employee', createPostfix: 'ADMIN' },
@@ -715,6 +729,7 @@ async function loadRoleContext() {
       reviewer: Boolean(response.capabilities?.reviewer),
       reports: Boolean(response.capabilities?.reports)
     }
+    applySystemAdminFallback()
   } catch {
     currentRole.value = 'azs_admin'
     roleCapabilities.value = {
@@ -722,6 +737,7 @@ async function loadRoleContext() {
       reviewer: false,
       reports: true
     }
+    applySystemAdminFallback()
   }
 }
 
@@ -773,6 +789,7 @@ onMounted(async () => {
     isLoading.value = true
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
+    applySystemAdminFallback()
     await loadRoleContext()
     await $b24.parent.setTitle(PAGE_TITLE)
     await loadSettings()

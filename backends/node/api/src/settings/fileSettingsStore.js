@@ -14,10 +14,10 @@ export class FileSettingsStore {
   async read() {
     try {
       const raw = await readFile(this.filePath, 'utf8');
-      return normalizeSettings(JSON.parse(raw));
+      return normalizeSettings(JSON.parse(raw), { requireBitrixSyncFields: false });
     } catch (error) {
       if (error.code === 'ENOENT') {
-        return normalizeSettings();
+        return normalizeSettings({}, { requireBitrixSyncFields: false });
       }
 
       if (error instanceof SyntaxError) {

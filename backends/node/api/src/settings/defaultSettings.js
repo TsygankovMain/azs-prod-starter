@@ -161,12 +161,17 @@ const normalizeDispatchTimes = (value) => {
   return result.sort();
 };
 
-export const validateSettings = (settings) => {
+export const validateSettings = (settings, {
+  requireBitrixSyncFields = true
+} = {}) => {
   const errors = [];
   const bitrixSyncRequired = String(process.env.BITRIX_SYNC_REQUIRED || '').trim().toLowerCase();
-  const isProductionBitrixSync = bitrixSyncRequired === 'true'
-    || bitrixSyncRequired === '1'
-    || String(process.env.BITRIX_REST_ENDPOINT || '').trim() !== '';
+  const isProductionBitrixSync = requireBitrixSyncFields
+    && (
+      bitrixSyncRequired === 'true'
+      || bitrixSyncRequired === '1'
+      || String(process.env.BITRIX_REST_ENDPOINT || '').trim() !== ''
+    );
 
   if (!isPlainObject(settings)) {
     throw new SettingsValidationError(['settings must be a JSON object']);
@@ -262,4 +267,4 @@ export const validateSettings = (settings) => {
   };
 };
 
-export const normalizeSettings = (settings = {}) => validateSettings(mergeSettings(settings));
+export const normalizeSettings = (settings = {}, options = {}) => validateSettings(mergeSettings(settings), options);

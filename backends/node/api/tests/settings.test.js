@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_SETTINGS,
   mergeSettings,
+  normalizeSettings,
   validateSettings
 } from '../src/settings/defaultSettings.js';
 
@@ -116,6 +117,22 @@ test('validateSettings requires report.fields.folderId when Bitrix sync is requi
       })),
       /report.fields.folderId is required when Bitrix sync is enabled/
     );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.BITRIX_SYNC_REQUIRED;
+    } else {
+      process.env.BITRIX_SYNC_REQUIRED = previous;
+    }
+  }
+});
+
+test('normalizeSettings can load incomplete settings while Bitrix sync is required', () => {
+  const previous = process.env.BITRIX_SYNC_REQUIRED;
+  process.env.BITRIX_SYNC_REQUIRED = 'true';
+
+  try {
+    const normalized = normalizeSettings({}, { requireBitrixSyncFields: false });
+    assert.equal(normalized.report.fields.folderId, '');
   } finally {
     if (previous === undefined) {
       delete process.env.BITRIX_SYNC_REQUIRED;
