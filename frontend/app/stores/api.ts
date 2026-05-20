@@ -126,15 +126,11 @@ export const useApiStore = defineStore(
       role?: AppRole | null
       capabilities?: Partial<AppCapabilities> | null
     }> => {
-      try {
-        return await $api('/api/health', {
-          headers: {
-            Authorization: `Bearer ${tokenJWT.value}`
-          }
-        })
-      } catch {
-        throw new Error('Backend health check failed')
-      }
+      return await $api('/api/health', {
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
     }
 
     const getSettings = async (): Promise<{
@@ -335,6 +331,8 @@ export const useApiStore = defineStore(
 
       const user = useUserStore()
       const appSettings = useAppSettingsStore()
+      const authUserData = authData as { user_id?: number; userId?: number }
+      const userId = Number(user.id || authUserData.user_id || authUserData.userId || 0)
 
       const response = await getToken({
         DOMAIN: withoutTrailingSlash(authData.domain).replace('https://', '').replace('http://', ''),
@@ -346,7 +344,8 @@ export const useApiStore = defineStore(
         REFRESH_ID: authData.refresh_token,
         REFRESH_TOKEN: authData.refresh_token,
         member_id: authData.member_id,
-        user_id: user.id,
+        user_id: userId,
+        is_admin: user.isAdmin ? 'Y' : 'N',
         status: appSettings.status
       })
 

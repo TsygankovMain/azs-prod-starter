@@ -56,6 +56,8 @@ const parseBoolean = (value) => {
   return raw === '1' || raw === 'y' || raw === 'yes' || raw === 'true';
 };
 
+const pickFirstDefined = (...values) => values.find((value) => value !== undefined && value !== null && value !== '');
+
 const trimTrailingSlash = (value) => String(value || '').replace(/\/+$/, '');
 
 const resolveAppHandlerUrl = () => {
@@ -425,9 +427,19 @@ app.post('/api/getToken', async (req, res) => {
     // This prevents portal admins from being silently downgraded on a routine
     // /api/getToken call where Bitrix omits the ADMIN field.
     const profileAdminRaw = profile?.ADMIN;
+    const requestAdminRaw = pickFirstDefined(
+      req.body?.is_admin,
+      req.body?.IS_ADMIN,
+      req.body?.admin,
+      req.body?.ADMIN
+    );
     const previousContext = await authContextStore.getContext(contextDraft) || {};
     const isAdmin = (profileAdminRaw === undefined || profileAdminRaw === null || profileAdminRaw === '')
-      ? Boolean(previousContext.isAdmin)
+      ? (
+          requestAdminRaw === undefined
+            ? Boolean(previousContext.isAdmin)
+            : parseBoolean(requestAdminRaw)
+        )
       : parseBoolean(profileAdminRaw);
     await authContextStore.upsertContext({
       ...contextDraft,

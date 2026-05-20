@@ -25,6 +25,18 @@ const currentCapabilities = ref({
   reports: true
 })
 
+const applyLocalPortalAdminFallback = () => {
+  if (!userStore.isAdmin) {
+    return
+  }
+  currentRole.value = 'admin'
+  currentCapabilities.value = {
+    settings: true,
+    reviewer: true,
+    reports: true
+  }
+}
+
 const appScreens = [
   {
     key: 'settings',
@@ -138,10 +150,44 @@ const resolveContextReportId = ($frame: B24Frame): number => {
   return parseReportIdFromPath(placementOptions.path ?? placementOptions['params[path]'])
 }
 
+const extractApiErrorMessage = (error: unknown): string => {
+  if (!error || typeof error !== 'object') {
+    return String(error || 'unknown_error')
+  }
+  const payload = error as {
+    message?: string
+    response?: {
+      status?: number
+      _data?: {
+        error?: string
+        message?: string
+      }
+    }
+    data?: {
+      error?: string
+      message?: string
+    }
+  }
+  const status = payload.response?.status
+  const data = payload.response?._data || payload.data
+  const reason = data?.message || data?.error || payload.message || 'unknown_error'
+  return status ? `${status}: ${reason}` : reason
+}
+
 const checkBackend = async () => {
   try {
+    if (!apiStore.isInitTokenJWT) {
+      await apiStore.reinitToken()
+    }
+
     const health = await apiStore.checkHealth()
-    const roleResponse = await apiStore.getMyRole()
+    let roleResponse: Awaited<ReturnType<typeof apiStore.getMyRole>> | null = null
+    try {
+      roleResponse = await apiStore.getMyRole()
+    } catch (roleError) {
+      console.warn('Role endpoint failed, using /api/health role payload', roleError)
+    }
+
     if (roleResponse?.role) {
       currentRole.value = roleResponse.role
     } else if (health?.role) {
@@ -157,9 +203,10 @@ const checkBackend = async () => {
 
     healthStatus.value = 'ok'
     healthText.value = 'Backend доступен'
-  } catch {
+  } catch (error) {
+    applyLocalPortalAdminFallback()
     healthStatus.value = 'error'
-    healthText.value = 'Backend недоступен или JWT не инициализирован'
+    healthText.value = `API ошибка: ${extractApiErrorMessage(error)}`
   }
 }
 
@@ -183,6 +230,7 @@ onMounted(async () => {
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
     await $b24.parent.setTitle(PAGE_TITLE)
+    applyLocalPortalAdminFallback()
 
     const contextReportId = resolveContextReportId($b24)
     if (contextReportId > 0) {
