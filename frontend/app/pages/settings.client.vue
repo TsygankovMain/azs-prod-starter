@@ -14,12 +14,6 @@ type SettingsTree = {
   }
   photoType: {
     entityTypeId: number
-    fields: {
-      code: string
-      title: string
-      sort: string
-      active: string
-    }
   }
   report: {
     entityTypeId: number
@@ -64,10 +58,6 @@ type FieldMapKey =
   | 'reviewers'
   | 'photoSet'
   | 'enabled'
-  | 'code'
-  | 'title'
-  | 'sort'
-  | 'active'
   | 'azs'
   | 'trigger'
   | 'folderId'
@@ -157,13 +147,6 @@ const azsFieldRequirements: FieldRequirement[] = [
   { key: 'enabled', label: 'Активна', type: 'Да/Нет', createType: 'boolean', createPostfix: 'ENABLED' }
 ]
 
-const photoTypeFieldRequirements: FieldRequirement[] = [
-  { key: 'code', label: 'Код фото', type: 'Строка', createType: 'string', createPostfix: 'CODE' },
-  { key: 'title', label: 'Название фото', type: 'Строка', createType: 'string', createPostfix: 'TITLE' },
-  { key: 'sort', label: 'Сортировка', type: 'Число', createType: 'integer', createPostfix: 'SORT' },
-  { key: 'active', label: 'Активность', type: 'Да/Нет', createType: 'boolean', createPostfix: 'ACTIVE' }
-]
-
 const reportFieldRequirements: FieldRequirement[] = [
   { key: 'azs', label: 'АЗС', type: 'Привязка к СП АЗС или строка', createType: 'crm', createPostfix: 'AZS' },
   { key: 'trigger', label: 'Тип запуска', type: 'Строка auto/manual', createType: 'string', createPostfix: 'TRIGGER' },
@@ -183,13 +166,7 @@ function makeEmptySettings(): SettingsTree {
       }
     },
     photoType: {
-      entityTypeId: 0,
-      fields: {
-        code: '',
-        title: '',
-        sort: '',
-        active: ''
-      }
+      entityTypeId: 0
     },
     report: {
       entityTypeId: 0,
@@ -369,7 +346,6 @@ function applySettings(nextSettings: SettingsTree) {
   Object.assign(form.photoType, {
     entityTypeId: nextSettings.photoType.entityTypeId
   })
-  Object.assign(form.photoType.fields, nextSettings.photoType.fields)
 
   Object.assign(form.report, {
     entityTypeId: nextSettings.report.entityTypeId,
@@ -401,13 +377,7 @@ function readSettings(): SettingsTree {
       }
     },
     photoType: {
-      entityTypeId: Number(form.photoType.entityTypeId || 0),
-      fields: {
-        code: form.photoType.fields.code,
-        title: form.photoType.fields.title,
-        sort: form.photoType.fields.sort,
-        active: form.photoType.fields.active
-      }
+      entityTypeId: Number(form.photoType.entityTypeId || 0)
     },
     report: {
       entityTypeId: Number(form.report.entityTypeId || 0),
@@ -653,7 +623,6 @@ async function loadPortalMetadata() {
   await loadSmartProcesses()
   await Promise.all([
     loadFieldsForModule('azs'),
-    loadFieldsForModule('photoType'),
     loadFieldsForModule('report')
   ])
 }
@@ -976,41 +945,9 @@ onUnmounted(() => {
             </select>
           </B24FormField>
 
-          <div class="overflow-auto">
-            <table class="min-w-full text-sm">
-              <tbody>
-                <tr v-for="requirement in photoTypeFieldRequirements" :key="requirement.key" class="border-b border-gray-100">
-                  <td class="w-[38%] py-2 pr-3">
-                    <div class="font-medium">{{ requirement.label }}</div>
-                    <div class="text-xs text-gray-500">{{ requirement.type }}</div>
-                  </td>
-                  <td class="py-2 pr-2">
-                    <select
-                      class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-                      :value="getModuleFieldValue('photoType', requirement.key)"
-                      :disabled="!isAdminReady || !form.photoType.entityTypeId"
-                      @change="setModuleFieldValue('photoType', requirement.key, ($event.target as HTMLSelectElement).value)"
-                    >
-                      <option value="">Не сопоставлено</option>
-                      <option v-for="field in fieldsByModule.photoType" :key="field.value" :value="field.value">
-                        {{ field.label }}
-                      </option>
-                    </select>
-                  </td>
-                  <td class="w-[120px] py-2 text-right">
-                    <B24Button
-                      size="xs"
-                      color="air-secondary"
-                      label="Создать"
-                      :disabled="!isAdminReady || !form.photoType.entityTypeId || Boolean(creatingFieldKey)"
-                      loading-auto
-                      @click="createMappedField('photoType', requirement)"
-                    />
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <p class="text-sm text-gray-600">
+            Достаточно выбрать смарт-процесс. Идентификатор и название каждой позиции берутся из стандартных полей записи. Порядок показа — по возрастанию id записи.
+          </p>
         </div>
       </B24Card>
 

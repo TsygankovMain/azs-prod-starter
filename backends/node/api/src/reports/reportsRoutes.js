@@ -232,11 +232,10 @@ export const resolveManualCandidates = async ({
   };
 };
 
-const readRequiredPhotos = async ({ bitrixClient, settings, azsId, context = {} }) => {
+export const readRequiredPhotos = async ({ bitrixClient, settings, azsId, context = {} }) => {
   const azsEntityTypeId = Number(settings.azs?.entityTypeId || 0);
   const photoSetField = String(settings.azs?.fields?.photoSet || '').trim();
   const photoTypeEntityTypeId = Number(settings.photoType?.entityTypeId || 0);
-  const photoTypeFields = settings.photoType?.fields || {};
   const azsItemId = parseCrmItemId(azsId);
 
   if (!azsEntityTypeId || !photoSetField || !photoTypeEntityTypeId) {
@@ -286,27 +285,21 @@ const readRequiredPhotos = async ({ bitrixClient, settings, azsId, context = {} 
 
   const requiredPhotos = items
     .filter(Boolean)
-    .map((item, index) => {
-      const code = normalizePhotoCode(getFieldValue(item, photoTypeFields.code));
-      const title = String(getFieldValue(item, photoTypeFields.title) || code).trim();
-      const sort = Number(getFieldValue(item, photoTypeFields.sort) ?? ((index + 1) * 10));
-      const activeValue = getFieldValue(item, photoTypeFields.active);
-      const isInactive = ['N', 'n', '0', 'false', 'нет'].includes(String(activeValue ?? 'Y').trim());
-      return {
-        code,
-        title: title || code,
-        sort: Number.isFinite(sort) ? sort : ((index + 1) * 10),
-        active: !isInactive
-      };
+    .map((item) => {
+      const id = Number(item.id ?? item.ID ?? 0);
+      const code = id ? String(id) : '';
+      const standardTitle = String(item.title ?? item.TITLE ?? '').trim();
+      const title = standardTitle || `Фото #${id}`;
+      return { code, title, sort: id };
     })
-    .filter((item) => item.code && item.active)
+    .filter((item) => item.code)
     .sort((a, b) => a.sort - b.sort)
     .map(({ code, title, sort }) => ({ code, title, sort }));
 
   if (!requiredPhotos.length) {
     throw new ReportConfigError(
-      'No active photo types resolved from AZS photo set',
-      'required_photo_types_empty'
+      'Failed to load photo type records',
+      'photo_types_not_found'
     );
   }
 

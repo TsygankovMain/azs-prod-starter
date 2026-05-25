@@ -18,13 +18,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     }
   },
   photoType: {
-    entityTypeId: 0,
-    fields: {
-      code: '',
-      title: '',
-      sort: '',
-      active: ''
-    }
+    entityTypeId: 0
   },
   report: {
     entityTypeId: 0,

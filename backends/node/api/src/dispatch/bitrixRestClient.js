@@ -417,7 +417,8 @@ export const createBitrixRestClient = ({
 
       const result = await call('crm.item.get', {
         entityTypeId: Number(entityTypeId),
-        id: Number(id)
+        id: Number(id),
+        useOriginalUfNames: 'N'
       }, context);
 
       return result?.item ?? result ?? null;
