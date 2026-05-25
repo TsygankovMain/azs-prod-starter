@@ -263,9 +263,12 @@ onMounted(async () => {
             <ProseH2>Фото-отчёты АЗС</ProseH2>
             <ProseP>Рабочие экраны приложения на Bitrix24 UI Kit.</ProseP>
           </div>
-          <B24Badge :color="healthStatus === 'ok' ? 'air-primary-success' : (healthStatus === 'error' ? 'air-primary-alert' : 'air-secondary')">
-            {{ healthText }}
-          </B24Badge>
+          <div class="flex items-center gap-2">
+            <B24Badge :color="healthStatus === 'ok' ? 'air-primary-success' : (healthStatus === 'error' ? 'air-primary-alert' : 'air-secondary')">
+              {{ healthText }}
+            </B24Badge>
+            <HelpButton default-role="admin" />
+          </div>
         </div>
       </template>
 

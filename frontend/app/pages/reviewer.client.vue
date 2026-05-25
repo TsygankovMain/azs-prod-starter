@@ -349,6 +349,7 @@ onMounted(async () => {
             <B24Badge v-if="isLoading" color="air-secondary">загрузка...</B24Badge>
             <B24Button color="air-secondary" label="Обновить" loading-auto @click="loadReports" />
             <B24Button color="air-primary-alert" label="Проверить просрочки" loading-auto @click="runTimeout" />
+            <HelpButton default-role="reviewer" />
           </div>
         </div>
       </template>

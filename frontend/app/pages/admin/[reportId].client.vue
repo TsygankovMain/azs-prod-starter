@@ -424,9 +424,12 @@ onBeforeUnmount(() => {
               />
             </div>
           </div>
-          <B24Badge :color="allUploaded ? 'air-primary-success' : 'air-secondary'">
-            {{ uploadedCount }}/{{ photoSlots.length }} загружено
-          </B24Badge>
+          <div class="flex items-center gap-2">
+            <B24Badge :color="allUploaded ? 'air-primary-success' : 'air-secondary'">
+              {{ uploadedCount }}/{{ photoSlots.length }} загружено
+            </B24Badge>
+            <HelpButton default-role="admin" />
+          </div>
         </div>
       </template>
 

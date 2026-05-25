@@ -842,6 +842,7 @@ onUnmounted(() => {
           inverted
           :label="isAdminReady ? 'роль: администратор' : `роль: ${currentRole}`"
         />
+        <HelpButton default-role="settings" />
       </div>
     </div>
 
