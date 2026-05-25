@@ -881,7 +881,6 @@ export const createReportsRouter = ({
       if (reviewerId > 0) {
         await notificationService.notifyReportDone({
           userId: reviewerId,
-          reportId,
           azsId: report.azsId,
           context: req.bitrixContext || {}
         });

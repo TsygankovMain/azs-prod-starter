@@ -57,9 +57,9 @@ export const createTimeoutWatcher = ({
         if (reviewerUserId > 0) {
           await notificationService.notifyReportExpired({
             userId: reviewerUserId,
-            reportId: report.id,
             azsId: report.azsId,
-            slotKey: report.slotKey,
+            deadlineAt: report.deadlineAt,
+            timezone: settings.timezone,
             context
           });
           notified += 1;

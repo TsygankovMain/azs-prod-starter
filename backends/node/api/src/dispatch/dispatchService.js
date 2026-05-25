@@ -159,10 +159,9 @@ export const createDispatchService = ({
       try {
         await notificationService.notifyDispatch({
           userId: Number(candidate.adminUserId),
-          reportId: reserve.id,
           azsId: candidate.azsId,
-          slotHHmm,
           deadlineAt,
+          timezone: settings.timezone,
           context
         });
       } catch (notifyError) {

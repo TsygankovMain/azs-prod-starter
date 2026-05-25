@@ -37,10 +37,9 @@ test('notifyDispatch sends message via bot channel when mode=bot', async () => {
 
   const result = await service.notifyDispatch({
     userId: 11,
-    reportId: 15,
     azsId: 'azs-7',
-    slotHHmm: '0915',
-    deadlineAt: '2026-04-29T08:45:00.000Z'
+    deadlineAt: '2026-04-29T08:45:00.000Z',
+    timezone: 'Europe/Moscow'
   });
 
   assert.equal(result.channel, 'bot');
@@ -48,12 +47,11 @@ test('notifyDispatch sends message via bot channel when mode=bot', async () => {
   assert.equal(botCalls[0].method, 'imbot.v2.Chat.Message.send');
   assert.equal(botCalls[0].payload.botId, 77);
   assert.equal(botCalls[0].payload.dialogId, '11');
-  assert.doesNotMatch(botCalls[0].payload.fields.message, /Открыть отчёт:/);
-  assert.equal(botCalls[0].payload.fields.keyboard.BUTTONS[0].TEXT, 'Открыть отчёт');
-  assert.match(
-    botCalls[0].payload.fields.keyboard.BUTTONS[0].LINK,
-    /marketplace\/view\/local\.69f0c4a7dc8632\.03848830/
-  );
+  assert.equal(botCalls[0].payload.fields.keyboard, undefined);
+  assert.match(botCalls[0].payload.fields.message, /Время сделать фото-отчёт по АЗС azs-7/);
+  assert.match(botCalls[0].payload.fields.message, /Сдать до 11:45/);
+  assert.doesNotMatch(botCalls[0].payload.fields.message, /Слот:/);
+  assert.doesNotMatch(botCalls[0].payload.fields.message, /Дедлайн:/);
 });
 
 test('notifyDispatch falls back to notify channel when bot send fails', async () => {
@@ -77,10 +75,9 @@ test('notifyDispatch falls back to notify channel when bot send fails', async ()
 
   const result = await service.notifyDispatch({
     userId: 11,
-    reportId: 16,
     azsId: 'azs-9',
-    slotHHmm: '1015',
-    deadlineAt: '2026-04-29T09:45:00.000Z'
+    deadlineAt: '2026-04-29T09:45:00.000Z',
+    timezone: 'Europe/Moscow'
   });
 
   assert.equal(result.channel, 'notify');
@@ -113,10 +110,9 @@ test('notifyDispatch resolves bot id dynamically when env bot id is empty', asyn
 
   const result = await service.notifyDispatch({
     userId: 11,
-    reportId: 17,
     azsId: 'azs-10',
-    slotHHmm: '1045',
     deadlineAt: '2026-04-29T10:45:00.000Z',
+    timezone: 'Europe/Moscow',
     context: {
       domain: 'example.bitrix24.ru',
       authId: 'runtime-token'

@@ -68,7 +68,7 @@ test('ensureBot reuses existing bot with configured code', async () => {
   assert.equal(result.botId, 46);
   assert.equal(result.reused, true);
   assert.equal(result.registered, false);
-  assert.deepEqual(calls, ['imbot.v2.Bot.list']);
+  assert.deepEqual(calls, ['imbot.v2.Bot.list', 'imbot.v2.Bot.update']);
 });
 
 test('ensureBot registers bot when code is missing', async () => {

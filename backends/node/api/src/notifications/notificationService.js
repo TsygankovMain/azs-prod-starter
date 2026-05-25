@@ -1,52 +1,42 @@
-import { buildReportLinks } from './reportLinks.js';
-
 const normalizeMode = (value) => {
   const mode = String(value || '').trim().toLowerCase();
   return mode === 'bot' ? 'bot' : 'notify';
 };
 
-const resolveOpenReportLink = (links) => {
-  if (links.restAppUriLink) {
-    return links.restAppUriLink;
+const formatLocalTime = (iso, timezone) => {
+  if (!iso) {
+    return '';
   }
-  if (links.publicReportUrl) {
-    return links.publicReportUrl;
+  const tz = String(timezone || '').trim() || 'Europe/Moscow';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return '';
   }
-  return links.appPath;
+  try {
+    return new Intl.DateTimeFormat('ru-RU', {
+      timeZone: tz,
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(date);
+  } catch {
+    return date.toISOString().slice(11, 16);
+  }
 };
 
-const buildOpenReportKeyboard = (links) => {
-  const link = resolveOpenReportLink(links);
-  return {
-    BUTTONS: [
-      {
-        TEXT: 'Открыть отчёт',
-        LINK: link,
-        DISPLAY: 'BLOCK',
-        BG_COLOR_TOKEN: 'primary'
-      }
-    ]
-  };
-};
-
-const buildDispatchMessage = ({ azsId, slotHHmm, deadlineAt, links }) => {
-  const lines = [
-    'Порядок на АЗС',
-    `Новый фото-отчёт для АЗС ${String(azsId || '')}.`,
-    `Слот: ${slotHHmm}.`,
-    `Дедлайн: ${new Date(deadlineAt).toISOString()}.`
+const buildDispatchMessage = ({ azsId, deadlineAt, timezone }) => {
+  const deadline = formatLocalTime(deadlineAt, timezone);
+  const parts = [
+    `Время сделать фото-отчёт по АЗС ${String(azsId || '')}.`
   ];
-
-  return lines.join('\n');
+  if (deadline) {
+    parts.push(`Сдать до ${deadline}.`);
+  }
+  parts.push('');
+  parts.push('Откройте приложение «Порядок на АЗС» в Bitrix24, чтобы загрузить фото.');
+  return parts.join('\n');
 };
 
-const buildDoneMessage = ({ azsId, links }) => {
-  const lines = [
-    `Отчёт АЗС ${String(azsId || '')} завершён и готов к проверке.`
-  ];
-
-  return lines.join('\n');
-};
+const buildDoneMessage = ({ azsId }) => `Отчёт по АЗС ${String(azsId || '')} сдан и готов к проверке.`;
 
 const sendViaBot = async ({ bitrixClient, botId, userId, message, keyboard = null, context = {} }) => {
   if (typeof bitrixClient?.callMethod !== 'function') {
@@ -153,68 +143,48 @@ export const createNotificationService = ({
 
   const notifyDispatch = async ({
     userId,
-    reportId,
     azsId,
-    slotHHmm,
     deadlineAt,
+    timezone,
     context = {}
   }) => {
-    const links = buildReportLinks({
-      appCode,
-      reportId,
-      publicBaseUrl,
-      portalDomain: context?.domain || ''
-    });
     const message = buildDispatchMessage({
       azsId,
-      slotHHmm,
       deadlineAt,
-      links
+      timezone
     });
     return notify({
       userId,
       message,
-      context,
-      keyboard: buildOpenReportKeyboard(links)
+      context
     });
   };
 
   const notifyReportDone = async ({
     userId,
-    reportId,
     azsId,
     context = {}
   }) => {
-    const links = buildReportLinks({
-      appCode,
-      reportId,
-      publicBaseUrl,
-      portalDomain: context?.domain || ''
-    });
-    const message = buildDoneMessage({ azsId, links });
+    const message = buildDoneMessage({ azsId });
     return notify({
       userId,
       message,
-      context,
-      keyboard: buildOpenReportKeyboard(links)
+      context
     });
   };
 
-  const notifyReportExpired = async ({ userId, reportId, azsId, slotKey, context = {} }) => {
-    const links = buildReportLinks({
-      appCode,
-      reportId,
-      publicBaseUrl,
-      portalDomain: context?.domain || ''
-    });
+  const notifyReportExpired = async ({ userId, azsId, deadlineAt, timezone, context = {} }) => {
+    const deadline = formatLocalTime(deadlineAt, timezone);
     const lines = [
-      `Отчёт АЗС ${String(azsId || '')} просрочен (slot ${String(slotKey || '-')}).`
+      `Отчёт по АЗС ${String(azsId || '')} не сдан вовремя.`
     ];
+    if (deadline) {
+      lines.push(`Срок сдачи был до ${deadline}.`);
+    }
     return notify({
       userId,
       message: lines.join('\n'),
-      context,
-      keyboard: buildOpenReportKeyboard(links)
+      context
     });
   };
 
