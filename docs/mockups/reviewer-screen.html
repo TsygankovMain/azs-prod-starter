@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Мокап · Экран управляющего · АЗС</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+    .feed-line::before {
+      content: "";
+      position: absolute;
+      left: 19px;
+      top: 40px;
+      bottom: -16px;
+      width: 2px;
+      background: #e5e7eb;
+    }
+    .feed-item:last-child .feed-line::before { display: none; }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+  <div class="max-w-[1280px] mx-auto px-4 py-6">
+
+    <!-- ───────── Шапка страницы ───────── -->
+    <header class="mb-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="text-2xl font-semibold">Проверка отчётов АЗС</h1>
+            <button class="w-7 h-7 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 text-sm flex items-center justify-center" title="Справка">?</button>
+          </div>
+          <p class="text-sm text-gray-500 mt-1">Сегодня, 25 мая 2026, понедельник</p>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+          <!-- Переключатель периода -->
+          <div class="inline-flex rounded-lg border border-gray-200 bg-white overflow-hidden text-sm">
+            <button class="px-3 py-2 bg-blue-50 text-blue-700 font-medium">Сегодня</button>
+            <button class="px-3 py-2 text-gray-600 hover:bg-gray-50 border-l border-gray-200">Вчера</button>
+            <button class="px-3 py-2 text-gray-600 hover:bg-gray-50 border-l border-gray-200">Неделя</button>
+            <button class="px-3 py-2 text-gray-600 hover:bg-gray-50 border-l border-gray-200">Выбрать дату</button>
+          </div>
+
+          <!-- Основная кнопка -->
+          <button class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-sm">
+            ⚡ Запросить отчёт сейчас
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- ───────── Большая сводка ───────── -->
+    <section class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-6">
+      <div class="flex items-end justify-between gap-4 flex-wrap mb-4">
+        <div>
+          <p class="text-sm text-gray-500 uppercase tracking-wide mb-1">Сегодня</p>
+          <p class="text-3xl">
+            Сдали отчёт <span class="font-bold text-blue-700">18 из 23</span> АЗС
+          </p>
+        </div>
+        <div class="text-right">
+          <p class="text-4xl font-bold text-blue-600">78%</p>
+          <p class="text-xs text-gray-500">сдачи</p>
+        </div>
+      </div>
+
+      <!-- Прогресс-бар -->
+      <div class="w-full h-3 bg-gray-100 rounded-full overflow-hidden mb-4 flex">
+        <div class="bg-green-500" style="width: 78%"></div>
+        <div class="bg-yellow-400" style="width: 13%"></div>
+        <div class="bg-red-400" style="width: 9%"></div>
+      </div>
+
+      <!-- Чипы со статусами (кликабельные = фильтры) -->
+      <div class="flex flex-wrap gap-2">
+        <button class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-green-50 hover:bg-green-100 text-green-800 text-sm font-medium transition-colors">
+          <span class="w-2 h-2 rounded-full bg-green-500"></span>
+          Сдан — 18
+        </button>
+        <button class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-yellow-50 hover:bg-yellow-100 text-yellow-800 text-sm font-medium transition-colors">
+          <span class="w-2 h-2 rounded-full bg-yellow-500"></span>
+          В работе — 3
+        </button>
+        <button class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-50 hover:bg-red-100 text-red-800 text-sm font-medium transition-colors">
+          <span class="w-2 h-2 rounded-full bg-red-500"></span>
+          Не сдан — 2
+        </button>
+        <button class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium transition-colors ml-auto">
+          Показать все 23 АЗС
+        </button>
+      </div>
+    </section>
+
+    <!-- ───────── Две колонки: лента + панель действий ───────── -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      <!-- ─── Лента событий (2/3 ширины) ─── -->
+      <section class="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-gray-100">
+        <div class="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+          <h2 class="text-lg font-semibold">Лента событий</h2>
+          <div class="inline-flex rounded-lg border border-gray-200 bg-white overflow-hidden text-xs">
+            <button class="px-3 py-1.5 bg-gray-100 text-gray-900 font-medium">Все события</button>
+            <button class="px-3 py-1.5 text-gray-600 hover:bg-gray-50 border-l border-gray-200">Только проблемы</button>
+          </div>
+        </div>
+
+        <div class="p-5 space-y-4">
+
+          <!-- Событие 1: рассылка -->
+          <div class="feed-item relative">
+            <div class="feed-line">
+              <div class="flex gap-3">
+                <div class="flex-shrink-0 w-10 h-10 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-lg">📣</div>
+                <div class="flex-1 pb-1">
+                  <div class="flex items-baseline justify-between gap-3">
+                    <p class="font-medium">Разосланы задания по расписанию</p>
+                    <span class="text-xs text-gray-500 whitespace-nowrap">09:00</span>
+                  </div>
+                  <p class="text-sm text-gray-600 mt-0.5">23 АЗС получили push-уведомление. Время на сдачу — 30 минут.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Событие 2: сдал -->
+          <div class="feed-item relative">
+            <div class="feed-line">
+              <div class="flex gap-3">
+                <div class="flex-shrink-0 w-10 h-10 rounded-full bg-green-100 text-green-700 flex items-center justify-center text-lg">✓</div>
+                <div class="flex-1 pb-1">
+                  <div class="flex items-baseline justify-between gap-3">
+                    <p class="font-medium">АЗС №3 · Одинцово, Бирюзова 7 — сдан отчёт</p>
+                    <span class="text-xs text-gray-500 whitespace-nowrap">09:04</span>
+                  </div>
+                  <p class="text-sm text-gray-600 mt-0.5">Сидоров А., 4 из 4 фото · <a class="text-blue-600 hover:underline cursor-pointer">открыть фото</a></p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Событие 3: сдал -->
+          <div class="feed-item relative">
+            <div class="feed-line">
+              <div class="flex gap-3">
+                <div class="flex-shrink-0 w-10 h-10 rounded-full bg-green-100 text-green-700 flex items-center justify-center text-lg">✓</div>
+                <div class="flex-1 pb-1">
+                  <div class="flex items-baseline justify-between gap-3">
+                    <p class="font-medium">АЗС №14 · Ленинский проспект — сдан отчёт</p>
+                    <span class="text-xs text-gray-500 whitespace-nowrap">09:07</span>
+                  </div>
+                  <p class="text-sm text-gray-600 mt-0.5">Иванов И., 5 из 5 фото · <a class="text-blue-600 hover:underline cursor-pointer">открыть фото</a></p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Событие 4: в работе -->
+          <div class="feed-item relative">
+            <div class="feed-line">
+              <div class="flex gap-3">
+                <div class="flex-shrink-0 w-10 h-10 rounded-full bg-yellow-100 text-yellow-700 flex items-center justify-center text-lg">⏳</div>
+                <div class="flex-1 pb-1">
+                  <div class="flex items-baseline justify-between gap-3">
+                    <p class="font-medium">АЗС №11 · Аэропорт — фотографии загружаются</p>
+                    <span class="text-xs text-gray-500 whitespace-nowrap">09:15</span>
+                  </div>
+                  <p class="text-sm text-gray-600 mt-0.5">Смирнов Е., 3 из 4 фото · осталось 15 мин</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Событие 5: не сдал -->
+          <div class="feed-item relative">
+            <div class="feed-line">
+              <div class="flex gap-3">
+                <div class="flex-shrink-0 w-10 h-10 rounded-full bg-red-100 text-red-700 flex items-center justify-center text-lg">⚠</div>
+                <div class="flex-1 pb-1">
+                  <div class="flex items-baseline justify-between gap-3">
+                    <p class="font-medium text-red-900">АЗС №7 · Кутузовский — отчёт не сдан вовремя</p>
+                    <span class="text-xs text-gray-500 whitespace-nowrap">09:30</span>
+                  </div>
+                  <p class="text-sm text-gray-600 mt-0.5">Петров П. успел загрузить 2 из 5 фото за 30 минут.</p>
+                  <div class="mt-2 flex gap-2">
+                    <button class="px-3 py-1 text-xs bg-white border border-red-300 text-red-700 hover:bg-red-50 rounded-md">Запросить повторно</button>
+                    <button class="px-3 py-1 text-xs text-gray-600 hover:bg-gray-50 rounded-md">Открыть фото</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Событие 6: ручной запуск -->
+          <div class="feed-item relative">
+            <div class="feed-line">
+              <div class="flex gap-3">
+                <div class="flex-shrink-0 w-10 h-10 rounded-full bg-purple-100 text-purple-700 flex items-center justify-center text-lg">▶</div>
+                <div class="flex-1 pb-1">
+                  <div class="flex items-baseline justify-between gap-3">
+                    <p class="font-medium">Управляющий запросил отчёт вне расписания</p>
+                    <span class="text-xs text-gray-500 whitespace-nowrap">09:45</span>
+                  </div>
+                  <p class="text-sm text-gray-600 mt-0.5">АЗС №3 · Одинцово, Бирюзова 7. Задание отправлено Сидорову А.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Событие 7: сдал -->
+          <div class="feed-item relative">
+            <div class="feed-line">
+              <div class="flex gap-3">
+                <div class="flex-shrink-0 w-10 h-10 rounded-full bg-green-100 text-green-700 flex items-center justify-center text-lg">✓</div>
+                <div class="flex-1 pb-1">
+                  <div class="flex items-baseline justify-between gap-3">
+                    <p class="font-medium">АЗС №21 · Сходненская — сдан отчёт</p>
+                    <span class="text-xs text-gray-500 whitespace-nowrap">10:02</span>
+                  </div>
+                  <p class="text-sm text-gray-600 mt-0.5">Кузнецова М., 6 из 6 фото · <a class="text-blue-600 hover:underline cursor-pointer">открыть фото</a></p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Кнопка показать больше -->
+          <div class="text-center pt-2">
+            <button class="text-sm text-blue-600 hover:underline">Показать ещё события за сегодня</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─── Правая колонка с панелью действий ─── -->
+      <aside class="space-y-6">
+
+        <!-- Карточка: Расписание рассылки -->
+        <section class="bg-white rounded-2xl shadow-sm border border-gray-100">
+          <div class="flex items-center gap-2 border-b border-gray-100 px-5 py-4">
+            <span class="text-lg">📅</span>
+            <h2 class="text-base font-semibold">Расписание рассылки</h2>
+          </div>
+          <div class="p-5 space-y-4">
+
+            <div>
+              <label class="block text-xs text-gray-500 mb-1.5">Времена утренней и дневной рассылки</label>
+              <div class="flex flex-wrap gap-2">
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-blue-50 text-blue-800 text-sm">
+                  09:00
+                  <button class="text-blue-400 hover:text-blue-700">×</button>
+                </span>
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-blue-50 text-blue-800 text-sm">
+                  14:00
+                  <button class="text-blue-400 hover:text-blue-700">×</button>
+                </span>
+                <button class="px-2.5 py-1.5 rounded-md border border-dashed border-gray-300 text-sm text-gray-500 hover:bg-gray-50">+ время</button>
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs text-gray-500 mb-1.5">Разброс времени для каждой АЗС</label>
+              <div class="flex items-center gap-2">
+                <input type="number" value="15" class="w-20 px-3 py-1.5 rounded-md border border-gray-200 text-sm" />
+                <span class="text-sm text-gray-600">мин в обе стороны</span>
+              </div>
+              <p class="text-xs text-gray-400 mt-1">Чтобы все АЗС не получили push одновременно</p>
+            </div>
+
+            <div>
+              <label class="block text-xs text-gray-500 mb-1.5">Сколько времени даём на сдачу</label>
+              <div class="flex items-center gap-2">
+                <input type="number" value="30" class="w-20 px-3 py-1.5 rounded-md border border-gray-200 text-sm" />
+                <span class="text-sm text-gray-600">минут</span>
+              </div>
+            </div>
+
+            <button class="w-full px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium">
+              Сохранить расписание
+            </button>
+          </div>
+        </section>
+
+        <!-- Карточка: Быстрый запрос -->
+        <section class="bg-white rounded-2xl shadow-sm border border-gray-100">
+          <div class="flex items-center gap-2 border-b border-gray-100 px-5 py-4">
+            <span class="text-lg">⚡</span>
+            <h2 class="text-base font-semibold">Запросить отчёт вне расписания</h2>
+          </div>
+          <div class="p-5 space-y-3">
+
+            <div>
+              <label class="block text-xs text-gray-500 mb-1.5">АЗС</label>
+              <select class="w-full px-3 py-2 rounded-md border border-gray-200 text-sm bg-white">
+                <option>Выберите АЗС…</option>
+                <option>АЗС №3 · Одинцово, Бирюзова 7</option>
+                <option>АЗС №7 · Кутузовский</option>
+                <option>АЗС №14 · Ленинский проспект</option>
+              </select>
+            </div>
+
+            <div>
+              <label class="block text-xs text-gray-500 mb-1.5">Когда отправить</label>
+              <div class="flex gap-2">
+                <button class="flex-1 px-3 py-2 rounded-md bg-blue-50 text-blue-700 text-sm font-medium">Прямо сейчас</button>
+                <button class="flex-1 px-3 py-2 rounded-md border border-gray-200 text-sm text-gray-600 hover:bg-gray-50">Запланировать</button>
+              </div>
+            </div>
+
+            <button class="w-full px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-medium">
+              Отправить задание
+            </button>
+          </div>
+        </section>
+
+      </aside>
+    </div>
+
+    <!-- ───────── Подвал — технические детали скрыты ───────── -->
+    <footer class="mt-8 text-center">
+      <button class="text-xs text-gray-400 hover:text-gray-600 hover:underline">
+        Показать техническую информацию по отчётам
+      </button>
+    </footer>
+
+  </div>
+
+</body>
+</html>

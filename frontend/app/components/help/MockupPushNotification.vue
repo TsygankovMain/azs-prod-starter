@@ -24,16 +24,9 @@
         </div>
 
         <!-- Body text -->
-        <p class="text-xs text-gray-700 leading-relaxed mb-3 ml-13">
+        <p class="text-xs text-gray-700 leading-relaxed ml-13">
           АЗС №14. У вас есть 30 минут на загрузку фото.
         </p>
-
-        <!-- Action button -->
-        <div class="flex gap-2 ml-13">
-          <button class="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-medium rounded transition-colors">
-            Открыть
-          </button>
-        </div>
       </div>
     </div>
   </div>
