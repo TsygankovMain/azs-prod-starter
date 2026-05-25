@@ -156,6 +156,20 @@ export const useApiStore = defineStore(
       })
     }
 
+    const refreshBotAvatar = async (): Promise<{
+      ok: boolean
+      botId: number
+      reused: boolean
+      registered: boolean
+    }> => {
+      return await $api('/api/admin/bot/refresh-avatar', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
     const getReports = async (filters: {
       dateFrom?: string
       dateTo?: string
@@ -369,6 +383,7 @@ export const useApiStore = defineStore(
       uploadReportPhoto,
       submitReport,
       saveSettings,
+      refreshBotAvatar,
       getMyRole,
       reinitToken
     }

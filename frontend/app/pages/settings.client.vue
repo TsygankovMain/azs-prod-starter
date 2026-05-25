@@ -106,6 +106,7 @@ let $b24: null | B24Frame = null
 const isLoading = ref(false)
 const isSaving = ref(false)
 const isLoaded = ref(false)
+const isRefreshingBotAvatar = ref(false)
 const loadError = ref('')
 const saveError = ref('')
 const saveSuccess = ref('')
@@ -753,6 +754,26 @@ function resetToLoaded() {
   saveSuccess.value = ''
 }
 
+async function refreshBotAvatar() {
+  if (isRefreshingBotAvatar.value) {
+    return
+  }
+  isRefreshingBotAvatar.value = true
+  saveError.value = ''
+  saveSuccess.value = ''
+  try {
+    const result = await apiStore.refreshBotAvatar()
+    saveSuccess.value = result?.botId
+      ? `Аватарка бота обновлена (botId ${result.botId})`
+      : 'Аватарка бота обновлена'
+  } catch (error) {
+    const data = (error as { data?: { message?: string; error?: string } })?.data
+    saveError.value = data?.message || data?.error || (error instanceof Error ? error.message : 'Не удалось обновить аватарку бота')
+  } finally {
+    isRefreshingBotAvatar.value = false
+  }
+}
+
 onMounted(async () => {
   try {
     isLoading.value = true
@@ -1300,6 +1321,13 @@ onUnmounted(() => {
         </div>
 
         <div class="flex flex-wrap items-center gap-2">
+          <B24Button
+            color="air-tertiary"
+            label="Обновить аватарку бота"
+            loading-auto
+            :disabled="!isAdminReady || isRefreshingBotAvatar"
+            @click="refreshBotAvatar"
+          />
           <B24Button
             color="air-secondary"
             label="Перезагрузить"
