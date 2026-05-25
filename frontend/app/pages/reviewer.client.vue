@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { B24Frame } from '@bitrix24/b24jssdk'
+import { toDate, fromDate } from '@internationalized/date'
 
 type ReportRow = {
   id: number
@@ -87,6 +88,18 @@ const scheduleSettings = reactive({
   dispatchJitterMinutes: 15,
   timeoutMinutes: 30,
   newTimeInput: ''
+})
+
+const timeSlots = computed(() => {
+  const slots: string[] = []
+  for (let h = 6; h <= 22; h++) {
+    for (let m = 0; m < 60; m += 15) {
+      const hh = String(h).padStart(2, '0')
+      const mm = String(m).padStart(2, '0')
+      slots.push(`${hh}:${mm}`)
+    }
+  }
+  return slots
 })
 
 const manualRequest = reactive({
@@ -508,6 +521,14 @@ const scrollToQuickRequest = () => {
   }
 }
 
+const goBack = () => {
+  if (window.history.length > 1) {
+    window.history.back()
+  } else {
+    navigateTo('/')
+  }
+}
+
 const loadRoleAccess = async () => {
   try {
     const response = await apiStore.getMyRole()
@@ -567,12 +588,21 @@ onMounted(async () => {
         <!-- Header -->
         <header class="mb-6">
           <div class="flex items-start justify-between gap-4 flex-wrap">
-            <div>
-              <div class="flex items-center gap-2">
-                <h1 class="text-2xl font-semibold">Проверка отчётов АЗС</h1>
-                <HelpButton default-role="reviewer" class="w-7 h-7" />
+            <div class="flex items-start gap-3">
+              <button
+                aria-label="Назад"
+                class="inline-flex items-center justify-center w-9 h-9 rounded-full text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
+                @click="goBack"
+              >
+                ←
+              </button>
+              <div>
+                <div class="flex items-center gap-2">
+                  <h1 class="text-2xl font-semibold">Проверка отчётов АЗС</h1>
+                  <HelpButton default-role="reviewer" class="w-7 h-7" />
+                </div>
+                <p class="text-sm text-gray-500 mt-1">{{ getLocaleDate() }}</p>
               </div>
-              <p class="text-sm text-gray-500 mt-1">{{ getLocaleDate() }}</p>
             </div>
 
             <div class="flex items-center gap-2 flex-wrap">
@@ -834,12 +864,13 @@ onMounted(async () => {
                       {{ time }}
                       <button class="text-blue-400 hover:text-blue-700" @click="removeDispatchTime(idx)">×</button>
                     </span>
-                    <div class="flex gap-1">
-                      <input
+                    <div class="flex gap-1 flex-1 min-w-[200px]">
+                      <B24InputMenu
                         v-model="scheduleSettings.newTimeInput"
-                        type="text"
+                        :items="timeSlots"
                         placeholder="HH:mm"
-                        class="w-16 px-2 py-1.5 rounded-md border border-dashed border-gray-300 text-sm"
+                        create-item
+                        class="flex-1"
                         @keyup.enter="addDispatchTime"
                       />
                       <button
@@ -946,11 +977,34 @@ onMounted(async () => {
                 <div v-if="manualRequest.mode === 'schedule'" class="space-y-2">
                   <div>
                     <label class="block text-xs text-gray-500 mb-1.5">Дата</label>
-                    <input v-model="manualRequest.scheduleDate" type="date" class="w-full px-3 py-2 rounded-md border border-gray-200 text-sm" />
+                    <details class="inline-block w-full">
+                      <summary class="w-full px-3 py-2 rounded-md border border-gray-200 text-sm cursor-pointer hover:bg-gray-50">
+                        {{ manualRequest.scheduleDate || 'Выберите дату' }}
+                      </summary>
+                      <div class="mt-2 p-3 border border-gray-200 rounded-md bg-white">
+                        <B24Calendar
+                          v-model="manualRequest.scheduleDate"
+                          @update:model-value="(val) => {
+                            if (val) {
+                              const d = val as any
+                              const year = d.year
+                              const month = String(d.month).padStart(2, '0')
+                              const day = String(d.day).padStart(2, '0')
+                              manualRequest.scheduleDate = `${year}-${month}-${day}`
+                            }
+                          }"
+                        />
+                      </div>
+                    </details>
                   </div>
                   <div>
                     <label class="block text-xs text-gray-500 mb-1.5">Время</label>
-                    <input v-model="manualRequest.scheduleTime" type="time" class="w-full px-3 py-2 rounded-md border border-gray-200 text-sm" />
+                    <B24InputMenu
+                      v-model="manualRequest.scheduleTime"
+                      :items="timeSlots"
+                      placeholder="Выберите время…"
+                      create-item
+                    />
                   </div>
                 </div>
 

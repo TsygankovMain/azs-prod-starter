@@ -1,76 +1,146 @@
 <script setup lang="ts">
-const reports = [
-  { id: 1, date: '25.05.2026', azs: 'АЗС №14', admin: 'Иванов И.', status: 'DONE', photos: '5/5' },
-  { id: 2, date: '25.05.2026', azs: 'АЗС №7', admin: 'Петров П.', status: 'EXPIRED', photos: '2/5' },
-  { id: 3, date: '25.05.2026', azs: 'АЗС №3', admin: 'Сидоров А.', status: 'DONE', photos: '4/4' },
-  { id: 4, date: '24.05.2026', azs: 'АЗС №21', admin: 'Кузнецова Л.', status: 'DONE', photos: '6/6' }
-]
-
-const getStatusColor = (status: string) => {
-  return status === 'DONE'
-    ? 'bg-green-100 text-green-800'
-    : 'bg-red-100 text-red-800'
-}
-
-const getStatusText = (status: string) => {
-  return status === 'DONE' ? 'Завершено' : 'Просрочено'
-}
+const doneCount = 18
+const totalCount = 23
+const openCount = 3
+const failedCount = 2
+const donePercent = 78
 </script>
 
 <template>
   <div class="bg-white border border-gray-200 rounded-lg overflow-hidden my-4">
-    <!-- Header -->
-    <div class="px-4 py-4 bg-gradient-to-b from-gray-50 to-white border-b border-gray-200">
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="text-base font-bold text-gray-900">Отчёты АЗС</h3>
-        <button class="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs font-medium rounded transition-colors">
-          + Создать
+    <!-- Header row -->
+    <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <button class="inline-flex items-center justify-center w-9 h-9 rounded-full text-gray-600 hover:bg-gray-100 transition-colors">
+          ←
+        </button>
+        <h3 class="text-lg font-semibold text-gray-900">Проверка отчётов АЗС</h3>
+      </div>
+      <button class="inline-flex items-center justify-center w-6 h-6 rounded hover:bg-gray-100 transition-colors text-gray-600">
+        ?
+      </button>
+    </div>
+
+    <!-- Subtitle -->
+    <div class="px-5 py-2 text-xs text-gray-500">Сегодня, 25 мая</div>
+
+    <!-- Period switcher + button row -->
+    <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-4 flex-wrap">
+      <div class="inline-flex rounded-lg border border-gray-200 bg-white overflow-hidden text-sm">
+        <button class="px-3 py-1.5 font-medium bg-blue-50 text-blue-700">
+          Сегодня
+        </button>
+        <button class="px-3 py-1.5 font-medium text-gray-600 hover:bg-gray-50 border-l border-gray-200">
+          Вчера
+        </button>
+        <button class="px-3 py-1.5 font-medium text-gray-600 hover:bg-gray-50 border-l border-gray-200">
+          Неделя
+        </button>
+        <button class="px-3 py-1.5 font-medium text-gray-600 hover:bg-gray-50 border-l border-gray-200">
+          Выбрать дату
         </button>
       </div>
+      <button class="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-sm">
+        ⚡ Запросить отчёт сейчас
+      </button>
+    </div>
 
-      <!-- Filters -->
-      <div class="grid grid-cols-3 gap-2">
-        <div class="border border-gray-300 rounded px-2 py-1.5 bg-white">
-          <label class="text-xs text-gray-600 font-medium block mb-0.5">Дата</label>
-          <div class="text-sm text-gray-800">25.05.2026</div>
+    <!-- Summary card -->
+    <div class="px-5 py-5 border-b border-gray-100">
+      <div class="flex items-end justify-between gap-4 mb-3">
+        <div>
+          <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">СЕГОДНЯ</p>
+          <p class="text-2xl">
+            Сдали отчёт <span class="font-bold text-blue-700">{{ doneCount }} из {{ totalCount }}</span> АЗС
+          </p>
         </div>
-        <div class="border border-gray-300 rounded px-2 py-1.5 bg-white">
-          <label class="text-xs text-gray-600 font-medium block mb-0.5">АЗС</label>
-          <div class="text-sm text-gray-800">Все АЗС</div>
+        <div class="text-right">
+          <p class="text-3xl font-bold text-blue-600">{{ donePercent }}%</p>
+          <p class="text-xs text-gray-500">сдачи</p>
         </div>
-        <div class="border border-gray-300 rounded px-2 py-1.5 bg-white">
-          <label class="text-xs text-gray-600 font-medium block mb-0.5">Статус</label>
-          <div class="text-sm text-gray-800">Все</div>
-        </div>
+      </div>
+
+      <!-- Progress bar -->
+      <div class="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden flex mb-3">
+        <div class="bg-green-500" :style="{ width: donePercent + '%' }"></div>
+        <div class="bg-yellow-400" :style="{ width: ((openCount / totalCount) * 100) + '%' }"></div>
+        <div class="bg-red-400" :style="{ width: ((failedCount / totalCount) * 100) + '%' }"></div>
+      </div>
+
+      <!-- Status chips -->
+      <div class="flex flex-wrap gap-2">
+        <button class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-green-100 hover:bg-green-200 text-green-800 text-xs font-medium transition-colors">
+          <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+          Сдан {{ doneCount }}
+        </button>
+        <button class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-yellow-100 hover:bg-yellow-200 text-yellow-800 text-xs font-medium transition-colors">
+          <span class="w-1.5 h-1.5 rounded-full bg-yellow-500"></span>
+          В работе {{ openCount }}
+        </button>
+        <button class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-red-100 hover:bg-red-200 text-red-800 text-xs font-medium transition-colors">
+          <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+          Не сдан {{ failedCount }}
+        </button>
       </div>
     </div>
 
-    <!-- Table -->
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm">
-        <thead class="bg-gray-100 border-b border-gray-200">
-          <tr>
-            <th class="px-4 py-2.5 text-left font-medium text-gray-700 text-xs">Дата</th>
-            <th class="px-4 py-2.5 text-left font-medium text-gray-700 text-xs">АЗС</th>
-            <th class="px-4 py-2.5 text-left font-medium text-gray-700 text-xs">Администратор</th>
-            <th class="px-4 py-2.5 text-left font-medium text-gray-700 text-xs">Статус</th>
-            <th class="px-4 py-2.5 text-left font-medium text-gray-700 text-xs">Фото</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="report in reports" :key="report.id" class="border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors">
-            <td class="px-4 py-3 text-gray-900 font-medium">{{ report.date }}</td>
-            <td class="px-4 py-3 text-gray-900">{{ report.azs }}</td>
-            <td class="px-4 py-3 text-gray-700">{{ report.admin }}</td>
-            <td class="px-4 py-3">
-              <span :class="['inline-block px-2.5 py-1 rounded text-xs font-medium', getStatusColor(report.status)]">
-                {{ getStatusText(report.status) }}
-              </span>
-            </td>
-            <td class="px-4 py-3 text-gray-700 font-medium">{{ report.photos }}</td>
-          </tr>
-        </tbody>
-      </table>
+    <!-- Two-column layout: feed + right panel -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-0">
+      <!-- Feed (left) -->
+      <div class="col-span-1 md:col-span-2 border-r border-gray-100 p-4">
+        <h4 class="text-sm font-semibold text-gray-900 mb-3">Лента событий</h4>
+        <div class="space-y-2">
+          <!-- Sample event 1 (done - green) -->
+          <div class="flex gap-2">
+            <div class="flex-shrink-0 w-8 h-8 rounded-full bg-green-100 text-green-700 flex items-center justify-center text-sm font-medium">
+              ✓
+            </div>
+            <div class="flex-1">
+              <p class="text-xs font-medium text-gray-900">АЗС №5 сдала отчёт</p>
+              <p class="text-xs text-gray-500 mt-0.5">09:15</p>
+            </div>
+          </div>
+          <!-- Sample event 2 (in progress - yellow) -->
+          <div class="flex gap-2">
+            <div class="flex-shrink-0 w-8 h-8 rounded-full bg-yellow-100 text-yellow-700 flex items-center justify-center text-sm font-medium">
+              ⏳
+            </div>
+            <div class="flex-1">
+              <p class="text-xs font-medium text-gray-900">АЗС №12 — фотографии загружаются</p>
+              <p class="text-xs text-gray-500 mt-0.5">09:08</p>
+            </div>
+          </div>
+          <!-- Sample event 3 (failed - red) -->
+          <div class="flex gap-2">
+            <div class="flex-shrink-0 w-8 h-8 rounded-full bg-red-100 text-red-700 flex items-center justify-center text-sm font-medium">
+              ⚠
+            </div>
+            <div class="flex-1">
+              <p class="text-xs font-medium text-red-900">АЗС №3 — отчёт не сдан вовремя</p>
+              <p class="text-xs text-gray-500 mt-0.5">09:02</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right panel -->
+      <div class="col-span-1 p-4 space-y-4">
+        <!-- Schedule card -->
+        <div class="border border-gray-100 rounded-lg p-3">
+          <h5 class="text-xs font-semibold text-gray-900 mb-2">📅 Расписание рассылки</h5>
+          <div class="text-xs text-gray-600 space-y-1">
+            <p>Времена: 09:00, 15:00</p>
+            <p>Разброс: ±15 мин</p>
+            <p>Таймаут: 30 мин</p>
+          </div>
+        </div>
+
+        <!-- Quick request card -->
+        <div class="border border-gray-100 rounded-lg p-3">
+          <h5 class="text-xs font-semibold text-gray-900 mb-2">⚡ Запросить отчёт</h5>
+          <p class="text-xs text-gray-600">Выберите АЗС и отправьте задание немедленно.</p>
+        </div>
+      </div>
     </div>
   </div>
 </template>
