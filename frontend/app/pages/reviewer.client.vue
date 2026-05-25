@@ -15,6 +15,7 @@ type ReportRow = {
   diskFolderId: number | null
   createdAt: string | null
   updatedAt: string | null
+  trigger?: string
 }
 
 type Summary = {
@@ -32,14 +33,15 @@ type AzsOption = {
   adminUserId: number
 }
 
-type ManualResultItem = {
-  azsId?: string
-  ok?: boolean
-  duplicate?: boolean
-  reportItemId?: number
-  reportId?: number
-  slotKey?: string
-  error?: string
+type FeedEvent = {
+  id: string
+  type: 'created' | 'done' | 'expired' | 'in_progress' | 'failed' | 'manual'
+  timestamp: string
+  azsId: string
+  azsTitle: string
+  reportRow: ReportRow
+  subtitle?: string
+  buttons?: Array<{ label: string; action: string; disabled?: boolean }>
 }
 
 const PAGE_TITLE = 'Проверка отчётов АЗС'
@@ -54,15 +56,15 @@ let $b24: null | B24Frame = null
 
 const isLoading = ref(false)
 const loadError = ref('')
+const saveScheduleError = ref('')
+const saveScheduleSuccess = ref('')
 const manualError = ref('')
-const manualErrorDetails = ref<string[]>([])
 const manualSuccess = ref('')
 const timeoutMessage = ref('')
 const hasReviewerAccess = ref(false)
 const reports = ref<ReportRow[]>([])
 const azsOptions = ref<AzsOption[]>([])
-const azsSearch = ref('')
-const manualResults = ref<ManualResultItem[]>([])
+const azsMap = ref<Map<string, string>>(new Map())
 const portalDomain = ref('')
 const reportEntityTypeId = ref(0)
 const summary = ref<Summary>({
@@ -74,134 +76,242 @@ const summary = ref<Summary>({
   failed: 0
 })
 
-const filters = reactive({
-  dateFrom: '',
-  dateTo: '',
-  status: '',
-  azsIds: [] as string[],
-  limit: 100
+const period = ref<'today' | 'yesterday' | 'week' | 'custom'>('today')
+const customDateFrom = ref('')
+const customDateTo = ref('')
+const statusFilter = ref<string>('')
+const feedFilterMode = ref<'all' | 'problems'>('all')
+
+const scheduleSettings = reactive({
+  dispatchTimes: [] as string[],
+  dispatchJitterMinutes: 15,
+  timeoutMinutes: 30,
+  newTimeInput: ''
 })
 
-const manualCandidate = reactive({
-  azsIds: [] as string[],
-  slotDate: '',
-  slotTime: ''
+const manualRequest = reactive({
+  azsId: '',
+  mode: 'now' as 'now' | 'schedule',
+  scheduleDate: '',
+  scheduleTime: ''
 })
 
-const toSlotHHmm = (value: string): string => {
-  const match = String(value || '').trim().match(/^(\d{2}):(\d{2})$/)
-  if (!match) {
+const getDateRange = () => {
+  const now = new Date()
+  const to2 = (n: number) => String(n).padStart(2, '0')
+
+  const todayStr = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
+
+  if (period.value === 'today') {
+    return { from: todayStr, to: todayStr }
+  } else if (period.value === 'yesterday') {
+    const yesterday = new Date(now)
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1)
+    const yesterdayStr = `${yesterday.getUTCFullYear()}-${to2(yesterday.getUTCMonth() + 1)}-${to2(yesterday.getUTCDate())}`
+    return { from: yesterdayStr, to: yesterdayStr }
+  } else if (period.value === 'week') {
+    const weekAgo = new Date(now)
+    weekAgo.setUTCDate(weekAgo.getUTCDate() - 6)
+    const weekAgoStr = `${weekAgo.getUTCFullYear()}-${to2(weekAgo.getUTCMonth() + 1)}-${to2(weekAgo.getUTCDate())}`
+    return { from: weekAgoStr, to: todayStr }
+  } else {
+    return { from: customDateFrom.value, to: customDateTo.value }
+  }
+}
+
+const getPeriodLabel = () => {
+  if (period.value === 'today') return 'Сегодня'
+  if (period.value === 'yesterday') return 'Вчера'
+  if (period.value === 'week') return 'За неделю'
+  return 'За выбранный период'
+}
+
+const getLocaleDate = () => {
+  const now = new Date()
+  const formatter = new Intl.DateTimeFormat('ru-RU', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  })
+  const parts = formatter.formatToParts(now)
+  const formatted = parts.map(p => p.value).join('')
+  return `Сегодня, ${formatted.charAt(0).toUpperCase() + formatted.slice(1)}`
+}
+
+const doneCount = computed(() => summary.value.done)
+const totalCount = computed(() => summary.value.total)
+const openCount = computed(() => summary.value.open)
+const failedCount = computed(() => summary.value.expired + summary.value.failed)
+const donePercent = computed(() => {
+  if (totalCount.value === 0) return 0
+  return Math.round((doneCount.value / totalCount.value) * 1000) / 10
+})
+
+const progressBar = computed(() => {
+  if (totalCount.value === 0) {
+    return { done: 0, open: 0, failed: 0 }
+  }
+  return {
+    done: (doneCount.value / totalCount.value) * 100,
+    open: (openCount.value / totalCount.value) * 100,
+    failed: (failedCount.value / totalCount.value) * 100
+  }
+})
+
+const deriveEvents = (): FeedEvent[] => {
+  const events: FeedEvent[] = []
+
+  for (const report of reports.value) {
+    const azsTitle = azsMap.value.get(report.azsId) || `АЗС ${report.azsId}`
+
+    // Created event (always)
+    const createdDate = report.createdAt ? new Date(report.createdAt) : null
+    if (createdDate) {
+      const triggerLabel = report.trigger === 'manual' ? 'управляющий' : 'автоматическая рассылка'
+      events.push({
+        id: `created-${report.id}`,
+        type: 'created',
+        timestamp: report.createdAt!,
+        azsId: report.azsId,
+        azsTitle,
+        reportRow: report,
+        subtitle: `Запросил ${triggerLabel}`
+      })
+    }
+
+    // Status-based event
+    if (report.status === 'done' && report.updatedAt) {
+      events.push({
+        id: `done-${report.id}`,
+        type: 'done',
+        timestamp: report.updatedAt,
+        azsId: report.azsId,
+        azsTitle,
+        reportRow: report
+      })
+    } else if (report.status === 'expired' && report.updatedAt) {
+      events.push({
+        id: `expired-${report.id}`,
+        type: 'expired',
+        timestamp: report.updatedAt,
+        azsId: report.azsId,
+        azsTitle,
+        reportRow: report,
+        buttons: [
+          { label: 'Запросить повторно', action: 'request-again' },
+          { label: 'Открыть фото', action: 'open-photos', disabled: !report.diskFolderId }
+        ]
+      })
+    } else if (report.status === 'in_progress' && report.updatedAt) {
+      events.push({
+        id: `progress-${report.id}`,
+        type: 'in_progress',
+        timestamp: report.updatedAt,
+        azsId: report.azsId,
+        azsTitle,
+        reportRow: report
+      })
+    } else if (report.status === 'failed' && report.updatedAt) {
+      events.push({
+        id: `failed-${report.id}`,
+        type: 'failed',
+        timestamp: report.updatedAt,
+        azsId: report.azsId,
+        azsTitle,
+        reportRow: report
+      })
+    }
+  }
+
+  // Sort descending by timestamp
+  events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+
+  return events
+}
+
+const allEvents = computed(() => deriveEvents())
+
+const filteredEvents = computed(() => {
+  let result = allEvents.value
+
+  if (feedFilterMode.value === 'problems') {
+    result = result.filter(e => e.type === 'expired' || e.type === 'failed')
+  }
+
+  if (statusFilter.value) {
+    const statusMap: Record<string, string[]> = {
+      done: ['done'],
+      open: ['in_progress', 'created'],
+      failed: ['expired', 'failed']
+    }
+    const allowed = statusMap[statusFilter.value] || []
+    result = result.filter(e => allowed.includes(e.type))
+  }
+
+  return result
+})
+
+const formatTime = (isoString: string): string => {
+  try {
+    const date = new Date(isoString)
+    const h = String(date.getHours()).padStart(2, '0')
+    const m = String(date.getMinutes()).padStart(2, '0')
+    return `${h}:${m}`
+  } catch {
     return ''
   }
-  return `${match[1]}${match[2]}`
 }
 
-const statusColor = (status: string) => {
-  if (status === 'done') {
-    return 'air-primary-success'
+const getEventIcon = (event: FeedEvent): string => {
+  if (event.type === 'created') return '📣'
+  if (event.type === 'done') return '✓'
+  if (event.type === 'expired') return '⚠'
+  if (event.type === 'in_progress') return '⏳'
+  if (event.type === 'failed') return '⚠'
+  return '•'
+}
+
+const getEventBgColor = (event: FeedEvent): string => {
+  if (event.type === 'created') return 'bg-blue-100 text-blue-700'
+  if (event.type === 'done') return 'bg-green-100 text-green-700'
+  if (event.type === 'expired' || event.type === 'failed') return 'bg-red-100 text-red-700'
+  if (event.type === 'in_progress') return 'bg-yellow-100 text-yellow-700'
+  return 'bg-gray-100 text-gray-700'
+}
+
+const getEventTitle = (event: FeedEvent): string => {
+  if (event.type === 'created') return `Создан отчёт для ${event.azsTitle}`
+  if (event.type === 'done') return `${event.azsTitle} сдала отчёт`
+  if (event.type === 'expired') return `${event.azsTitle} — отчёт не сдан вовремя`
+  if (event.type === 'in_progress') return `${event.azsTitle} — фотографии загружаются`
+  if (event.type === 'failed') return `Ошибка обработки отчёта для ${event.azsTitle}`
+  return ''
+}
+
+const loadAll = async () => {
+  const range = getDateRange()
+  if (!range.from || !range.to) {
+    loadError.value = 'Пожалуйста, выберите корректный период'
+    return
   }
-  if (status === 'failed') {
-    return 'air-primary-alert'
-  }
-  return 'air-secondary'
-}
 
-const manualResultStatusColor = (item: ManualResultItem) => {
-  if (item.ok && !item.duplicate) {
-    return 'air-primary-success'
-  }
-  if (item.duplicate) {
-    return 'air-secondary'
-  }
-  return 'air-primary-alert'
-}
-
-const summaryCards = computed(() => ([
-  { key: 'total', label: 'Всего', value: summary.value.total, color: 'air-secondary' },
-  { key: 'open', label: 'В работе', value: summary.value.open, color: 'air-primary' },
-  { key: 'done', label: 'DONE', value: summary.value.done, color: 'air-primary-success' },
-  { key: 'expired', label: 'EXPIRED', value: summary.value.expired, color: 'air-primary-alert' },
-  { key: 'overdue', label: 'Просрочено', value: summary.value.overdue, color: 'air-primary-alert' }
-]))
-
-const azsQuery = computed(() => {
-  const ids = Array.isArray(filters.azsIds)
-    ? filters.azsIds.map((item) => String(item || '').trim()).filter(Boolean)
-    : []
-  return ids.length > 0 ? ids.join(',') : undefined
-})
-
-const filteredAzsOptions = computed(() => {
-  const query = azsSearch.value.trim().toLowerCase()
-  const selected = new Set([
-    ...filters.azsIds,
-    ...manualCandidate.azsIds
-  ].map((item) => String(item || '').trim()).filter(Boolean))
-
-  return azsOptions.value.filter((item) => (
-    selected.has(item.value)
-    || !query
-    || item.label.toLowerCase().includes(query)
-    || item.value.includes(query)
-  ))
-})
-
-const selectedManualAzsOptions = computed(() => {
-  const selected = new Set(manualCandidate.azsIds.map((item) => String(item || '').trim()).filter(Boolean))
-  return azsOptions.value.filter((item) => selected.has(item.value))
-})
-
-const loadAzsOptions = async () => {
-  try {
-    const response = await apiStore.getAzsOptions({
-      search: azsSearch.value.trim() || undefined,
-      limit: 500
-    })
-    azsOptions.value = response.items
-      .map((item) => ({
-        value: String(item.id || '').trim(),
-        label: `${String(item.title || `АЗС ${item.id}`).trim()} (${String(item.id)})${Number(item.adminUserId || 0) > 0 ? ` · админ ${String(item.adminUserId)}` : ''}`,
-        adminUserId: Number(item.adminUserId || 0)
-      }))
-      .filter((item) => item.value)
-      .sort((a, b) => a.label.localeCompare(b.label, 'ru'))
-  } catch (error) {
-    console.warn('Failed to load AZS options for reviewer filter', error)
-    azsOptions.value = []
-  }
-}
-
-const loadReviewerSettings = async () => {
-  const response = await apiStore.getSettings()
-  const settings = (response.settings ?? {}) as Record<string, unknown>
-  const report = (settings.report ?? {}) as Record<string, unknown>
-  reportEntityTypeId.value = Number(report.entityTypeId || 0)
-}
-
-const loadSummary = async () => {
-  const response = await apiStore.getReportsSummary({
-    dateFrom: filters.dateFrom || undefined,
-    dateTo: filters.dateTo || undefined,
-    azsId: azsQuery.value
-  })
-  summary.value = response.summary
-}
-
-const loadReports = async () => {
   isLoading.value = true
   loadError.value = ''
   try {
-    const [reportsResponse] = await Promise.all([
+    const [reportsResponse, summaryResponse] = await Promise.all([
       apiStore.getReports({
-        dateFrom: filters.dateFrom || undefined,
-        dateTo: filters.dateTo || undefined,
-        status: filters.status || undefined,
-        azsId: azsQuery.value,
-        limit: filters.limit
+        dateFrom: range.from,
+        dateTo: range.to,
+        limit: 200
       }),
-      loadSummary()
+      apiStore.getReportsSummary({
+        dateFrom: range.from,
+        dateTo: range.to
+      })
     ])
     reports.value = reportsResponse.items
+    summary.value = summaryResponse.summary
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : 'Не удалось загрузить отчёты'
   } finally {
@@ -209,90 +319,193 @@ const loadReports = async () => {
   }
 }
 
-const applyStatusFilter = async (status: string) => {
-  filters.status = status
-  await loadReports()
+const changePeriod = (newPeriod: typeof period.value) => {
+  period.value = newPeriod
+  loadAll()
 }
 
-const createManual = async () => {
-  manualError.value = ''
-  manualErrorDetails.value = []
-  manualSuccess.value = ''
-  manualResults.value = []
+const loadAzsOptions = async () => {
   try {
-    const selectedAzsIds = manualCandidate.azsIds.map((item) => String(item || '').trim()).filter(Boolean)
-    const result = await apiStore.createManualReport({
-      candidates: selectedAzsIds.map((azsId) => {
-        const option = azsOptions.value.find((item) => item.value === azsId)
-        return {
-          azsId,
-          adminUserId: Number(option?.adminUserId || 0)
-        }
-      }),
-      slotDate: manualCandidate.slotDate.trim() || undefined,
-      slotHHmm: toSlotHHmm(manualCandidate.slotTime) || undefined
-    })
-    const summary = result.summary as Record<string, unknown>
-    manualResults.value = Array.isArray(result.items)
-      ? result.items.map((item) => item as ManualResultItem)
-      : []
-    const duplicates = manualResults.value.filter((item) => Boolean(item.duplicate))
-    const duplicateSlots = duplicates
-      .map((item) => String(item.slotKey || ''))
-      .filter(Boolean)
-      .slice(0, 3)
-      .join(', ')
-    const failed = Number(summary.failed || 0)
+    const response = await apiStore.getAzsOptions({ limit: 500 })
+    azsOptions.value = response.items.map(item => ({
+      value: String(item.id || '').trim(),
+      label: `${String(item.title || `АЗС ${item.id}`).trim()}`,
+      adminUserId: Number(item.adminUserId || 0)
+    }))
 
-    manualSuccess.value = `Создано: ${String(summary.created || 0)}, дублей: ${String(summary.duplicates || 0)}, ошибок: ${String(failed)}${duplicateSlots ? `. Дубли слотов: ${duplicateSlots}` : ''}`
-    await loadReports()
+    azsMap.value = new Map(
+      response.items.map(item => [
+        String(item.id || '').trim(),
+        `АЗС ${String(item.title || item.id || '').trim()}`
+      ])
+    )
   } catch (error) {
-    const responseData = (error as {
-      data?: {
-        message?: string
-        error?: string
-        details?: string[]
+    console.warn('Failed to load AZS options', error)
+  }
+}
+
+const loadScheduleSettings = async () => {
+  try {
+    const response = await apiStore.getSettings()
+    const settings = (response.settings ?? {}) as Record<string, unknown>
+    const report = (settings.report ?? {}) as Record<string, unknown>
+    reportEntityTypeId.value = Number(report.entityTypeId || 0)
+
+    const times = report.dispatchTimes
+    if (Array.isArray(times)) {
+      scheduleSettings.dispatchTimes = times.map(t => String(t).trim()).filter(Boolean)
+    }
+
+    const jitter = report.dispatchJitterMinutes
+    if (typeof jitter === 'number') {
+      scheduleSettings.dispatchJitterMinutes = jitter
+    }
+
+    const timeout = report.timeoutMinutes
+    if (typeof timeout === 'number') {
+      scheduleSettings.timeoutMinutes = timeout
+    }
+  } catch (error) {
+    console.warn('Failed to load schedule settings', error)
+  }
+}
+
+const removeDispatchTime = (index: number) => {
+  scheduleSettings.dispatchTimes.splice(index, 1)
+}
+
+const addDispatchTime = () => {
+  const time = scheduleSettings.newTimeInput.trim()
+  if (time && /^\d{2}:\d{2}$/.test(time)) {
+    if (!scheduleSettings.dispatchTimes.includes(time)) {
+      scheduleSettings.dispatchTimes.push(time)
+      scheduleSettings.dispatchTimes.sort()
+      scheduleSettings.newTimeInput = ''
+    }
+  }
+}
+
+const saveSchedule = async () => {
+  saveScheduleError.value = ''
+  saveScheduleSuccess.value = ''
+  try {
+    const response = await apiStore.getSettings()
+    const settings = (response.settings ?? {}) as Record<string, unknown>
+    const report = (settings.report ?? {}) as Record<string, unknown>
+
+    const updated = {
+      ...settings,
+      report: {
+        ...report,
+        dispatchTimes: scheduleSettings.dispatchTimes,
+        dispatchJitterMinutes: scheduleSettings.dispatchJitterMinutes,
+        timeoutMinutes: scheduleSettings.timeoutMinutes
       }
-      message?: string
-    })?.data
-    manualError.value = responseData?.message || responseData?.error || (error instanceof Error ? error.message : 'Не удалось создать ручной отчёт')
-    manualErrorDetails.value = Array.isArray(responseData?.details)
-      ? responseData.details.map((item) => String(item || '').trim()).filter(Boolean)
-      : []
-  }
-}
+    }
 
-const runTimeout = async () => {
-  timeoutMessage.value = ''
-  try {
-    const result = await apiStore.runTimeoutWatcher(200)
-    const summary = result.summary as Record<string, unknown>
-    timeoutMessage.value = `Просрочки обработаны: total=${String(summary.total || 0)}, expired=${String(summary.expired || 0)}`
-    await loadReports()
+    await apiStore.saveSettings(updated)
+    saveScheduleSuccess.value = 'Расписание сохранено'
+    setTimeout(() => { saveScheduleSuccess.value = '' }, 3000)
   } catch (error) {
-    timeoutMessage.value = error instanceof Error ? error.message : 'Ошибка timeout watcher'
+    saveScheduleError.value = error instanceof Error ? error.message : 'Ошибка при сохранении'
   }
 }
 
-const openExternalUrl = (url: string) => {
-  if (!url) {
+const sendManualRequest = async () => {
+  manualError.value = ''
+  manualSuccess.value = ''
+
+  if (!manualRequest.azsId) {
+    manualError.value = 'Выберите АЗС'
     return
   }
-  window.open(url, '_blank', 'noopener,noreferrer')
+
+  try {
+    const selectedAzs = azsOptions.value.find(o => o.value === manualRequest.azsId)
+    if (!selectedAzs) {
+      manualError.value = 'АЗС не найдена'
+      return
+    }
+
+    const now = new Date()
+    const to2 = (n: number) => String(n).padStart(2, '0')
+    const defaultDate = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
+    const defaultTime = `${to2(now.getUTCHours())}:${to2(now.getUTCMinutes())}`
+
+    const slotDate = manualRequest.mode === 'schedule' ? manualRequest.scheduleDate : defaultDate
+    const slotTime = manualRequest.mode === 'schedule' ? manualRequest.scheduleTime : defaultTime
+
+    const slotHHmm = slotTime.replace(':', '')
+
+    const result = await apiStore.createManualReport({
+      candidates: [{
+        azsId: manualRequest.azsId,
+        adminUserId: selectedAzs.adminUserId
+      }],
+      slotDate,
+      slotHHmm
+    })
+
+    manualSuccess.value = 'Задание отправлено'
+    manualRequest.azsId = ''
+    manualRequest.mode = 'now'
+
+    await loadAll()
+  } catch (error) {
+    manualError.value = error instanceof Error ? error.message : 'Ошибка при отправке задания'
+  }
 }
 
-const openReportCrmCard = (item: ReportRow) => {
-  if (!portalDomain.value || !reportEntityTypeId.value || !item.reportItemId) {
-    return
+const requestReportAgain = async (event: FeedEvent) => {
+  try {
+    const selectedAzs = azsOptions.value.find(o => o.value === event.azsId)
+    if (!selectedAzs) return
+
+    const now = new Date()
+    const to2 = (n: number) => String(n).padStart(2, '0')
+    const slotDate = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
+    const slotHHmm = `${to2(now.getUTCHours())}${to2(now.getUTCMinutes())}`
+
+    await apiStore.createManualReport({
+      candidates: [{
+        azsId: event.azsId,
+        adminUserId: selectedAzs.adminUserId
+      }],
+      slotDate,
+      slotHHmm
+    })
+
+    await loadAll()
+  } catch (error) {
+    console.error('Failed to request again', error)
   }
-  openExternalUrl(`https://${portalDomain.value}/crm/type/${reportEntityTypeId.value}/details/${item.reportItemId}/`)
 }
 
 const openPhotoFolder = (item: ReportRow) => {
   if (!portalDomain.value || !item.diskFolderId) {
     return
   }
-  openExternalUrl(`https://${portalDomain.value}/docs/?folderId=${item.diskFolderId}`)
+  const url = `https://${portalDomain.value}/docs/?folderId=${item.diskFolderId}`
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+const runTimeout = async () => {
+  timeoutMessage.value = ''
+  try {
+    const result = await apiStore.runTimeoutWatcher(200)
+    const summaryResult = result.summary as Record<string, unknown>
+    timeoutMessage.value = `Просрочки обработаны: total=${String(summaryResult.total || 0)}, expired=${String(summaryResult.expired || 0)}`
+    await loadAll()
+  } catch (error) {
+    timeoutMessage.value = error instanceof Error ? error.message : 'Ошибка'
+  }
+}
+
+const scrollToQuickRequest = () => {
+  const el = document.getElementById('quick-request-card')
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 }
 
 const loadRoleAccess = async () => {
@@ -312,19 +525,25 @@ onMounted(async () => {
     portalDomain.value = authData === false
       ? ''
       : String(authData.domain || '').replace(/^https?:\/\//, '').replace(/\/+$/, '')
+
     await loadRoleAccess()
     if (!hasReviewerAccess.value) {
-      loadError.value = 'Недостаточно прав: раздел проверки доступен только ролям Администратор и Проверяющий.'
+      loadError.value = 'Недостаточно прав'
       return
     }
+
+    await Promise.all([
+      loadAzsOptions(),
+      loadScheduleSettings()
+    ])
+
     const now = new Date()
     const to2 = (n: number) => String(n).padStart(2, '0')
-    manualCandidate.slotDate = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
-    manualCandidate.slotTime = `${to2(now.getUTCHours())}:${to2(now.getUTCMinutes())}`
+    manualRequest.scheduleDate = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
+    manualRequest.scheduleTime = `${to2(now.getUTCHours())}:${to2(now.getUTCMinutes())}`
+
     await $b24.parent.setTitle(PAGE_TITLE)
-    await loadReviewerSettings()
-    await loadAzsOptions()
-    await loadReports()
+    await loadAll()
   } catch (error) {
     processErrorGlobal(error)
   }
@@ -332,279 +551,517 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="w-full max-w-[1280px] mx-auto px-4 py-4 space-y-4">
-    <B24Alert
-      v-if="!hasReviewerAccess"
-      color="air-primary-alert"
-      title="Доступ запрещён"
-      description="Раздел проверки доступен только ролям Администратор и Проверяющий."
-    />
-
-    <template v-else>
-    <B24Card>
-      <template #header>
-        <div class="flex items-center justify-between">
-          <ProseH2>Экран Проверяющего</ProseH2>
-          <div class="flex items-center gap-2">
-            <B24Badge v-if="isLoading" color="air-secondary">загрузка...</B24Badge>
-            <B24Button color="air-secondary" label="Обновить" loading-auto @click="loadReports" />
-            <B24Button color="air-primary-alert" label="Проверить просрочки" loading-auto @click="runTimeout" />
-            <HelpButton default-role="reviewer" />
-          </div>
-        </div>
-      </template>
-
-      <div class="grid grid-cols-1 md:grid-cols-5 gap-2">
-        <B24FormField label="Дата с">
-          <B24Input v-model="filters.dateFrom" placeholder="2026-04-28" />
-        </B24FormField>
-        <B24FormField label="Дата по">
-          <B24Input v-model="filters.dateTo" placeholder="2026-04-28" />
-        </B24FormField>
-        <B24FormField label="Статус">
-          <B24Input v-model="filters.status" placeholder="done/reserved/failed" />
-        </B24FormField>
-        <B24FormField label="АЗС (множественный выбор)">
-          <B24Input
-            v-model="azsSearch"
-            class="mb-2"
-            placeholder="Поиск по названию или ID"
-            @change="loadAzsOptions"
-          />
-          <select
-            v-model="filters.azsIds"
-            multiple
-            class="h-[92px] w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-          >
-            <option
-              v-for="item in filteredAzsOptions"
-              :key="item.value"
-              :value="item.value"
-            >
-              {{ item.label }}
-            </option>
-          </select>
-        </B24FormField>
-        <B24FormField label="Лимит">
-          <B24InputNumber v-model="filters.limit" :min="1" :max="500" />
-        </B24FormField>
-      </div>
-
-      <template #footer>
-        <B24Button color="air-primary" label="Применить фильтры" loading-auto @click="loadReports" />
-      </template>
-    </B24Card>
-
-    <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
-      <B24Card
-        v-for="card in summaryCards"
-        :key="card.key"
-        variant="outline"
-        :b24ui="{ body: 'py-3 px-3' }"
-      >
-        <div class="flex items-center justify-between">
-          <ProseP class="text-[12px] text-gray-500">{{ card.label }}</ProseP>
-          <B24Badge :color="card.color">{{ card.value }}</B24Badge>
-        </div>
-      </B24Card>
+  <div class="w-full bg-gray-50 min-h-screen">
+    <!-- Alert if no access -->
+    <div v-if="!hasReviewerAccess && loadError" class="max-w-[1280px] mx-auto px-4 py-6">
+      <B24Alert
+        color="air-primary-alert"
+        title="Доступ запрещён"
+        :description="loadError"
+      />
     </div>
 
-    <B24Card>
-      <template #header>
-        <ProseH3>Быстрые фильтры</ProseH3>
-      </template>
-      <div class="flex flex-wrap gap-2">
-        <B24Button size="xs" color="air-secondary" label="Все" loading-auto @click="applyStatusFilter('')" />
-        <B24Button size="xs" color="air-primary" label="new" loading-auto @click="applyStatusFilter('new')" />
-        <B24Button size="xs" color="air-primary" label="in_progress" loading-auto @click="applyStatusFilter('in_progress')" />
-        <B24Button size="xs" color="air-primary-success" label="done" loading-auto @click="applyStatusFilter('done')" />
-        <B24Button size="xs" color="air-primary-alert" label="expired" loading-auto @click="applyStatusFilter('expired')" />
-        <B24Button size="xs" color="air-primary-alert" label="failed" loading-auto @click="applyStatusFilter('failed')" />
-      </div>
-    </B24Card>
+    <template v-else>
+      <div class="max-w-[1280px] mx-auto px-4 py-6">
 
-    <B24Alert
-      v-if="loadError"
-      color="air-primary-alert"
-      title="Ошибка загрузки отчётов"
-      :description="loadError"
-    />
+        <!-- Header -->
+        <header class="mb-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <div class="flex items-center gap-2">
+                <h1 class="text-2xl font-semibold">Проверка отчётов АЗС</h1>
+                <HelpButton default-role="reviewer" class="w-7 h-7" />
+              </div>
+              <p class="text-sm text-gray-500 mt-1">{{ getLocaleDate() }}</p>
+            </div>
 
-    <B24Card>
-      <template #header>
-        <ProseH3>Ручной запуск отчёта</ProseH3>
-      </template>
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
-        <B24FormField label="АЗС для запуска">
-          <B24Input
-            v-model="azsSearch"
-            class="mb-2"
-            placeholder="Поиск АЗС"
-            @change="loadAzsOptions"
-          />
-          <select
-            v-model="manualCandidate.azsIds"
-            multiple
-            class="h-[132px] w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-          >
-            <option
-              v-for="item in filteredAzsOptions"
-              :key="item.value"
-              :value="item.value"
+            <div class="flex items-center gap-2 flex-wrap">
+              <!-- Period switcher -->
+              <div class="inline-flex rounded-lg border border-gray-200 bg-white overflow-hidden text-sm">
+                <button
+                  :class="[
+                    'px-3 py-2 font-medium transition-colors',
+                    period === 'today'
+                      ? 'bg-blue-50 text-blue-700'
+                      : 'text-gray-600 hover:bg-gray-50 border-l border-gray-200'
+                  ]"
+                  @click="changePeriod('today')"
+                >
+                  Сегодня
+                </button>
+                <button
+                  :class="[
+                    'px-3 py-2 font-medium transition-colors',
+                    period === 'yesterday'
+                      ? 'bg-blue-50 text-blue-700'
+                      : 'text-gray-600 hover:bg-gray-50 border-l border-gray-200'
+                  ]"
+                  @click="changePeriod('yesterday')"
+                >
+                  Вчера
+                </button>
+                <button
+                  :class="[
+                    'px-3 py-2 font-medium transition-colors',
+                    period === 'week'
+                      ? 'bg-blue-50 text-blue-700'
+                      : 'text-gray-600 hover:bg-gray-50 border-l border-gray-200'
+                  ]"
+                  @click="changePeriod('week')"
+                >
+                  Неделя
+                </button>
+                <button
+                  :class="[
+                    'px-3 py-2 font-medium transition-colors',
+                    period === 'custom'
+                      ? 'bg-blue-50 text-blue-700'
+                      : 'text-gray-600 hover:bg-gray-50 border-l border-gray-200'
+                  ]"
+                  @click="changePeriod('custom')"
+                >
+                  Выбрать дату
+                </button>
+              </div>
+
+              <!-- Main request button -->
+              <button
+                class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-sm"
+                @click="scrollToQuickRequest"
+              >
+                ⚡ Запросить отчёт сейчас
+              </button>
+            </div>
+          </div>
+
+          <!-- Custom date inputs (if custom period selected) -->
+          <div v-if="period === 'custom'" class="flex gap-2 mt-4">
+            <input
+              v-model="customDateFrom"
+              type="date"
+              class="px-3 py-2 rounded-lg border border-gray-200 text-sm"
+              @change="loadAll"
+            />
+            <span class="text-gray-500">—</span>
+            <input
+              v-model="customDateTo"
+              type="date"
+              class="px-3 py-2 rounded-lg border border-gray-200 text-sm"
+              @change="loadAll"
+            />
+          </div>
+        </header>
+
+        <!-- Load error alert -->
+        <B24Alert
+          v-if="loadError && !hasReviewerAccess"
+          color="air-primary-alert"
+          title="Ошибка"
+          :description="loadError"
+          class="mb-6"
+        />
+
+        <!-- Summary banner -->
+        <section class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-6">
+          <div class="flex items-end justify-between gap-4 flex-wrap mb-4">
+            <div>
+              <p class="text-sm text-gray-500 uppercase tracking-wide mb-1">{{ getPeriodLabel() }}</p>
+              <p class="text-3xl">
+                Сдали отчёт <span class="font-bold text-blue-700">{{ doneCount }} из {{ totalCount }}</span> АЗС
+              </p>
+            </div>
+            <div class="text-right">
+              <p class="text-4xl font-bold text-blue-600">{{ donePercent }}%</p>
+              <p class="text-xs text-gray-500">сдачи</p>
+            </div>
+          </div>
+
+          <!-- Progress bar -->
+          <div class="w-full h-3 bg-gray-100 rounded-full overflow-hidden mb-4 flex">
+            <div class="bg-green-500" :style="{ width: progressBar.done + '%' }"></div>
+            <div class="bg-yellow-400" :style="{ width: progressBar.open + '%' }"></div>
+            <div class="bg-red-400" :style="{ width: progressBar.failed + '%' }"></div>
+          </div>
+
+          <!-- Status chips -->
+          <div class="flex flex-wrap gap-2">
+            <button
+              :class="[
+                'inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-colors',
+                statusFilter === 'done'
+                  ? 'bg-green-100 hover:bg-green-200 text-green-800'
+                  : 'bg-green-50 hover:bg-green-100 text-green-800'
+              ]"
+              @click="statusFilter = statusFilter === 'done' ? '' : 'done'"
             >
-              {{ item.label }}
-            </option>
-          </select>
-          <ProseP class="mb-0 mt-1 text-xs text-gray-500">
-            Выбрано: {{ selectedManualAzsOptions.length }}
-          </ProseP>
-        </B24FormField>
-        <B24FormField label="Дата слота">
-          <input
-            v-model="manualCandidate.slotDate"
-            type="date"
-            class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-          >
-        </B24FormField>
-        <B24FormField label="Время слота">
-          <input
-            v-model="manualCandidate.slotTime"
-            type="time"
-            step="60"
-            class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-          >
-        </B24FormField>
-      </div>
-      <template #footer>
-        <B24Button color="air-primary" label="Создать сейчас" loading-auto @click="createManual" />
-      </template>
-    </B24Card>
+              <span class="w-2 h-2 rounded-full bg-green-500"></span>
+              Сдан — {{ doneCount }}
+            </button>
+            <button
+              :class="[
+                'inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-colors',
+                statusFilter === 'open'
+                  ? 'bg-yellow-100 hover:bg-yellow-200 text-yellow-800'
+                  : 'bg-yellow-50 hover:bg-yellow-100 text-yellow-800'
+              ]"
+              @click="statusFilter = statusFilter === 'open' ? '' : 'open'"
+            >
+              <span class="w-2 h-2 rounded-full bg-yellow-500"></span>
+              В работе — {{ openCount }}
+            </button>
+            <button
+              :class="[
+                'inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-colors',
+                statusFilter === 'failed'
+                  ? 'bg-red-100 hover:bg-red-200 text-red-800'
+                  : 'bg-red-50 hover:bg-red-100 text-red-800'
+              ]"
+              @click="statusFilter = statusFilter === 'failed' ? '' : 'failed'"
+            >
+              <span class="w-2 h-2 rounded-full bg-red-500"></span>
+              Не сдан — {{ failedCount }}
+            </button>
+            <button
+              v-if="statusFilter"
+              class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium transition-colors ml-auto"
+              @click="statusFilter = ''"
+            >
+              Показать все {{ totalCount }} АЗС
+            </button>
+          </div>
+        </section>
 
-    <B24Alert
-      v-if="manualSuccess"
-      color="air-primary-success"
-      title="Ручной запуск выполнен"
-      :description="manualSuccess"
-    />
-    <B24Alert
-      v-if="manualError"
-      color="air-primary-alert"
-      title="Ошибка ручного запуска"
-      :description="manualError"
-    />
-    <B24Card v-if="manualErrorDetails.length" variant="outline">
-      <template #header>
-        <ProseH3>Что исправить</ProseH3>
-      </template>
-      <ul class="list-disc pl-5 text-sm">
-        <li v-for="detail in manualErrorDetails" :key="detail">
-          {{ detail }}
-        </li>
-      </ul>
-    </B24Card>
-    <B24Card v-if="manualResults.length" variant="outline">
-      <template #header>
-        <ProseH3>Результат ручного запуска</ProseH3>
-      </template>
-      <div class="overflow-auto">
-        <table class="min-w-full text-sm">
-          <thead>
-            <tr class="text-left border-b border-gray-200">
-              <th class="py-2 pr-3">АЗС</th>
-              <th class="py-2 pr-3">Статус</th>
-              <th class="py-2 pr-3">Слот</th>
-              <th class="py-2 pr-3">Ошибка</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(item, index) in manualResults" :key="`${item.azsId || 'row'}-${index}`" class="border-b border-gray-100">
-              <td class="py-2 pr-3">{{ item.azsId || '—' }}</td>
-              <td class="py-2 pr-3">
-                <B24Badge :color="manualResultStatusColor(item)">
-                  {{ item.duplicate ? 'дубль' : (item.ok ? 'создан' : 'ошибка') }}
-                </B24Badge>
-              </td>
-              <td class="py-2 pr-3">{{ item.slotKey || '—' }}</td>
-              <td class="py-2 pr-3">{{ item.error || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </B24Card>
-    <B24Alert
-      v-if="timeoutMessage"
-      color="air-secondary"
-      title="Timeout watcher"
-      :description="timeoutMessage"
-    />
+        <!-- Two-column layout: feed + right panel -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-    <B24Card>
-      <template #header>
-        <div class="flex items-center justify-between">
-          <ProseH3>Отчёты</ProseH3>
-          <B24Badge color="air-secondary">Всего: {{ reports.length }}</B24Badge>
-        </div>
-      </template>
+          <!-- Feed (2/3 width) -->
+          <section class="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-gray-100">
+            <div class="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+              <h2 class="text-lg font-semibold">Лента событий</h2>
+              <div class="inline-flex rounded-lg border border-gray-200 bg-white overflow-hidden text-xs">
+                <button
+                  :class="[
+                    'px-3 py-1.5 font-medium',
+                    feedFilterMode === 'all'
+                      ? 'bg-gray-100 text-gray-900'
+                      : 'text-gray-600 hover:bg-gray-50 border-l border-gray-200'
+                  ]"
+                  @click="feedFilterMode = 'all'"
+                >
+                  Все события
+                </button>
+                <button
+                  :class="[
+                    'px-3 py-1.5 font-medium',
+                    feedFilterMode === 'problems'
+                      ? 'bg-gray-100 text-gray-900'
+                      : 'text-gray-600 hover:bg-gray-50 border-l border-gray-200'
+                  ]"
+                  @click="feedFilterMode = 'problems'"
+                >
+                  Только проблемы
+                </button>
+              </div>
+            </div>
 
-      <div class="overflow-auto">
-        <table class="min-w-full text-sm">
-          <thead>
-            <tr class="text-left border-b border-gray-200">
-              <th class="py-2 pr-3">ID</th>
-              <th class="py-2 pr-3">АЗС</th>
-              <th class="py-2 pr-3">Слот</th>
-              <th class="py-2 pr-3">Дедлайн</th>
-              <th class="py-2 pr-3">Статус</th>
-              <th class="py-2 pr-3">Отчёт CRM</th>
-              <th class="py-2 pr-3">Папка фото</th>
-              <th class="py-2 pr-3">Действие</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in reports" :key="item.id" class="border-b border-gray-100">
-              <td class="py-2 pr-3">{{ item.id }}</td>
-              <td class="py-2 pr-3">{{ item.azsId }}</td>
-              <td class="py-2 pr-3">{{ item.slotKey }}</td>
-              <td class="py-2 pr-3">{{ item.deadlineAt || '—' }}</td>
-              <td class="py-2 pr-3">
-                <B24Badge :color="statusColor(item.status)">
-                  {{ item.status }}
-                </B24Badge>
-              </td>
-              <td class="py-2 pr-3">{{ item.reportItemId || '—' }}</td>
-              <td class="py-2 pr-3">
-                {{ item.diskFolderId || '—' }}
-              </td>
-              <td class="py-2 pr-3">
-                <div class="flex flex-wrap gap-1">
-                <B24Button
-                  size="xs"
-                  color="air-secondary"
-                  label="Экран админа"
-                  loading-auto
-                  @click="navigateTo(`/admin/${item.id}`)"
-                />
-                <B24Button
-                  size="xs"
-                  color="air-secondary"
-                  label="Карточка отчёта"
-                  :disabled="!item.reportItemId || !reportEntityTypeId || !portalDomain"
-                  @click="openReportCrmCard(item)"
-                />
-                <B24Button
-                  size="xs"
-                  color="air-secondary"
-                  label="Папка фото"
-                  :disabled="!item.diskFolderId || !portalDomain"
-                  @click="openPhotoFolder(item)"
-                />
+            <div class="p-5 space-y-4">
+              <div
+                v-for="event in filteredEvents"
+                :key="event.id"
+                class="feed-item relative"
+              >
+                <div class="feed-line">
+                  <div class="flex gap-3">
+                    <div :class="`flex-shrink-0 w-10 h-10 rounded-full ${getEventBgColor(event)} flex items-center justify-center text-lg`">
+                      {{ getEventIcon(event) }}
+                    </div>
+                    <div class="flex-1 pb-1">
+                      <div class="flex items-baseline justify-between gap-3">
+                        <p :class="['font-medium', event.type === 'expired' ? 'text-red-900' : '']">
+                          {{ getEventTitle(event) }}
+                        </p>
+                        <span class="text-xs text-gray-500 whitespace-nowrap">{{ formatTime(event.timestamp) }}</span>
+                      </div>
+                      <p v-if="event.subtitle" class="text-sm text-gray-600 mt-0.5">
+                        {{ event.subtitle }}
+                      </p>
+                      <div v-if="event.buttons && event.buttons.length > 0" class="mt-2 flex gap-2">
+                        <button
+                          v-for="btn in event.buttons"
+                          :key="btn.action"
+                          :disabled="btn.disabled"
+                          :class="[
+                            'px-3 py-1 text-xs rounded-md transition-colors',
+                            btn.action === 'request-again'
+                              ? 'bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50'
+                              : 'text-gray-600 hover:bg-gray-50 disabled:opacity-50'
+                          ]"
+                          @click="btn.action === 'request-again' ? requestReportAgain(event) : openPhotoFolder(event.reportRow)"
+                        >
+                          {{ btn.label }}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+              </div>
+
+              <div v-if="filteredEvents.length === 0" class="text-center py-8 text-gray-500">
+                Нет событий за выбранный период
+              </div>
+            </div>
+          </section>
+
+          <!-- Right panel -->
+          <aside class="space-y-6">
+
+            <!-- Schedule card -->
+            <section class="bg-white rounded-2xl shadow-sm border border-gray-100">
+              <div class="flex items-center gap-2 border-b border-gray-100 px-5 py-4">
+                <span class="text-lg">📅</span>
+                <h2 class="text-base font-semibold">Расписание рассылки</h2>
+              </div>
+              <div class="p-5 space-y-4">
+
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1.5">Времена утренней и дневной рассылки</label>
+                  <div class="flex flex-wrap gap-2">
+                    <span
+                      v-for="(time, idx) in scheduleSettings.dispatchTimes"
+                      :key="time"
+                      class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-blue-50 text-blue-800 text-sm"
+                    >
+                      {{ time }}
+                      <button class="text-blue-400 hover:text-blue-700" @click="removeDispatchTime(idx)">×</button>
+                    </span>
+                    <div class="flex gap-1">
+                      <input
+                        v-model="scheduleSettings.newTimeInput"
+                        type="text"
+                        placeholder="HH:mm"
+                        class="w-16 px-2 py-1.5 rounded-md border border-dashed border-gray-300 text-sm"
+                        @keyup.enter="addDispatchTime"
+                      />
+                      <button
+                        class="px-2.5 py-1.5 rounded-md border border-dashed border-gray-300 text-sm text-gray-500 hover:bg-gray-50"
+                        @click="addDispatchTime"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1.5">Разброс времени для каждой АЗС</label>
+                  <div class="flex items-center gap-2">
+                    <input
+                      v-model.number="scheduleSettings.dispatchJitterMinutes"
+                      type="number"
+                      class="w-20 px-3 py-1.5 rounded-md border border-gray-200 text-sm"
+                    />
+                    <span class="text-sm text-gray-600">мин в обе стороны</span>
+                  </div>
+                  <p class="text-xs text-gray-400 mt-1">Чтобы все АЗС не получили push одновременно</p>
+                </div>
+
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1.5">Сколько времени даём на сдачу</label>
+                  <div class="flex items-center gap-2">
+                    <input
+                      v-model.number="scheduleSettings.timeoutMinutes"
+                      type="number"
+                      class="w-20 px-3 py-1.5 rounded-md border border-gray-200 text-sm"
+                    />
+                    <span class="text-sm text-gray-600">минут</span>
+                  </div>
+                </div>
+
+                <button
+                  class="w-full px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium"
+                  @click="saveSchedule"
+                >
+                  Сохранить расписание
+                </button>
+
+                <B24Alert
+                  v-if="saveScheduleSuccess"
+                  color="air-primary-success"
+                  :description="saveScheduleSuccess"
+                />
+                <B24Alert
+                  v-if="saveScheduleError"
+                  color="air-primary-alert"
+                  :description="saveScheduleError"
+                />
+              </div>
+            </section>
+
+            <!-- Quick request card -->
+            <section id="quick-request-card" class="bg-white rounded-2xl shadow-sm border border-gray-100">
+              <div class="flex items-center gap-2 border-b border-gray-100 px-5 py-4">
+                <span class="text-lg">⚡</span>
+                <h2 class="text-base font-semibold">Запросить отчёт вне расписания</h2>
+              </div>
+              <div class="p-5 space-y-3">
+
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1.5">АЗС</label>
+                  <select v-model="manualRequest.azsId" class="w-full px-3 py-2 rounded-md border border-gray-200 text-sm bg-white">
+                    <option value="">Выберите АЗС…</option>
+                    <option v-for="opt in azsOptions" :key="opt.value" :value="opt.value">
+                      {{ opt.label }}
+                    </option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1.5">Когда отправить</label>
+                  <div class="flex gap-2">
+                    <button
+                      :class="[
+                        'flex-1 px-3 py-2 rounded-md text-sm font-medium transition-colors',
+                        manualRequest.mode === 'now'
+                          ? 'bg-blue-50 text-blue-700'
+                          : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
+                      ]"
+                      @click="manualRequest.mode = 'now'"
+                    >
+                      Прямо сейчас
+                    </button>
+                    <button
+                      :class="[
+                        'flex-1 px-3 py-2 rounded-md text-sm font-medium transition-colors',
+                        manualRequest.mode === 'schedule'
+                          ? 'bg-blue-50 text-blue-700'
+                          : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
+                      ]"
+                      @click="manualRequest.mode = 'schedule'"
+                    >
+                      Запланировать
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="manualRequest.mode === 'schedule'" class="space-y-2">
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1.5">Дата</label>
+                    <input v-model="manualRequest.scheduleDate" type="date" class="w-full px-3 py-2 rounded-md border border-gray-200 text-sm" />
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1.5">Время</label>
+                    <input v-model="manualRequest.scheduleTime" type="time" class="w-full px-3 py-2 rounded-md border border-gray-200 text-sm" />
+                  </div>
+                </div>
+
+                <button
+                  class="w-full px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-medium"
+                  @click="sendManualRequest"
+                >
+                  Отправить задание
+                </button>
+
+                <B24Alert
+                  v-if="manualSuccess"
+                  color="air-primary-success"
+                  :description="manualSuccess"
+                />
+                <B24Alert
+                  v-if="manualError"
+                  color="air-primary-alert"
+                  :description="manualError"
+                />
+              </div>
+            </section>
+
+          </aside>
+        </div>
+
+        <!-- Tech info panel (collapsible) -->
+        <details class="mt-8 text-center">
+          <summary class="text-xs text-gray-400 hover:text-gray-600 hover:underline cursor-pointer">
+            Показать техническую информацию по отчётам
+          </summary>
+          <div class="mt-4 bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+            <div class="overflow-auto mb-4">
+              <table class="min-w-full text-sm">
+                <thead>
+                  <tr class="text-left border-b border-gray-200">
+                    <th class="py-2 pr-3">ID</th>
+                    <th class="py-2 pr-3">АЗС</th>
+                    <th class="py-2 pr-3">Время рассылки</th>
+                    <th class="py-2 pr-3">Срок сдачи</th>
+                    <th class="py-2 pr-3">Статус</th>
+                    <th class="py-2 pr-3">Папка фото</th>
+                    <th class="py-2 pr-3">Действия</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="item in reports" :key="item.id" class="border-b border-gray-100">
+                    <td class="py-2 pr-3">{{ item.id }}</td>
+                    <td class="py-2 pr-3">{{ item.azsId }}</td>
+                    <td class="py-2 pr-3">{{ item.slotKey || '—' }}</td>
+                    <td class="py-2 pr-3">{{ item.deadlineAt || '—' }}</td>
+                    <td class="py-2 pr-3">
+                      <B24Badge
+                        :color="item.status === 'done' ? 'air-primary-success' : item.status === 'failed' ? 'air-primary-alert' : 'air-secondary'"
+                      >
+                        {{
+                          item.status === 'done' ? 'Сдан' :
+                          item.status === 'in_progress' ? 'В работе' :
+                          item.status === 'expired' ? 'Не сдан' :
+                          item.status === 'failed' ? 'Ошибка' :
+                          'Запланирован'
+                        }}
+                      </B24Badge>
+                    </td>
+                    <td class="py-2 pr-3">{{ item.diskFolderId || '—' }}</td>
+                    <td class="py-2 pr-3">
+                      <div class="flex flex-wrap gap-1">
+                        <button
+                          class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded"
+                          @click="openPhotoFolder(item)"
+                          :disabled="!item.diskFolderId"
+                        >
+                          Папка
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <button
+              class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium"
+              @click="runTimeout"
+            >
+              Проверить просрочки
+            </button>
+            <B24Alert
+              v-if="timeoutMessage"
+              color="air-secondary"
+              :description="timeoutMessage"
+              class="mt-4"
+            />
+          </div>
+        </details>
+
       </div>
-    </B24Card>
     </template>
   </div>
 </template>
+
+<style scoped>
+.feed-line::before {
+  content: "";
+  position: absolute;
+  left: 19px;
+  top: 40px;
+  bottom: -16px;
+  width: 2px;
+  background: #e5e7eb;
+}
+.feed-item:last-child .feed-line::before {
+  display: none;
+}
+</style>
