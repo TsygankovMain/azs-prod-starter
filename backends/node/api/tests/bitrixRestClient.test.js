@@ -236,3 +236,60 @@ test('bitrix client throws clear error when refresh token is missing', async () 
     global.fetch = originalFetch;
   }
 });
+
+test('listCrmItems paginates past 50 items using top-level next cursor', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+
+  global.fetch = async (url, options = {}) => {
+    const body = JSON.parse(options.body || '{}');
+    calls.push({ url: String(url), start: body.start ?? 0 });
+
+    if ((body.start ?? 0) === 0) {
+      const page1 = Array.from({ length: 50 }, (_, i) => ({ id: i + 1 }));
+      return createJsonResponse({
+        result: { items: page1 },
+        next: 50,
+        total: 73,
+        time: {}
+      });
+    }
+    if (body.start === 50) {
+      const page2 = Array.from({ length: 23 }, (_, i) => ({ id: i + 51 }));
+      return createJsonResponse({
+        result: { items: page2 },
+        total: 73,
+        time: {}
+      });
+    }
+    return createJsonResponse({ result: { items: [] }, total: 73, time: {} });
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://b24-example.bitrix24.ru/rest',
+      authId: 'access-token',
+      logger: { info() {}, error() {} }
+    });
+
+    const items = await client.listCrmItems({
+      entityTypeId: 1234,
+      limit: 500,
+      context: {
+        domain: 'b24-example.bitrix24.ru',
+        authId: 'access-token'
+      }
+    });
+
+    assert.equal(items.length, 73);
+    assert.equal(items[0].id, 1);
+    assert.equal(items[49].id, 50);
+    assert.equal(items[50].id, 51);
+    assert.equal(items[72].id, 73);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].start, 0);
+    assert.equal(calls[1].start, 50);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

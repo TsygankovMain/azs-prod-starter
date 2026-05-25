@@ -266,6 +266,57 @@ export const createBitrixRestClient = ({
     authOverride
   });
 
+  const callRaw = async (method, params = {}, context = {}) => {
+    const runtime = resolveRuntimeContext(context);
+    ensureConfigured(runtime);
+    const resolvedAuth = String(runtime.authId || '').trim();
+    const requestPayload = resolvedAuth
+      ? { ...params, auth: resolvedAuth }
+      : params;
+
+    try {
+      const response = await fetch(`${runtime.endpoint}/${method}.json`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestPayload)
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(`Bitrix REST ${method} failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`);
+      }
+
+      const responsePayload = await response.json();
+      if (responsePayload.error) {
+        throw new Error(`Bitrix REST ${method} error: ${responsePayload.error} ${responsePayload.error_description || ''}`.trim());
+      }
+
+      return responsePayload;
+    } catch (error) {
+      const canRefresh = isRefreshableAuthError(error);
+      if (!canRefresh) {
+        throw error;
+      }
+      let refreshedContext;
+      try {
+        refreshedContext = await refreshAccessToken(runtime);
+      } catch (refreshError) {
+        if (isOauthClientInvalid(refreshError)) {
+          logger.error('oauth_client_invalid', {
+            method,
+            domain: runtime.domain || null,
+            userId: runtime.userId || null,
+            message: refreshError.message
+          });
+        }
+        throw refreshError;
+      }
+      return callRaw(method, params, refreshedContext);
+    }
+  };
+
   // Bootstrap context is the fallback used ONLY when a per-request `context`
   // is not supplied (e.g. the very first /api/install before a JWT exists).
   // We deliberately do NOT mutate `process.env.*` here — concurrent users
@@ -390,7 +441,7 @@ export const createBitrixRestClient = ({
       let start = 0;
 
       while (items.length < maxItems) {
-        const response = await call('crm.item.list', {
+        const response = await callRaw('crm.item.list', {
           entityTypeId: Number(entityTypeId),
           select,
           filter,
@@ -399,18 +450,22 @@ export const createBitrixRestClient = ({
           useOriginalUfNames
         }, context);
 
-        const page = parseListItems(response);
-        for (const row of page.items) {
+        const resultData = response.result || {};
+        const rows = Array.isArray(resultData) ? resultData : (Array.isArray(resultData.items) ? resultData.items : []);
+        const next = Number(response.next ?? -1);
+        const nextCursor = Number.isFinite(next) && next >= 0 ? next : null;
+
+        for (const row of rows) {
           items.push(row);
           if (items.length >= maxItems) {
             break;
           }
         }
 
-        if (page.next === null || page.items.length === 0) {
+        if (nextCursor === null || rows.length === 0) {
           break;
         }
-        start = page.next;
+        start = nextCursor;
       }
 
       return items;
