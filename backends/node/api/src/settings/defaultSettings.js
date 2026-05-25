@@ -186,7 +186,6 @@ export const validateSettings = (settings, {
 
   if (isPlainObject(settings.photoType)) {
     validateNumber(Number(settings.photoType.entityTypeId), 'photoType.entityTypeId', 0, errors);
-    validateObject(settings.photoType, 'fields', errors);
   }
 
   if (isPlainObject(settings.report)) {
