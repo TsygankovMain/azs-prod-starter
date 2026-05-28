@@ -10,18 +10,32 @@ import {
   uploadPhoto
 } from '../src/disk/diskService.js';
 
-const createDiskApiFake = () => {
+const createDiskApiFake = ({ uploadBehaviors = [] } = {}) => {
   let seq = 100;
   const folders = new Map();
   const uploads = [];
+  const files = new Map();
+  const deletedFileIds = [];
+  let uploadAttempt = 0;
 
   const keyOf = (parentId, name) => `${parentId}:${name}`;
 
   return {
     uploads,
     folders,
+    files,
+    deletedFileIds,
+    setExistingFile(parentId, name, id = null) {
+      const fileId = Number(id) > 0 ? Number(id) : (seq += 1);
+      files.set(keyOf(parentId, name), fileId);
+      return fileId;
+    },
     async findChildFolder(parentId, name) {
       const id = folders.get(keyOf(parentId, name));
+      return id ? { id } : null;
+    },
+    async findChildFile(parentId, name) {
+      const id = files.get(keyOf(parentId, name));
       return id ? { id } : null;
     },
     async createFolder(parentId, name) {
@@ -33,9 +47,34 @@ const createDiskApiFake = () => {
       folders.set(key, seq);
       return { id: seq };
     },
+    async markFileDeleted(fileId) {
+      const numericId = Number(fileId);
+      deletedFileIds.push(numericId);
+      for (const [key, currentId] of files.entries()) {
+        if (Number(currentId) === numericId) {
+          files.delete(key);
+        }
+      }
+      return { id: numericId };
+    },
     async uploadFile(folderId, { fileName, content }) {
+      uploadAttempt += 1;
       uploads.push({ folderId, fileName, content });
+      const behavior = uploadBehaviors[uploadAttempt - 1];
+      const key = keyOf(folderId, fileName);
+
+      if (behavior === 'duplicate_error') {
+        const conflictId = seq + 5000;
+        files.set(key, conflictId);
+        throw new Error('Bitrix REST disk.folder.uploadfile failed with HTTP 400: {"error":"DISK_OBJ_22000","error_description":"Файл с таким именем уже есть"}');
+      }
+
+      if (files.has(key)) {
+        throw new Error('Bitrix REST disk.folder.uploadfile failed with HTTP 400: {"error":"DISK_OBJ_22000","error_description":"Файл с таким именем уже есть"}');
+      }
+
       seq += 1;
+      files.set(key, seq);
       return { id: seq, fileName };
     }
   };
@@ -178,5 +217,54 @@ test('uploadPhoto creates folder path and uploads file with required pattern', a
   assert.equal(result.folderPath, '2026-05/28/4');
   assert.equal(result.fileName, '4_2026-05-28_0930_Колонки.jpg');
   assert.equal(diskApi.uploads.length, 1);
+  assert.equal(diskApi.deletedFileIds.length, 0);
   assert.equal(diskApi.uploads[0].fileName, result.fileName);
+});
+
+test('uploadPhoto marks existing duplicate file as deleted before upload', async () => {
+  const diskApi = createDiskApiFake();
+  const expectedFolderPath = '2026-05/28/4';
+  const expectedFileName = '4_2026-05-28_0930_Колонки.jpg';
+  const folderId = await ensureFolderPath(diskApi, {
+    rootFolderId: 10,
+    path: expectedFolderPath
+  });
+  const existingFileId = diskApi.setExistingFile(folderId, expectedFileName, 777);
+
+  const result = await uploadPhoto(diskApi, {
+    rootFolderId: 10,
+    azsId: 4,
+    slotDate: '2026-05-28',
+    slotHHmm: '0930',
+    photoCode: '42',
+    requiredTitle: '42. Колонки',
+    originalName: 'upload.jpg',
+    mimeType: 'image/jpeg',
+    content: Buffer.from('mock-image')
+  });
+
+  assert.equal(result.folderId, folderId);
+  assert.equal(result.fileName, expectedFileName);
+  assert.deepEqual(diskApi.deletedFileIds, [existingFileId]);
+  assert.equal(diskApi.uploads.length, 1);
+});
+
+test('uploadPhoto retries once after DISK_OBJ_22000 race and succeeds', async () => {
+  const diskApi = createDiskApiFake({ uploadBehaviors: ['duplicate_error'] });
+
+  const result = await uploadPhoto(diskApi, {
+    rootFolderId: 10,
+    azsId: 4,
+    slotDate: '2026-05-28',
+    slotHHmm: '0930',
+    photoCode: '42',
+    requiredTitle: '42. Колонки',
+    originalName: 'upload.jpg',
+    mimeType: 'image/jpeg',
+    content: Buffer.from('mock-image')
+  });
+
+  assert.equal(result.fileName, '4_2026-05-28_0930_Колонки.jpg');
+  assert.equal(diskApi.uploads.length, 2);
+  assert.equal(diskApi.deletedFileIds.length, 1);
 });

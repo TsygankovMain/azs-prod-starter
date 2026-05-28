@@ -484,6 +484,21 @@ export const createBitrixRestClient = ({
         return matchId ? { id: matchId } : null;
       },
 
+      async findChildFile(parentId, name, context = {}) {
+        const result = await call('disk.folder.getchildren', {
+          id: Number(parentId)
+        }, context);
+
+        const items = Array.isArray(result) ? result : (Array.isArray(result.items) ? result.items : []);
+        const match = items.find((item) => (
+          String(item.NAME || item.name || '').trim() === String(name)
+          && String(item.TYPE || item.type || '').trim().toLowerCase() === 'file'
+          && Number(item.DELETED_TYPE ?? item.deleted_type ?? 0) === 0
+        ));
+        const matchId = parseId(match?.ID ?? match?.id);
+        return matchId ? { id: matchId } : null;
+      },
+
       async createFolder(parentId, name, context = {}) {
         const result = await call('disk.folder.addsubfolder', {
           id: Number(parentId),
@@ -516,6 +531,22 @@ export const createBitrixRestClient = ({
           throw new Error('disk.folder.uploadfile response does not include file id');
         }
         return { id: fileId, fileName };
+      },
+
+      async markFileDeleted(fileId, context = {}) {
+        if (!Number(fileId)) {
+          throw new Error('disk.file.markdeleted requires file id');
+        }
+
+        const result = await call('disk.file.markdeleted', {
+          id: Number(fileId)
+        }, context);
+
+        const deletedId = parseId(result?.ID ?? result?.id);
+        if (!deletedId) {
+          throw new Error('disk.file.markdeleted response does not include file id');
+        }
+        return { id: deletedId };
       }
     }
   };

@@ -124,6 +124,42 @@ const splitPath = (pathValue) => String(pathValue || '')
   .map((segment) => sanitizeSegment(segment))
   .filter(Boolean);
 
+const isDuplicateFileNameError = (error) => {
+  const message = String(error?.message || error || '');
+  return /DISK_OBJ_22000/i.test(message) || /файл с таким именем уже есть/i.test(message.toLowerCase());
+};
+
+const removeExistingFileByName = async (diskApi, { folderId, fileName }, context = {}) => {
+  if (!diskApi || typeof diskApi.findChildFile !== 'function' || typeof diskApi.markFileDeleted !== 'function') {
+    return false;
+  }
+
+  const existing = await diskApi.findChildFile(folderId, fileName, context);
+  if (!existing?.id) {
+    return false;
+  }
+
+  await diskApi.markFileDeleted(existing.id, context);
+  return true;
+};
+
+const uploadFileReplacingDuplicate = async (diskApi, { folderId, fileName, content }, context = {}) => {
+  await removeExistingFileByName(diskApi, { folderId, fileName }, context);
+
+  try {
+    return await diskApi.uploadFile(folderId, { fileName, content }, context);
+  } catch (error) {
+    if (!isDuplicateFileNameError(error)) {
+      throw error;
+    }
+
+    // Guard against race condition: a competing upload may create the same
+    // file between our pre-check and upload call.
+    await removeExistingFileByName(diskApi, { folderId, fileName }, context);
+    return diskApi.uploadFile(folderId, { fileName, content }, context);
+  }
+};
+
 export const buildFolderPath = ({
   capturedAt = new Date(),
   azsId,
@@ -259,7 +295,11 @@ export const uploadPhoto = async (diskApi, {
   const folderPath = buildFolderPath({ capturedAt: folderDate, azsId, folderNameTemplate });
   const targetFolderId = await ensureFolderPath(diskApi, { rootFolderId, path: folderPath }, context);
   const fileName = buildPhotoFileName({ azsId, slotDate, slotHHmm, requiredTitle, photoCode, originalName, mimeType });
-  const uploaded = await diskApi.uploadFile(targetFolderId, { fileName, content }, context);
+  const uploaded = await uploadFileReplacingDuplicate(diskApi, {
+    folderId: targetFolderId,
+    fileName,
+    content
+  }, context);
 
   return {
     folderId: targetFolderId,
