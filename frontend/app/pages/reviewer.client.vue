@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import type { B24Frame } from '@bitrix24/b24jssdk'
-import { toDate, fromDate } from '@internationalized/date'
 
 type ReportRow = {
   id: number
   slotKey: string
   azsId: string
+  azsTitle?: string | null
   adminUserId: number
   status: string
   reportItemId: number | null
@@ -34,6 +34,8 @@ type AzsOption = {
   adminUserId: number
 }
 
+type FeedAction = 'request-again' | 'open-photos' | 'open-card'
+
 type FeedEvent = {
   id: string
   type: 'created' | 'done' | 'expired' | 'in_progress' | 'failed' | 'manual'
@@ -42,7 +44,7 @@ type FeedEvent = {
   azsTitle: string
   reportRow: ReportRow
   subtitle?: string
-  buttons?: Array<{ label: string; action: string; disabled?: boolean }>
+  buttons?: Array<{ label: string; action: FeedAction; disabled?: boolean }>
 }
 
 const PAGE_TITLE = 'Проверка отчётов АЗС'
@@ -176,7 +178,8 @@ const deriveEvents = (): FeedEvent[] => {
   const events: FeedEvent[] = []
 
   for (const report of reports.value) {
-    const azsTitle = azsMap.value.get(report.azsId) || `АЗС ${report.azsId}`
+    const reportTitle = String(report.azsTitle || '').trim()
+    const azsTitle = reportTitle || azsMap.value.get(report.azsId) || `АЗС ${report.azsId}`
 
     // Created event (always)
     const createdDate = report.createdAt ? new Date(report.createdAt) : null
@@ -201,7 +204,11 @@ const deriveEvents = (): FeedEvent[] => {
         timestamp: report.updatedAt,
         azsId: report.azsId,
         azsTitle,
-        reportRow: report
+        reportRow: report,
+        buttons: [
+          { label: 'Открыть папку', action: 'open-photos', disabled: !report.diskFolderId },
+          { label: 'Открыть карточку', action: 'open-card', disabled: !(report.reportItemId && reportEntityTypeId.value) }
+        ]
       })
     } else if (report.status === 'expired' && report.updatedAt) {
       events.push({
@@ -213,7 +220,8 @@ const deriveEvents = (): FeedEvent[] => {
         reportRow: report,
         buttons: [
           { label: 'Запросить повторно', action: 'request-again' },
-          { label: 'Открыть фото', action: 'open-photos', disabled: !report.diskFolderId }
+          { label: 'Открыть папку', action: 'open-photos', disabled: !report.diskFolderId },
+          { label: 'Открыть карточку', action: 'open-card', disabled: !(report.reportItemId && reportEntityTypeId.value) }
         ]
       })
     } else if (report.status === 'in_progress' && report.updatedAt) {
@@ -450,7 +458,7 @@ const sendManualRequest = async () => {
 
     const slotHHmm = slotTime.replace(':', '')
 
-    const result = await apiStore.createManualReport({
+    await apiStore.createManualReport({
       candidates: [{
         azsId: manualRequest.azsId,
         adminUserId: selectedAzs.adminUserId
@@ -500,6 +508,28 @@ const openPhotoFolder = (item: ReportRow) => {
   }
   const url = `https://${portalDomain.value}/docs/?folderId=${item.diskFolderId}`
   window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+const openCrmCard = (item: ReportRow) => {
+  if (!portalDomain.value || !item.reportItemId || !reportEntityTypeId.value) {
+    return
+  }
+  const url = `https://${portalDomain.value}/crm/type/${reportEntityTypeId.value}/details/${item.reportItemId}/`
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+const handleFeedAction = (event: FeedEvent, action: FeedAction) => {
+  if (action === 'request-again') {
+    void requestReportAgain(event)
+    return
+  }
+  if (action === 'open-photos') {
+    openPhotoFolder(event.reportRow)
+    return
+  }
+  if (action === 'open-card') {
+    openCrmCard(event.reportRow)
+  }
 }
 
 const runTimeout = async () => {
@@ -826,7 +856,7 @@ onMounted(async () => {
                               ? 'bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50'
                               : 'text-gray-600 hover:bg-gray-50 disabled:opacity-50'
                           ]"
-                          @click="btn.action === 'request-again' ? requestReportAgain(event) : openPhotoFolder(event.reportRow)"
+                          @click="handleFeedAction(event, btn.action)"
                         >
                           {{ btn.label }}
                         </button>

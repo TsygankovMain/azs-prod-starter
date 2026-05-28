@@ -1,4 +1,4 @@
-const DEFAULT_FOLDER_TEMPLATE = '{yyyy-mm}/{dd}/{azs}';
+const DEFAULT_FOLDER_TEMPLATE = '{yyyy-mm}/{dd}/{azs}_{azs_name}';
 
 const ILLEGAL_FILE_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
 const WHITESPACE_RE = /\s+/g;
@@ -163,6 +163,7 @@ const uploadFileReplacingDuplicate = async (diskApi, { folderId, fileName, conte
 export const buildFolderPath = ({
   capturedAt = new Date(),
   azsId,
+  azsName,
   folderNameTemplate = DEFAULT_FOLDER_TEMPLATE
 } = {}) => {
   const date = isValidDate(capturedAt) ? capturedAt : new Date(capturedAt);
@@ -174,12 +175,22 @@ export const buildFolderPath = ({
     throw new Error('azsId is required');
   }
 
+  const safeAzsIdSegment = sanitizeSegment(azsId, 'AZS');
+  const safeAzsNameSegment = (() => {
+    const source = String(azsName ?? '').trim();
+    if (source) {
+      return sanitizeSegment(source, `AZS_${safeAzsIdSegment}`);
+    }
+    return sanitizeSegment(`AZS_${safeAzsIdSegment}`, `AZS_${safeAzsIdSegment}`);
+  })();
+
   const values = {
     '{yyyy}': String(date.getUTCFullYear()),
     '{mm}': pad2(date.getUTCMonth() + 1),
     '{dd}': pad2(date.getUTCDate()),
     '{yyyy-mm}': `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}`,
-    '{azs}': sanitizeSegment(azsId, 'AZS')
+    '{azs}': safeAzsIdSegment,
+    '{azs_name}': safeAzsNameSegment
   };
 
   let pathValue = folderNameTemplate;
@@ -271,6 +282,7 @@ export const ensureRootFolder = async (diskApi, {
 export const uploadPhoto = async (diskApi, {
   rootFolderId,
   azsId,
+  azsName,
   slotDate,
   slotHHmm,
   photoCode,
@@ -292,7 +304,7 @@ export const uploadPhoto = async (diskApi, {
     ? new Date(`${String(slotDate).trim()}T00:00:00.000Z`)
     : capturedAt;
 
-  const folderPath = buildFolderPath({ capturedAt: folderDate, azsId, folderNameTemplate });
+  const folderPath = buildFolderPath({ capturedAt: folderDate, azsId, azsName, folderNameTemplate });
   const targetFolderId = await ensureFolderPath(diskApi, { rootFolderId, path: folderPath }, context);
   const fileName = buildPhotoFileName({ azsId, slotDate, slotHHmm, requiredTitle, photoCode, originalName, mimeType });
   const uploaded = await uploadFileReplacingDuplicate(diskApi, {
@@ -305,7 +317,9 @@ export const uploadPhoto = async (diskApi, {
     folderId: targetFolderId,
     folderPath,
     fileName,
-    fileId: uploaded?.id ?? null,
+    // fileId in our domain is the CRM file id (b_file.ID), not disk object id.
+    fileId: uploaded?.crmFileId ?? null,
+    diskObjectId: uploaded?.diskObjectId ?? null,
     uploadResult: uploaded ?? null
   };
 };

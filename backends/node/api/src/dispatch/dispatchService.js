@@ -51,6 +51,33 @@ const parseSlotDateTimeUtc = ({ slotDate, slotHHmm }) => {
 
 const addMinutes = (dateValue, minutes) => new Date(new Date(dateValue).getTime() + (Number(minutes) * MINUTES_TO_MS));
 
+const parseCrmItemId = (value) => {
+  const direct = Number(value);
+  if (Number.isFinite(direct) && direct > 0) {
+    return Math.floor(direct);
+  }
+  const match = String(value || '').match(/(\d+)$/);
+  const parsed = Number(match?.[1] || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+};
+
+const resolveAzsTitle = async ({ bitrixClient, settings, azsId, context = {} }) => {
+  const parsedId = parseCrmItemId(azsId);
+  const fallback = `АЗС ${parsedId || String(azsId || '').trim() || '?'}`.trim();
+  const entityTypeId = Number(settings?.azs?.entityTypeId || 0);
+  if (!parsedId || !entityTypeId || typeof bitrixClient?.getCrmItem !== 'function') {
+    return fallback;
+  }
+
+  try {
+    const item = await bitrixClient.getCrmItem({ entityTypeId, id: parsedId, context });
+    const title = String(item?.title ?? item?.TITLE ?? '').trim();
+    return title || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
 const buildReportFields = ({ settings, candidate, slotHHmm, scheduledAt, deadlineAt, trigger }) => {
   const fieldsMap = settings.report?.fields || {};
   const mappedFields = {
@@ -157,9 +184,16 @@ export const createDispatchService = ({
       });
 
       try {
+        const azsTitle = await resolveAzsTitle({
+          bitrixClient,
+          settings,
+          azsId: candidate.azsId,
+          context
+        });
         await notificationService.notifyDispatch({
           userId: Number(candidate.adminUserId),
           azsId: candidate.azsId,
+          azsTitle,
           deadlineAt,
           timezone: settings.timezone,
           context

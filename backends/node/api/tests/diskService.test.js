@@ -75,7 +75,7 @@ const createDiskApiFake = ({ uploadBehaviors = [] } = {}) => {
 
       seq += 1;
       files.set(key, seq);
-      return { id: seq, fileName };
+      return { diskObjectId: seq, crmFileId: seq + 100000, fileName };
     }
   };
 };
@@ -87,7 +87,18 @@ test('buildFolderPath uses default YYYY-MM/DD/AZS pattern', () => {
     azsName: 'АЗС 17'
   });
 
-  assert.equal(path, '2026-04/28/17');
+  assert.equal(path, '2026-04/28/17_АЗС 17');
+});
+
+test('buildFolderPath supports {azs_name} token with fallback when azsName is empty', () => {
+  const path = buildFolderPath({
+    capturedAt: new Date('2026-04-28T10:30:45.000Z'),
+    azsId: '17',
+    azsName: '',
+    folderNameTemplate: '{yyyy-mm}/{dd}/{azs}_{azs_name}'
+  });
+
+  assert.equal(path, '2026-04/28/17_AZS_17');
 });
 
 test('buildPhotoFileName creates AZS/date/time/category filename', () => {
@@ -214,16 +225,18 @@ test('uploadPhoto creates folder path and uploads file with required pattern', a
     content: Buffer.from('mock-image')
   });
 
-  assert.equal(result.folderPath, '2026-05/28/4');
+  assert.equal(result.folderPath, '2026-05/28/4_АЗС 4');
   assert.equal(result.fileName, '4_2026-05-28_0930_Колонки.jpg');
   assert.equal(diskApi.uploads.length, 1);
   assert.equal(diskApi.deletedFileIds.length, 0);
   assert.equal(diskApi.uploads[0].fileName, result.fileName);
+  assert.ok(Number(result.fileId) > 0);
+  assert.ok(Number(result.diskObjectId) > 0);
 });
 
 test('uploadPhoto marks existing duplicate file as deleted before upload', async () => {
   const diskApi = createDiskApiFake();
-  const expectedFolderPath = '2026-05/28/4';
+  const expectedFolderPath = '2026-05/28/4_AZS_4';
   const expectedFileName = '4_2026-05-28_0930_Колонки.jpg';
   const folderId = await ensureFolderPath(diskApi, {
     rootFolderId: 10,

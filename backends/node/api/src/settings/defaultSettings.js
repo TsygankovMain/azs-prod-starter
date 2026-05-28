@@ -40,7 +40,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   },
   disk: {
     rootFolderId: 0,
-    folderNameTemplate: '{yyyy-mm}/{dd}/{azs}'
+    folderNameTemplate: '{yyyy-mm}/{dd}/{azs}_{azs_name}'
   },
   timezone: 'Europe/Moscow',
   access: {

@@ -5,7 +5,9 @@ import mysql from 'mysql2/promise';
 import jwt from 'jsonwebtoken';
 import { createVerifyToken } from './utils/verifyToken.js';
 import createSettingsRouter from './src/settings/settingsRoutes.js';
-import { createFileSettingsStore } from './src/settings/fileSettingsStore.js';
+import createDatabaseSettingsStore from './src/settings/databaseSettingsStore.js';
+import createBitrixAppSettingsStore from './src/settings/bitrixAppSettingsStore.js';
+import createCompositeSettingsStore from './src/settings/compositeSettingsStore.js';
 import createDispatchLogStore from './src/dispatch/dispatchLogStore.js';
 import createBitrixRestClient from './src/dispatch/bitrixRestClient.js';
 import createDispatchService from './src/dispatch/dispatchService.js';
@@ -150,9 +152,9 @@ const ensureRestAppUriPlacement = async ({
   };
 };
 
-const settingsStore = createFileSettingsStore();
 const dispatchLogStore = createDispatchLogStore({ pool, dbType });
 const reportsStore = createReportsStore({ pool, dbType });
+const dbSettingsStore = createDatabaseSettingsStore({ pool, dbType });
 const authContextStore = createAuthContextStore();
 const bitrixClient = createBitrixRestClient({
   onTokenRefreshed: async (context) => {
@@ -178,6 +180,24 @@ const bitrixClient = createBitrixRestClient({
       // pre-refresh scheduler can track 30-day TTL accurately.
       refreshTokenIssuedAt: new Date().toISOString()
     });
+  }
+});
+const bitrixSettingsStore = createBitrixAppSettingsStore({
+  bitrixClient,
+  optionKey: process.env.BITRIX_APP_SETTINGS_OPTION_KEY || 'azs_photo_report_settings_v1'
+});
+const settingsStore = createCompositeSettingsStore({
+  bitrixStore: bitrixSettingsStore,
+  dbStore: dbSettingsStore,
+  getDefaultContext: async () => {
+    const entry = await authContextStore.getLastAdminContext();
+    if (!entry?.context) {
+      return {};
+    }
+    return {
+      key: entry.key,
+      ...entry.context
+    };
   }
 });
 const botRegistryService = createBotRegistryService({ bitrixClient });
@@ -208,7 +228,9 @@ const dispatchService = createDispatchService({
 const verifyToken = createVerifyToken({ authContextStore });
 const attachAccessContext = async (req, res, next) => {
   try {
-    const settings = await settingsStore.read();
+    const settings = await settingsStore.read({
+      context: req.bitrixContext || {}
+    });
     const context = resolveAccessContext({
       userId: Number(req.user?.user_id || req.user?.id || 0),
       isPortalAdmin: Boolean(req.bitrixContext?.isAdmin),
@@ -510,6 +532,14 @@ dispatchLogStore.ensureSchema()
   })
   .catch((error) => {
     console.error('Failed to prepare dispatch_log schema', error);
+  });
+
+settingsStore.ensureSchema()
+  .then(() => {
+    console.log('app_settings schema is ready');
+  })
+  .catch((error) => {
+    console.error('Failed to prepare app_settings schema', error);
   });
 
 reportsStore.ensurePhotoSchema()

@@ -8,6 +8,16 @@ const normalizeLimit = (value) => {
   return Math.min(Math.floor(n), 500);
 };
 
+const parseCrmItemId = (value) => {
+  const direct = Number(value);
+  if (Number.isFinite(direct) && direct > 0) {
+    return Math.floor(direct);
+  }
+  const match = String(value || '').match(/(\d+)$/);
+  const parsed = Number(match?.[1] || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+};
+
 export const createTimeoutWatcher = ({
   reportsStore,
   bitrixClient,
@@ -32,6 +42,34 @@ export const createTimeoutWatcher = ({
     let notified = 0;
     let skipped = 0;
     const settings = settingsStore ? await settingsStore.read() : {};
+    const azsEntityTypeId = Number(settings?.azs?.entityTypeId || 0);
+    const azsTitleCache = new Map();
+
+    const resolveAzsTitle = async (azsId) => {
+      const parsedId = parseCrmItemId(azsId);
+      const fallback = `АЗС ${parsedId || String(azsId || '').trim() || '?'}`.trim();
+      if (!parsedId || !azsEntityTypeId || typeof bitrixClient?.getCrmItem !== 'function') {
+        return fallback;
+      }
+      if (azsTitleCache.has(parsedId)) {
+        return azsTitleCache.get(parsedId);
+      }
+      const promise = (async () => {
+        try {
+          const item = await bitrixClient.getCrmItem({
+            entityTypeId: azsEntityTypeId,
+            id: parsedId,
+            context
+          });
+          const title = String(item?.title ?? item?.TITLE ?? '').trim();
+          return title || fallback;
+        } catch {
+          return fallback;
+        }
+      })();
+      azsTitleCache.set(parsedId, promise);
+      return promise;
+    };
 
     for (const report of candidates) {
       if (report.status === 'done' || report.status === 'expired') {
@@ -55,9 +93,11 @@ export const createTimeoutWatcher = ({
         expired += 1;
 
         if (reviewerUserId > 0) {
+          const azsTitle = await resolveAzsTitle(report.azsId);
           await notificationService.notifyReportExpired({
             userId: reviewerUserId,
             azsId: report.azsId,
+            azsTitle,
             deadlineAt: report.deadlineAt,
             timezone: settings.timezone,
             context

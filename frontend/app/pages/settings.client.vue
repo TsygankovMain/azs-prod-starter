@@ -189,7 +189,7 @@ function makeEmptySettings(): SettingsTree {
     },
     disk: {
       rootFolderId: 0,
-      folderNameTemplate: '{yyyy-mm}/{dd}/{azs}'
+      folderNameTemplate: '{yyyy-mm}/{dd}/{azs}_{azs_name}'
     },
     timezone: 'Europe/Moscow',
     access: {
@@ -326,7 +326,7 @@ function normalizeSettings(
     ? normalized.report.dispatchTimes.map((item) => String(item || '').trim()).filter(Boolean)
     : []
   normalized.disk.rootFolderId = toPositiveInt(normalized.disk.rootFolderId, 0, 0)
-  normalized.disk.folderNameTemplate = String(normalized.disk.folderNameTemplate || '').trim() || '{yyyy-mm}/{dd}/{azs}'
+  normalized.disk.folderNameTemplate = String(normalized.disk.folderNameTemplate || '').trim() || '{yyyy-mm}/{dd}/{azs}_{azs_name}'
   normalized.access = {
     adminUserIds: normalizeUserIdList(normalized.access?.adminUserIds),
     reviewerUserIds: normalizeUserIdList(normalized.access?.reviewerUserIds),
@@ -400,7 +400,7 @@ function readSettings(): SettingsTree {
     },
     disk: {
       rootFolderId: Number(form.disk.rootFolderId || 0),
-      folderNameTemplate: String(form.disk.folderNameTemplate || '').trim() || '{yyyy-mm}/{dd}/{azs}'
+      folderNameTemplate: String(form.disk.folderNameTemplate || '').trim() || '{yyyy-mm}/{dd}/{azs}_{azs_name}'
     },
     timezone: form.timezone,
     access: {
@@ -1224,7 +1224,7 @@ onUnmounted(() => {
             <B24Input
               v-model="form.disk.folderNameTemplate"
               class="w-full"
-              placeholder="{azs} / {date}"
+              placeholder="{yyyy-mm}/{dd}/{azs}_{azs_name}"
               :disabled="!isAdminReady"
             />
           </B24FormField>

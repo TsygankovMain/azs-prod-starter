@@ -89,6 +89,60 @@ const parseCrmItemId = (value) => {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 };
 
+const createAzsTitleResolver = ({ bitrixClient, settings, context = {} }) => {
+  const entityTypeId = Number(settings?.azs?.entityTypeId || 0);
+  const cache = new Map();
+
+  const resolveOne = async (azsId) => {
+    const key = String(azsId ?? '').trim();
+    const parsedId = parseCrmItemId(key);
+    const fallback = `АЗС ${parsedId || key || '?'}`.trim();
+    if (!parsedId || !entityTypeId) {
+      return fallback;
+    }
+
+    if (cache.has(parsedId)) {
+      return cache.get(parsedId);
+    }
+
+    const promise = (async () => {
+      try {
+        if (typeof bitrixClient?.getCrmItem === 'function') {
+          const item = await bitrixClient.getCrmItem({
+            entityTypeId,
+            id: parsedId,
+            context
+          });
+          const title = String(item?.title ?? item?.TITLE ?? '').trim();
+          return title || fallback;
+        }
+
+        if (typeof bitrixClient?.listCrmItems === 'function') {
+          const rows = await bitrixClient.listCrmItems({
+            entityTypeId,
+            select: ['id', 'ID', 'title', 'TITLE'],
+            filter: { id: parsedId },
+            limit: 1,
+            useOriginalUfNames: 'N',
+            context
+          });
+          const row = Array.isArray(rows) ? rows[0] : null;
+          const title = String(row?.title ?? row?.TITLE ?? '').trim();
+          return title || fallback;
+        }
+      } catch {
+        // ignore and fallback
+      }
+      return fallback;
+    })();
+
+    cache.set(parsedId, promise);
+    return promise;
+  };
+
+  return resolveOne;
+};
+
 const extractMultipleIds = (value) => {
   if (Array.isArray(value)) {
     return value.flatMap(extractMultipleIds);
@@ -471,6 +525,9 @@ export const createReportsRouter = ({
     }
 
     try {
+      const settings = await settingsStore.read();
+      const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
+
       const items = await reportsStore.list({
         dateFrom: normalizeDateFilter(req.query.dateFrom),
         dateTo: normalizeDateFilter(req.query.dateTo),
@@ -479,9 +536,14 @@ export const createReportsRouter = ({
         limit: normalizeLimit(req.query.limit)
       });
 
+      const decorated = await Promise.all(items.map(async (item) => ({
+        ...item,
+        azsTitle: await resolveAzsTitle(item.azsId)
+      })));
+
       return res.json({
-        items,
-        total: items.length
+        items: decorated,
+        total: decorated.length
       });
     } catch (error) {
       return res.status(500).json({
@@ -600,15 +662,21 @@ export const createReportsRouter = ({
         });
       }
 
+      const settings = await settingsStore.read();
+      const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
       const items = await reportsStore.listActiveByAdminUserId({
         adminUserId: currentUserId,
         limit: normalizeLimit(req.query.limit)
       });
+      const decorated = await Promise.all(items.map(async (item) => ({
+        ...item,
+        azsTitle: await resolveAzsTitle(item.azsId)
+      })));
 
       return res.json({
-        item: items[0] || null,
-        items,
-        total: items.length
+        item: decorated[0] || null,
+        items: decorated,
+        total: decorated.length
       });
     } catch (error) {
       return res.status(500).json({
@@ -643,6 +711,7 @@ export const createReportsRouter = ({
       }
 
       const settings = await settingsStore.read();
+      const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
       const [photos, requiredPhotos] = await Promise.all([
         reportsStore.listPhotos(id),
         readRequiredPhotos({
@@ -652,7 +721,8 @@ export const createReportsRouter = ({
           context: req.bitrixContext || {}
         })
       ]);
-      return res.json({ item, photos, requiredPhotos });
+      const azsTitle = await resolveAzsTitle(item.azsId);
+      return res.json({ item: { ...item, azsTitle }, photos, requiredPhotos });
     } catch (error) {
       const statusCode = Number(error?.statusCode || 500);
       return res.status(statusCode).json({
@@ -765,6 +835,8 @@ export const createReportsRouter = ({
         azsId: report.azsId,
         context: req.bitrixContext || {}
       });
+      const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
+      const azsTitle = await resolveAzsTitle(report.azsId);
       const requiredCodes = requiredPhotos.map((item) => item.code);
       if (!requiredCodes.includes(photoCode)) {
         return res.status(400).json({
@@ -799,6 +871,7 @@ export const createReportsRouter = ({
       const uploaded = await uploadPhoto(bitrixClient.diskApi, {
         rootFolderId,
         azsId: report.azsId,
+        azsName: azsTitle,
         slotDate,
         slotHHmm,
         photoCode,
@@ -807,7 +880,7 @@ export const createReportsRouter = ({
         mimeType: file.mimetype,
         capturedAt: exifValidation.exifAt || new Date(),
         content: file.buffer,
-        folderNameTemplate: settings.disk?.folderNameTemplate || '{yyyy-mm}/{dd}/{azs}'
+        folderNameTemplate: settings.disk?.folderNameTemplate || '{yyyy-mm}/{dd}/{azs}_{azs_name}'
       }, diskContext);
 
       await reportsStore.upsertPhoto({
@@ -858,6 +931,7 @@ export const createReportsRouter = ({
           reportId,
           photoCode,
           fileId: uploaded.fileId,
+          diskObjectId: uploaded.diskObjectId,
           fileName: uploaded.fileName,
           folderId: uploaded.folderId,
           status: nextStatus,
@@ -973,9 +1047,12 @@ export const createReportsRouter = ({
 
       const reviewerId = Number(process.env.REPORT_REVIEWER_USER_ID || 0);
       if (reviewerId > 0) {
+        const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
+        const azsTitle = await resolveAzsTitle(report.azsId);
         await notificationService.notifyReportDone({
           userId: reviewerId,
           azsId: report.azsId,
+          azsTitle,
           context: req.bitrixContext || {}
         });
       }

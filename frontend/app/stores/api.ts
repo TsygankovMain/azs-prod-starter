@@ -7,6 +7,7 @@ type ReportRow = {
   id: number
   slotKey: string
   azsId: string
+  azsTitle?: string | null
   adminUserId: number
   status: string
   reportItemId: number | null

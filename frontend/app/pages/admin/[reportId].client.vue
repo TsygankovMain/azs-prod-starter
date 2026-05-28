@@ -5,6 +5,7 @@ type ReportRow = {
   id: number
   slotKey: string
   azsId: string
+  azsTitle?: string | null
   adminUserId: number
   status: string
   reportItemId: number | null
@@ -65,6 +66,65 @@ const currentSlotIndex = computed(() => {
   const index = photoSlots.findIndex((slot) => !slot.confirmed)
   return index >= 0 ? index : photoSlots.length
 })
+const activeSlot = computed(() => {
+  const index = currentSlotIndex.value
+  return index >= 0 && index < photoSlots.length ? photoSlots[index] : null
+})
+const activeSlotNumber = computed(() => {
+  if (!activeSlot.value) return 0
+  return currentSlotIndex.value + 1
+})
+
+const formatAzsLabel = (row: ReportRow): string => {
+  const title = String(row.azsTitle || '').trim()
+  return title || `АЗС ${String(row.azsId || '').trim() || '—'}`
+}
+
+const formatSlotKeyLabel = (slotKey: string): string => {
+  const key = String(slotKey || '').trim()
+  if (!key) return '—'
+
+  // Main backend formats:
+  // - YYYY-MM-DD:HHmm
+  // - manual:YYYY-MM-DD:HHmm
+  // Legacy format:
+  // - YYYY-MM-DD_HHmm
+  const normalized = key.startsWith('manual:') ? key.slice('manual:'.length) : key
+  const m = normalized.match(/^(\d{4})-(\d{2})-(\d{2})[:_](\d{2})(\d{2})$/)
+  if (m) {
+    const [, y, mo, d, hh, mm] = m
+    return `${d}.${mo}.${y} ${hh}:${mm}`
+  }
+
+  const dt = new Date(key)
+  if (!Number.isNaN(dt.getTime())) {
+    const fmt = new Intl.DateTimeFormat('ru-RU', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+    // "dd.mm.yyyy, hh:mm" -> "dd.mm.yyyy hh:mm"
+    return fmt.format(dt).replace(',', '')
+  }
+
+  return key
+}
+
+const formatReportStatusLabel = (status: string): string => {
+  const s = String(status || '').trim()
+  if (s === 'done') return 'Сдан'
+  if (s === 'in_progress') return 'В работе'
+  if (s === 'expired') return 'Не сдан'
+  if (s === 'failed') return 'Ошибка'
+  if (!s || s === 'new') return 'Запланирован'
+  return s
+}
+
+const reportAzsLabel = computed(() => (report.value ? formatAzsLabel(report.value) : '—'))
+const reportSlotKeyLabel = computed(() => (report.value ? formatSlotKeyLabel(report.value.slotKey) : '—'))
+const reportStatusLabel = computed(() => (report.value ? formatReportStatusLabel(report.value.status) : '—'))
 const canSubmitReport = computed(() => (
   allConfirmed.value
   && allUploaded.value
@@ -140,8 +200,6 @@ const safePlayVideo = async (videoEl: HTMLVideoElement | null) => {
 
 const startCameraForSlot = async (slot: SlotState) => {
   slot.error = ''
-  saveError.value = ''
-  saveSuccess.value = ''
   cameraError.value = ''
   cameraBusy.value = true
 
@@ -323,7 +381,11 @@ const acceptSlotPhoto = (slot: SlotState) => {
   slot.confirmed = true
   slot.uploaded = false
   slot.error = ''
+  // Fire-and-forget upload. UI must immediately move to the next slot.
   void uploadSlotFile(slot, slot.file)
+
+  // If the current active slot was confirmed, automatically open the camera for the next one.
+  void Promise.resolve().then(() => ensureCameraForActiveSlot())
 }
 
 const retakeSlotPhoto = async (slot: SlotState) => {
@@ -343,6 +405,39 @@ const retrySlotUpload = (slot: SlotState) => {
   }
   slot.error = ''
   void uploadSlotFile(slot, slot.file)
+}
+
+const openCameraForActiveSlot = async () => {
+  const slot = activeSlot.value
+  if (!slot) {
+    closeCamera()
+    return
+  }
+  await startCameraForSlot(slot)
+}
+
+const ensureCameraForActiveSlot = async () => {
+  const slot = activeSlot.value
+  if (!slot) {
+    closeCamera()
+    return
+  }
+
+  // Don't auto-open while user is reviewing a captured preview.
+  if (slot.previewUrl) {
+    return
+  }
+
+  // Don't interrupt manual camera usage for a different slot.
+  if (activeCameraSlotKey.value && activeCameraSlotKey.value !== slot.key) {
+    return
+  }
+
+  if (activeCameraSlotKey.value === slot.key && cameraStream.value) {
+    return
+  }
+
+  await startCameraForSlot(slot)
 }
 
 const submitReport = async () => {
@@ -392,9 +487,16 @@ onMounted(async () => {
     await initApp($b24, localesI18n, setLocale)
     await $b24.parent.setTitle(PAGE_TITLE)
     await loadReport()
+    await nextTick()
+    await ensureCameraForActiveSlot()
   } catch (error) {
     processErrorGlobal(error)
   }
+})
+
+watch(currentSlotIndex, () => {
+  // Move forward automatically, without requiring scroll/swipe.
+  void ensureCameraForActiveSlot()
 })
 
 onBeforeUnmount(() => {
@@ -485,96 +587,95 @@ onBeforeUnmount(() => {
         <ProseH3>Отчёт #{{ report.id }}</ProseH3>
       </template>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-        <B24Badge color="air-secondary">АЗС: {{ report.azsId }}</B24Badge>
-        <B24Badge color="air-secondary">Слот: {{ report.slotKey }}</B24Badge>
-        <B24Badge color="air-secondary">Статус: {{ report.status }}</B24Badge>
+        <B24Badge color="air-secondary">АЗС: {{ reportAzsLabel }}</B24Badge>
+        <B24Badge color="air-secondary">Слот: {{ reportSlotKeyLabel }}</B24Badge>
+        <B24Badge color="air-secondary">Статус: {{ reportStatusLabel }}</B24Badge>
         <B24Badge color="air-secondary">Дедлайн: {{ report.deadlineAt || '—' }}</B24Badge>
       </div>
     </B24Card>
 
-    <B24Card
-      v-for="(slot, index) in photoSlots"
-      :key="slot.key"
-      variant="outline"
-      :class="index > currentSlotIndex ? 'opacity-60' : ''"
-    >
+    <B24Card v-if="activeSlot" variant="outline">
       <template #header>
-        <div class="flex items-center justify-between">
+        <div class="flex items-center justify-between gap-3">
           <div>
-            <ProseH3>{{ index + 1 }}. {{ slot.title }}</ProseH3>
-            <ProseP v-if="index > currentSlotIndex" class="mb-0 text-[13px] text-gray-500">
-              Откроется после предыдущего фото
+            <ProseH3>Слот {{ activeSlotNumber }}/{{ photoSlots.length }}: {{ activeSlot.title }}</ProseH3>
+            <ProseP class="mb-0 text-[13px] text-gray-500">
+              Подтвердите фото, после этого загрузка пойдёт в фоне, а камера автоматически откроется для следующего слота.
             </ProseP>
           </div>
-          <B24Badge :color="slot.uploaded ? 'air-primary-success' : (slot.error ? 'air-primary-alert' : 'air-secondary')">
-            {{ slot.uploading ? 'загрузка...' : (slot.uploaded ? 'загружено' : (slot.confirmed ? 'ожидает загрузки' : 'ожидает фото')) }}
+          <B24Badge :color="activeSlot.uploaded ? 'air-primary-success' : (activeSlot.error ? 'air-primary-alert' : 'air-secondary')">
+            {{
+              activeSlot.uploading ? 'загрузка...' :
+              (activeSlot.uploaded ? 'загружено' : (activeSlot.confirmed ? 'ожидает загрузки' : 'ожидает фото'))
+            }}
           </B24Badge>
         </div>
       </template>
 
       <div class="space-y-2">
         <div
-          v-if="slot.previewUrl"
+          v-if="activeSlot.previewUrl"
           class="rounded overflow-hidden bg-black"
         >
           <img
-            :src="slot.previewUrl"
-            :alt="slot.title"
+            :src="activeSlot.previewUrl"
+            :alt="activeSlot.title"
             class="w-full max-h-[420px] object-contain"
           >
         </div>
 
         <div class="flex flex-wrap gap-2">
           <B24Button
-            v-if="index <= currentSlotIndex && !slot.previewUrl && !slot.confirmed"
+            v-if="!activeSlot.previewUrl && !activeSlot.confirmed"
             color="air-primary"
-            :label="activeCameraSlotKey === slot.key ? 'Камера активна' : 'Открыть камеру'"
-            :disabled="slot.uploading || cameraBusy || index > currentSlotIndex"
+            :label="activeCameraSlotKey === activeSlot.key ? 'Камера активна' : 'Открыть камеру'"
+            :disabled="activeSlot.uploading || cameraBusy"
             loading-auto
-            @click="startCameraForSlot(slot)"
+            @click="openCameraForActiveSlot"
           />
           <B24Button
-            v-if="activeCameraSlotKey === slot.key"
+            v-if="activeCameraSlotKey === activeSlot.key"
             color="air-primary-success"
             label="Сделать фото"
-            :disabled="slot.uploading"
+            :disabled="activeSlot.uploading"
             loading-auto
-            @click="captureSlotPreview(slot)"
+            @click="captureSlotPreview(activeSlot)"
           />
           <B24Button
-            v-if="activeCameraSlotKey === slot.key"
+            v-if="activeCameraSlotKey === activeSlot.key"
             color="air-secondary"
             label="Закрыть камеру"
-            :disabled="slot.uploading"
+            :disabled="activeSlot.uploading"
             loading-auto
             @click="closeCamera"
           />
           <B24Button
-            v-if="slot.previewUrl && !slot.confirmed"
+            v-if="activeSlot.previewUrl && !activeSlot.confirmed"
             color="air-primary-success"
             label="Использовать фото"
-            :disabled="slot.uploading"
+            :disabled="activeSlot.uploading"
             loading-auto
-            @click="acceptSlotPhoto(slot)"
+            @click="acceptSlotPhoto(activeSlot)"
           />
           <B24Button
-            v-if="slot.previewUrl && !slot.uploaded"
+            v-if="activeSlot.previewUrl && !activeSlot.uploaded"
             color="air-secondary"
             label="Переснять"
-            :disabled="slot.uploading || cameraBusy"
+            :disabled="activeSlot.uploading || cameraBusy"
             loading-auto
-            @click="retakeSlotPhoto(slot)"
+            @click="retakeSlotPhoto(activeSlot)"
           />
           <B24Button
-            v-if="slot.error && slot.confirmed && !slot.uploaded"
+            v-if="activeSlot.error && activeSlot.confirmed && !activeSlot.uploaded"
             color="air-primary"
             label="Повторить загрузку"
-            :disabled="slot.uploading"
+            :disabled="activeSlot.uploading"
             loading-auto
-            @click="retrySlotUpload(slot)"
+            @click="retrySlotUpload(activeSlot)"
           />
         </div>
-        <div v-if="activeCameraSlotKey === slot.key" class="rounded overflow-hidden bg-black">
+
+        <div v-if="activeCameraSlotKey === activeSlot.key" class="rounded overflow-hidden bg-black">
           <video
             :ref="setCameraVideoRef"
             class="w-full max-h-[420px] object-cover"
@@ -584,24 +685,87 @@ onBeforeUnmount(() => {
           />
         </div>
         <B24Alert
-          v-if="isCameraOpen && activeCameraSlotKey === slot.key"
+          v-if="isCameraOpen && activeCameraSlotKey === activeSlot.key"
           color="air-secondary"
           title="Режим камеры"
           description="Фото берётся только с камеры, выбор файла из галереи отключен в интерфейсе приложения."
         />
         <B24Alert
-          v-if="cameraError && activeCameraSlotKey === slot.key"
+          v-if="cameraError && activeCameraSlotKey === activeSlot.key"
           color="air-primary-alert"
           title="Ошибка камеры"
           :description="cameraError"
         />
-        <ProseP v-if="slot.fileName" class="text-[13px]">Файл: {{ slot.fileName }}</ProseP>
+        <ProseP v-if="activeSlot.fileName" class="text-[13px]">Файл: {{ activeSlot.fileName }}</ProseP>
         <B24Alert
-          v-if="slot.error"
+          v-if="activeSlot.error"
           color="air-primary-alert"
           title="Ошибка файла"
-          :description="slot.error"
+          :description="activeSlot.error"
         />
+      </div>
+    </B24Card>
+
+    <B24Card v-if="photoSlots.length > 0" variant="outline">
+      <template #header>
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <ProseH3>Очередь и история</ProseH3>
+            <ProseP class="mb-0 text-[13px] text-gray-500">
+              Активный слот всегда один. Предыдущие слоты можно переснять или повторить загрузку.
+            </ProseP>
+          </div>
+          <B24Badge :color="allUploaded ? 'air-primary-success' : 'air-secondary'">
+            {{ uploadedCount }}/{{ photoSlots.length }} загружено
+          </B24Badge>
+        </div>
+      </template>
+
+      <div class="space-y-2">
+        <div
+          v-for="(slot, index) in photoSlots"
+          :key="slot.key"
+          class="flex flex-col gap-2 rounded border border-gray-100 p-3"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <ProseP class="mb-0 font-medium">
+                {{ index + 1 }}. {{ slot.title }}
+              </ProseP>
+              <ProseP class="mb-0 text-[13px] text-gray-500">
+                {{
+                  index === currentSlotIndex ? 'Активный слот' :
+                  index < currentSlotIndex ? 'Завершён (можно переснять)' :
+                  'В очереди'
+                }}
+              </ProseP>
+            </div>
+            <B24Badge :color="slot.uploaded ? 'air-primary-success' : (slot.error ? 'air-primary-alert' : 'air-secondary')">
+              {{
+                slot.uploading ? 'загрузка...' :
+                (slot.uploaded ? 'загружено' : (slot.confirmed ? 'ожидает загрузки' : 'ожидает фото'))
+              }}
+            </B24Badge>
+          </div>
+
+          <div v-if="index < currentSlotIndex" class="flex flex-wrap gap-2">
+            <B24Button
+              color="air-secondary"
+              label="Переснять"
+              :disabled="slot.uploading || cameraBusy"
+              loading-auto
+              @click="retakeSlotPhoto(slot)"
+            />
+            <B24Button
+              v-if="slot.error && slot.confirmed && !slot.uploaded"
+              color="air-primary"
+              label="Повторить загрузку"
+              :disabled="slot.uploading"
+              loading-auto
+              @click="retrySlotUpload(slot)"
+            />
+          </div>
+        </div>
       </div>
     </B24Card>
 

@@ -237,6 +237,93 @@ test('bitrix client throws clear error when refresh token is missing', async () 
   }
 });
 
+test('diskApi.uploadFile returns diskObjectId and crmFileId when Bitrix response includes FILE_ID', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+
+  global.fetch = async (url) => {
+    calls.push(String(url));
+    if (String(url).includes('/disk.folder.uploadfile.json')) {
+      return createJsonResponse({
+        result: {
+          ID: '901',
+          FILE_ID: '1901'
+        }
+      });
+    }
+    throw new Error(`Unexpected URL in test fetch mock: ${url}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://test.bitrix24.ru/rest',
+      authId: 'token',
+      logger: { info() {}, error() {} }
+    });
+
+    const uploaded = await client.diskApi.uploadFile(10, {
+      fileName: 'photo.jpg',
+      content: Buffer.from('mock')
+    });
+
+    assert.deepEqual(uploaded, {
+      diskObjectId: 901,
+      crmFileId: 1901,
+      fileName: 'photo.jpg'
+    });
+    assert.equal(calls.filter((u) => u.includes('/disk.file.get.json')).length, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('diskApi.uploadFile falls back to disk.file.get when FILE_ID is missing', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+
+  global.fetch = async (url) => {
+    calls.push(String(url));
+    if (String(url).includes('/disk.folder.uploadfile.json')) {
+      return createJsonResponse({
+        result: {
+          ID: '902'
+          // FILE_ID omitted
+        }
+      });
+    }
+    if (String(url).includes('/disk.file.get.json')) {
+      return createJsonResponse({
+        result: {
+          FILE_ID: '1902'
+        }
+      });
+    }
+    throw new Error(`Unexpected URL in test fetch mock: ${url}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://test.bitrix24.ru/rest',
+      authId: 'token',
+      logger: { info() {}, error() {} }
+    });
+
+    const uploaded = await client.diskApi.uploadFile(10, {
+      fileName: 'photo2.jpg',
+      content: Buffer.from('mock')
+    });
+
+    assert.deepEqual(uploaded, {
+      diskObjectId: 902,
+      crmFileId: 1902,
+      fileName: 'photo2.jpg'
+    });
+    assert.equal(calls.filter((u) => u.includes('/disk.file.get.json')).length, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('listCrmItems paginates past 50 items using top-level next cursor', async () => {
   const originalFetch = global.fetch;
   const calls = [];

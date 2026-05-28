@@ -2,15 +2,6 @@ import express from 'express';
 import { createFileSettingsStore } from './fileSettingsStore.js';
 import { DEFAULT_SETTINGS, deepMerge, normalizeSettings, SettingsValidationError } from './defaultSettings.js';
 
-const BITRIX_STORAGE_NOT_IMPLEMENTED = 'APP_SETTINGS_STORAGE=bitrix is not implemented yet. Direct Bitrix24 app.option storage will be added after install token persistence is available.';
-
-const getStorageType = () => (process.env.APP_SETTINGS_STORAGE || 'file').toLowerCase();
-
-const sendBitrixStorageNotImplemented = (res) => res.status(501).json({
-  error: 'settings_storage_not_implemented',
-  message: BITRIX_STORAGE_NOT_IMPLEMENTED
-});
-
 const handleSettingsError = (res, error) => {
   if (error instanceof SettingsValidationError) {
     return res.status(error.statusCode).json({
@@ -31,19 +22,10 @@ export const createSettingsRouter = ({ store = createFileSettingsStore() } = {})
   const router = express.Router();
 
   router.get('/', async (req, res) => {
-    if (getStorageType() === 'bitrix') {
-      return sendBitrixStorageNotImplemented(res);
-    }
-
-    if (getStorageType() !== 'file') {
-      return res.status(400).json({
-        error: 'unsupported_settings_storage',
-        message: 'APP_SETTINGS_STORAGE must be file or bitrix'
-      });
-    }
-
     try {
-      const settings = await store.read();
+      const settings = await store.read({
+        context: req.bitrixContext || {}
+      });
       return res.json({
         settings,
         defaults: DEFAULT_SETTINGS
@@ -61,17 +43,6 @@ export const createSettingsRouter = ({ store = createFileSettingsStore() } = {})
       });
     }
 
-    if (getStorageType() === 'bitrix') {
-      return sendBitrixStorageNotImplemented(res);
-    }
-
-    if (getStorageType() !== 'file') {
-      return res.status(400).json({
-        error: 'unsupported_settings_storage',
-        message: 'APP_SETTINGS_STORAGE must be file or bitrix'
-      });
-    }
-
     try {
       const incoming = req.body?.settings;
       if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
@@ -81,11 +52,16 @@ export const createSettingsRouter = ({ store = createFileSettingsStore() } = {})
         });
       }
 
-      const currentSettings = await store.read();
+      const requestContext = req.bitrixContext || {};
+      const currentSettings = await store.read({
+        context: requestContext
+      });
       const nextSettings = normalizeSettings(deepMerge(currentSettings, incoming), {
         requireBitrixSyncFields: true
       });
-      const settings = await store.write(nextSettings);
+      const settings = await store.write(nextSettings, {
+        context: requestContext
+      });
 
       return res.json({ settings });
     } catch (error) {

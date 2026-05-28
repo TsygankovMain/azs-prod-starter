@@ -526,11 +526,24 @@ export const createBitrixRestClient = ({
           fileContent: base64
         }, context);
 
-        const fileId = parseId(result?.ID ?? result?.id);
-        if (!fileId) {
-          throw new Error('disk.folder.uploadfile response does not include file id');
+        const diskObjectId = parseId(result?.ID ?? result?.id);
+        if (!diskObjectId) {
+          throw new Error('disk.folder.uploadfile response does not include disk object id');
         }
-        return { id: fileId, fileName };
+
+        let crmFileId = parseId(result?.FILE_ID ?? result?.fileId ?? result?.file_id);
+        if (!crmFileId) {
+          // Bitrix occasionally omits FILE_ID in disk.folder.uploadfile response.
+          // Fallback: load disk object and extract its FILE_ID.
+          const diskObject = await call('disk.file.get', { id: Number(diskObjectId) }, context);
+          crmFileId = parseId(diskObject?.FILE_ID ?? diskObject?.fileId ?? diskObject?.file_id);
+        }
+
+        if (!crmFileId) {
+          throw new Error('disk.folder.uploadfile response does not include crm file id');
+        }
+
+        return { diskObjectId, crmFileId, fileName: String(fileName) };
       },
 
       async markFileDeleted(fileId, context = {}) {

@@ -23,10 +23,11 @@ const formatLocalTime = (iso, timezone) => {
   }
 };
 
-const buildDispatchMessage = ({ azsId, deadlineAt, timezone }) => {
+const buildDispatchMessage = ({ azsId, azsTitle, deadlineAt, timezone }) => {
   const deadline = formatLocalTime(deadlineAt, timezone);
+  const label = String(azsTitle || '').trim() || String(azsId || '').trim();
   const parts = [
-    `Время сделать фото-отчёт по АЗС ${String(azsId || '')}.`
+    `Время сделать фото-отчёт по АЗС ${label}.`
   ];
   if (deadline) {
     parts.push(`Сдать до ${deadline}.`);
@@ -36,7 +37,10 @@ const buildDispatchMessage = ({ azsId, deadlineAt, timezone }) => {
   return parts.join('\n');
 };
 
-const buildDoneMessage = ({ azsId }) => `Отчёт по АЗС ${String(azsId || '')} сдан и готов к проверке.`;
+const buildDoneMessage = ({ azsId, azsTitle }) => {
+  const label = String(azsTitle || '').trim() || String(azsId || '').trim();
+  return `Отчёт по АЗС ${label} сдан и готов к проверке.`;
+};
 
 const sendViaBot = async ({ bitrixClient, botId, userId, message, keyboard = null, context = {} }) => {
   if (typeof bitrixClient?.callMethod !== 'function') {
@@ -144,12 +148,14 @@ export const createNotificationService = ({
   const notifyDispatch = async ({
     userId,
     azsId,
+    azsTitle,
     deadlineAt,
     timezone,
     context = {}
   }) => {
     const message = buildDispatchMessage({
       azsId,
+      azsTitle,
       deadlineAt,
       timezone
     });
@@ -163,9 +169,10 @@ export const createNotificationService = ({
   const notifyReportDone = async ({
     userId,
     azsId,
+    azsTitle,
     context = {}
   }) => {
-    const message = buildDoneMessage({ azsId });
+    const message = buildDoneMessage({ azsId, azsTitle });
     return notify({
       userId,
       message,
@@ -173,10 +180,11 @@ export const createNotificationService = ({
     });
   };
 
-  const notifyReportExpired = async ({ userId, azsId, deadlineAt, timezone, context = {} }) => {
+  const notifyReportExpired = async ({ userId, azsId, azsTitle, deadlineAt, timezone, context = {} }) => {
     const deadline = formatLocalTime(deadlineAt, timezone);
+    const label = String(azsTitle || '').trim() || String(azsId || '').trim();
     const lines = [
-      `Отчёт по АЗС ${String(azsId || '')} не сдан вовремя.`
+      `Отчёт по АЗС ${label} не сдан вовремя.`
     ];
     if (deadline) {
       lines.push(`Срок сдачи был до ${deadline}.`);
