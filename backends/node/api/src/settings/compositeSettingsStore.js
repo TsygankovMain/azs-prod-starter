@@ -36,6 +36,7 @@ export const createCompositeSettingsStore = ({
       const context = await resolveContext(options);
 
       try {
+        // Source of truth: Bitrix app storage. Local DB is a warm fallback cache.
         const bitrixSettings = await bitrixStore.read({ context });
         if (bitrixSettings) {
           // Keep local DB in sync with the source-of-truth storage.
