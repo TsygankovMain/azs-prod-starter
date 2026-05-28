@@ -296,7 +296,8 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
   dispatchService,
   settingsStore,
   bitrixClient,
-  notificationService
+  notificationService,
+  authContextStore
 }));
 
 app.post('/api/install', async (req, res) => {

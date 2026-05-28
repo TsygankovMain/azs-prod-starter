@@ -238,7 +238,10 @@ const uploadSlotFile = async (slot: SlotState, file: File) => {
       file
     })
     slot.uploaded = true
-    slot.fileName = file.name
+    const backendFileName = typeof (response.item as Record<string, unknown>)?.fileName === 'string'
+      ? String((response.item as Record<string, unknown>).fileName)
+      : ''
+    slot.fileName = backendFileName || file.name
     const status = String((response.item as Record<string, unknown>).status || '')
     if (status === 'in_progress') {
       saveSuccess.value = 'Фото загружено в фоне.'

@@ -5,6 +5,8 @@ import {
   buildPhotoFileName,
   ensureFolderPath,
   ensureRootFolder,
+  isSupportedPhotoUpload,
+  resolvePhotoFileExtension,
   uploadPhoto
 } from '../src/disk/diskService.js';
 
@@ -42,21 +44,89 @@ const createDiskApiFake = () => {
 test('buildFolderPath uses default YYYY-MM/DD/AZS pattern', () => {
   const path = buildFolderPath({
     capturedAt: new Date('2026-04-28T10:30:45.000Z'),
+    azsId: '17',
     azsName: 'АЗС 17'
   });
 
-  assert.equal(path, '2026-04/28/АЗС 17');
+  assert.equal(path, '2026-04/28/17');
 });
 
-test('buildPhotoFileName creates safe filename from slot/code/timestamp', () => {
+test('buildPhotoFileName creates AZS/date/time/category filename', () => {
   const fileName = buildPhotoFileName({
-    slotHHmm: '09:30',
-    photoCode: 'Колонка/1',
-    capturedAt: new Date('2026-04-28T10:30:45.000Z'),
-    extension: '.JPG'
+    azsId: 4,
+    slotDate: '2026-05-28',
+    slotHHmm: '1414',
+    photoCode: '42',
+    requiredTitle: '42. Колонки',
+    originalName: 'photo.JPEG',
+    mimeType: 'image/jpeg'
   });
 
-  assert.equal(fileName, '0930_Колонка-1_2026-04-28T10-30-45.000Z.jpg');
+  assert.equal(fileName, '4_2026-05-28_1414_Колонки.jpg');
+});
+
+test('buildPhotoFileName strips repeated numeric prefixes and keeps extension from original name', () => {
+  const fileName = buildPhotoFileName({
+    azsId: 4,
+    slotDate: '2026-05-28',
+    slotHHmm: '1414',
+    photoCode: '44',
+    requiredTitle: '3. 3. Общий вид',
+    originalName: 'snapshot.png',
+    mimeType: 'image/png'
+  });
+
+  assert.equal(fileName, '4_2026-05-28_1414_Общий_вид.png');
+});
+
+test('buildPhotoFileName keeps heic extension when supported', () => {
+  const fileName = buildPhotoFileName({
+    azsId: 4,
+    slotDate: '2026-05-28',
+    slotHHmm: '1414',
+    photoCode: '50',
+    requiredTitle: '50. Общий вид',
+    originalName: 'IMG_0001.HEIC',
+    mimeType: 'image/heic'
+  });
+
+  assert.equal(fileName, '4_2026-05-28_1414_Общий_вид.heic');
+});
+
+test('resolvePhotoFileExtension derives supported extension from MIME when name is missing or unsupported', () => {
+  assert.equal(resolvePhotoFileExtension({
+    originalName: 'upload',
+    mimeType: 'image/png'
+  }), 'png');
+  assert.equal(resolvePhotoFileExtension({
+    originalName: 'upload.tmp',
+    mimeType: 'image/jpeg'
+  }), 'jpg');
+});
+
+test('isSupportedPhotoUpload rejects files without a supported image extension or MIME type', () => {
+  assert.equal(isSupportedPhotoUpload({
+    originalName: 'document.pdf',
+    mimeType: 'application/pdf'
+  }), false);
+  assert.equal(isSupportedPhotoUpload({
+    originalName: 'archive.zip',
+    mimeType: ''
+  }), false);
+  assert.equal(isSupportedPhotoUpload({
+    originalName: 'camera',
+    mimeType: ''
+  }), true);
+});
+
+test('buildFolderPath requires azsId when template contains AZS segment', () => {
+  assert.throws(
+    () => buildFolderPath({
+      capturedAt: new Date('2026-05-28T10:30:45.000Z'),
+      azsName: 'АЗС 4'
+    }),
+    /azsId is required/
+  );
 });
 
 test('ensureFolderPath reuses existing folders and creates missing only once', async () => {
@@ -93,17 +163,20 @@ test('uploadPhoto creates folder path and uploads file with required pattern', a
 
   const result = await uploadPhoto(diskApi, {
     rootFolderId: 10,
-    azsName: 'АЗС 17',
+    azsId: 4,
+    azsName: 'АЗС 4',
+    slotDate: '2026-05-28',
     slotHHmm: '0930',
-    photoCode: 'TOTAL',
+    photoCode: '42',
+    requiredTitle: '42. Колонки',
+    originalName: 'upload.jpg',
+    mimeType: 'image/jpeg',
     capturedAt: new Date('2026-04-28T10:30:45.000Z'),
-    extension: 'png',
     content: Buffer.from('mock-image')
   });
 
-  assert.equal(result.folderPath, '2026-04/28/АЗС 17');
-  assert.match(result.fileName, /^0930_TOTAL_2026-04-28T10-30-45.000Z\.png$/);
+  assert.equal(result.folderPath, '2026-05/28/4');
+  assert.equal(result.fileName, '4_2026-05-28_0930_Колонки.jpg');
   assert.equal(diskApi.uploads.length, 1);
   assert.equal(diskApi.uploads[0].fileName, result.fileName);
 });
-

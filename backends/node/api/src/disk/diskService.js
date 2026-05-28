@@ -3,6 +3,16 @@ const DEFAULT_FOLDER_TEMPLATE = '{yyyy-mm}/{dd}/{azs}';
 const ILLEGAL_FILE_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
 const WHITESPACE_RE = /\s+/g;
 const MULTI_DASH_RE = /-+/g;
+const MULTI_UNDERSCORE_RE = /_+/g;
+
+const ALLOWED_IMAGE_EXTENSIONS = new Set([
+  'jpg',
+  'jpeg',
+  'png',
+  'webp',
+  'heic',
+  'heif'
+]);
 
 const pad2 = (value) => String(value).padStart(2, '0');
 
@@ -20,6 +30,95 @@ const sanitizeSegment = (value, fallback = 'unknown') => {
   return sanitized || fallback;
 };
 
+const stripNumericPrefixes = (value) => {
+  let result = String(value ?? '').trim();
+  // Strip repeated "<number>." prefixes: "3. 3. Title" -> "Title"
+  // Only the dot-prefix variant is required by the spec.
+  while (/^\d+\.\s*/.test(result)) {
+    result = result.replace(/^\d+\.\s*/g, '').trim();
+  }
+  return result;
+};
+
+const sanitizeFileSegment = (value, fallback = 'unknown') => (
+  sanitizeSegment(value, fallback)
+    .replace(WHITESPACE_RE, '_')
+    .replace(MULTI_UNDERSCORE_RE, '_')
+);
+
+const normalizeImageExtension = (ext) => {
+  const raw = String(ext ?? '').trim().toLowerCase().replace(/^\./, '');
+  if (!raw) {
+    return '';
+  }
+  if (!ALLOWED_IMAGE_EXTENSIONS.has(raw)) {
+    return '';
+  }
+  return raw === 'jpeg' ? 'jpg' : raw;
+};
+
+const extensionFromOriginalName = (originalName) => {
+  const name = String(originalName ?? '').trim();
+  if (!name.includes('.')) {
+    return '';
+  }
+  const raw = name.split('.').pop();
+  return normalizeImageExtension(raw);
+};
+
+const extensionFromMimeType = (mimeType) => {
+  const raw = String(mimeType ?? '').trim().toLowerCase();
+  if (!raw) {
+    return '';
+  }
+
+  const map = {
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/heic': 'heic',
+    'image/heif': 'heif'
+  };
+
+  return normalizeImageExtension(map[raw] || '');
+};
+
+const hasOriginalExtension = (originalName) => {
+  const name = String(originalName ?? '').trim();
+  if (!name.includes('.')) {
+    return false;
+  }
+  return Boolean(String(name.split('.').pop() || '').trim());
+};
+
+export const resolvePhotoFileExtension = ({ originalName, mimeType } = {}) => (
+  extensionFromOriginalName(originalName)
+  || extensionFromMimeType(mimeType)
+  || 'jpg'
+);
+
+export const isSupportedPhotoUpload = ({ originalName, mimeType } = {}) => {
+  if (extensionFromOriginalName(originalName) || extensionFromMimeType(mimeType)) {
+    return true;
+  }
+
+  // Keep the legacy fallback for genuinely unknown browser uploads, but reject
+  // files that explicitly identify themselves as unsupported.
+  return !hasOriginalExtension(originalName) && !String(mimeType ?? '').trim();
+};
+
+const buildPhotoCategory = ({ requiredTitle, photoCode }) => {
+  const stripped = stripNumericPrefixes(requiredTitle);
+  const candidate = sanitizeFileSegment(stripped, '');
+  if (candidate) {
+    return candidate;
+  }
+
+  const fallback = sanitizeFileSegment(`Фото_${String(photoCode || '').trim()}`, 'Фото');
+  return fallback || 'Фото';
+};
+
 const splitPath = (pathValue) => String(pathValue || '')
   .split('/')
   .map((segment) => sanitizeSegment(segment))
@@ -27,7 +126,7 @@ const splitPath = (pathValue) => String(pathValue || '')
 
 export const buildFolderPath = ({
   capturedAt = new Date(),
-  azsName = 'AZS',
+  azsId,
   folderNameTemplate = DEFAULT_FOLDER_TEMPLATE
 } = {}) => {
   const date = isValidDate(capturedAt) ? capturedAt : new Date(capturedAt);
@@ -35,12 +134,16 @@ export const buildFolderPath = ({
     throw new Error('capturedAt must be a valid date');
   }
 
+  if (String(folderNameTemplate || '').includes('{azs}') && (azsId === undefined || azsId === null || String(azsId).trim() === '')) {
+    throw new Error('azsId is required');
+  }
+
   const values = {
     '{yyyy}': String(date.getUTCFullYear()),
     '{mm}': pad2(date.getUTCMonth() + 1),
     '{dd}': pad2(date.getUTCDate()),
     '{yyyy-mm}': `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}`,
-    '{azs}': sanitizeSegment(azsName, 'AZS')
+    '{azs}': sanitizeSegment(azsId, 'AZS')
   };
 
   let pathValue = folderNameTemplate;
@@ -52,29 +155,35 @@ export const buildFolderPath = ({
 };
 
 export const buildPhotoFileName = ({
+  azsId,
+  slotDate,
   slotHHmm,
+  requiredTitle,
   photoCode,
-  capturedAt = new Date(),
-  extension = 'jpg'
+  originalName,
+  mimeType
 }) => {
+  if (azsId === undefined || azsId === null || String(azsId).trim() === '') {
+    throw new Error('azsId is required');
+  }
+  if (!slotDate) {
+    throw new Error('slotDate is required');
+  }
   if (!slotHHmm) {
     throw new Error('slotHHmm is required');
   }
-  if (!photoCode) {
-    throw new Error('photoCode is required');
+
+  const rawDate = String(slotDate || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+    throw new Error('slotDate must be YYYY-MM-DD');
   }
 
-  const date = isValidDate(capturedAt) ? capturedAt : new Date(capturedAt);
-  if (!isValidDate(date)) {
-    throw new Error('capturedAt must be a valid date');
-  }
+  const safeAzs = sanitizeFileSegment(azsId, 'AZS');
+  const safeSlot = sanitizeFileSegment(slotHHmm, '0000').replace(/[^0-9]/g, '').slice(0, 4) || '0000';
+  const safeCategory = buildPhotoCategory({ requiredTitle, photoCode });
+  const extension = resolvePhotoFileExtension({ originalName, mimeType });
 
-  const iso = date.toISOString().replace(/[:]/g, '-');
-  const safeSlot = sanitizeSegment(slotHHmm, '0000').replace(/[^0-9]/g, '').slice(0, 4) || '0000';
-  const safeCode = sanitizeSegment(photoCode, 'photo').replace(/ /g, '_');
-  const safeExt = sanitizeSegment(extension, 'jpg').replace(/^\.+/, '').toLowerCase() || 'jpg';
-
-  return `${safeSlot}_${safeCode}_${iso}.${safeExt}`;
+  return `${safeAzs}_${rawDate}_${safeSlot}_${safeCategory}.${extension}`;
 };
 
 export const ensureFolderPath = async (diskApi, { rootFolderId, path }, context = {}) => {
@@ -125,11 +234,14 @@ export const ensureRootFolder = async (diskApi, {
 
 export const uploadPhoto = async (diskApi, {
   rootFolderId,
-  azsName,
+  azsId,
+  slotDate,
   slotHHmm,
   photoCode,
+  requiredTitle,
+  originalName,
+  mimeType,
   capturedAt = new Date(),
-  extension = 'jpg',
   content,
   folderNameTemplate = DEFAULT_FOLDER_TEMPLATE
 }, context = {}) => {
@@ -140,9 +252,13 @@ export const uploadPhoto = async (diskApi, {
     throw new Error('content is required');
   }
 
-  const folderPath = buildFolderPath({ capturedAt, azsName, folderNameTemplate });
+  const folderDate = slotDate && /^\d{4}-\d{2}-\d{2}$/.test(String(slotDate).trim())
+    ? new Date(`${String(slotDate).trim()}T00:00:00.000Z`)
+    : capturedAt;
+
+  const folderPath = buildFolderPath({ capturedAt: folderDate, azsId, folderNameTemplate });
   const targetFolderId = await ensureFolderPath(diskApi, { rootFolderId, path: folderPath }, context);
-  const fileName = buildPhotoFileName({ slotHHmm, photoCode, capturedAt, extension });
+  const fileName = buildPhotoFileName({ azsId, slotDate, slotHHmm, requiredTitle, photoCode, originalName, mimeType });
   const uploaded = await diskApi.uploadFile(targetFolderId, { fileName, content }, context);
 
   return {

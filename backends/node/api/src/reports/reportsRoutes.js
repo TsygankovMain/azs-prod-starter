@@ -1,7 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import exifr from 'exifr';
-import { ensureRootFolder, uploadPhoto } from '../disk/diskService.js';
+import { ensureRootFolder, isSupportedPhotoUpload, uploadPhoto } from '../disk/diskService.js';
 import { updateReportCrmItem } from './reportCrmSync.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -369,15 +369,89 @@ const canUseAdminReportTools = (req) => (
   || Boolean(req.accessContext?.capabilities?.settings)
 );
 
+export const parseReportSlotKey = (slotKey) => {
+  const parts = String(slotKey || '').split(':').map((part) => String(part || '').trim());
+  const isManual = String(parts[0] || '').toLowerCase() === 'manual';
+  const slotDate = isManual ? String(parts[1] || '').trim() : String(parts[0] || '').trim();
+  const rawSlotHHmm = isManual ? String(parts[2] || '').trim() : String(parts[1] || '').trim();
+  const slotHHmm = rawSlotHHmm.replace(/[^0-9]/g, '').slice(0, 4);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(slotDate) || !normalizeSlotHHmm(slotHHmm)) {
+    throw new ReportConfigError(
+      `Report slotKey "${String(slotKey || '')}" is invalid; expected YYYY-MM-DD:HHmm or manual:YYYY-MM-DD:HHmm`,
+      'report_slot_key_invalid'
+    );
+  }
+
+  return {
+    slotDate,
+    slotHHmm
+  };
+};
+
+export const resolveAdminCrmSyncContext = async ({ authContextStore, requestContext }) => {
+  if (!authContextStore || typeof authContextStore.getLastAdminContext !== 'function') {
+    return null;
+  }
+  const current = requestContext && typeof requestContext === 'object' ? requestContext : {};
+  const adminEntry = await authContextStore.getLastAdminContext();
+  const adminContext = adminEntry?.context || null;
+
+  if (!adminContext?.authId) {
+    return null;
+  }
+
+  // Safety: don't accidentally sync to a different portal if this backend
+  // ever hosts multiple memberId/domain records.
+  const currentDomain = String(current.domain || '').trim().toLowerCase();
+  const currentMemberId = String(current.memberId || '').trim();
+  const adminDomain = String(adminContext.domain || '').trim().toLowerCase();
+  const adminMemberId = String(adminContext.memberId || '').trim();
+
+  if (!currentDomain || !currentMemberId || !adminDomain || !adminMemberId) {
+    return null;
+  }
+  if (currentDomain !== adminDomain) {
+    return null;
+  }
+  if (currentMemberId !== adminMemberId) {
+    return null;
+  }
+
+  return {
+    key: String(adminEntry?.key || '').trim(),
+    ...adminContext
+  };
+};
+
+const resolveAdminCrmSyncContextOrThrow = async ({ authContextStore, requestContext }) => {
+  const adminContext = await resolveAdminCrmSyncContext({ authContextStore, requestContext });
+  if (adminContext) {
+    return adminContext;
+  }
+
+  const error = new Error('Bitrix24 admin OAuth context is not available for CRM sync');
+  error.code = 'admin_context_missing';
+  error.statusCode = 502;
+  throw error;
+};
+
+export const resolveReportCrmAndDiskContexts = async ({ authContextStore, requestContext }) => {
+  const diskContext = requestContext && typeof requestContext === 'object' ? requestContext : {};
+  const crmSyncContext = await resolveAdminCrmSyncContextOrThrow({ authContextStore, requestContext: diskContext });
+  return { diskContext, crmSyncContext };
+};
+
 export const createReportsRouter = ({
   reportsStore,
   dispatchService,
   settingsStore,
   bitrixClient,
-  notificationService
+  notificationService,
+  authContextStore
 }) => {
-  if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService) {
-    throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient and notificationService are required');
+  if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService || !authContextStore) {
+    throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient, notificationService and authContextStore are required');
   }
 
   const router = express.Router();
@@ -667,6 +741,12 @@ export const createReportsRouter = ({
           error: 'photo_file_required'
         });
       }
+      if (!isSupportedPhotoUpload({ originalName: file.originalname, mimeType: file.mimetype })) {
+        return res.status(400).json({
+          error: 'unsupported_photo_type',
+          message: 'Поддерживаются только фото: jpg, jpeg, png, webp, heic, heif'
+        });
+      }
 
       const report = await reportsStore.getById(reportId);
       if (!report) {
@@ -703,23 +783,32 @@ export const createReportsRouter = ({
         });
       }
 
+      const { diskContext, crmSyncContext } = await resolveReportCrmAndDiskContexts({
+        authContextStore,
+        requestContext: req.bitrixContext || {}
+      });
+
       const rootFolderId = await ensureRootFolder(bitrixClient.diskApi, {
         configuredRootFolderId: Number(settings.disk?.rootFolderId || 0),
         storageRootId: Number(process.env.BITRIX_DISK_STORAGE_ROOT_ID || 1),
         appFolderName: process.env.BITRIX_DISK_APP_FOLDER || 'AZS-Photo-Reports'
-      }, req.bitrixContext || {});
+      }, diskContext);
 
-      const slotHHmm = String(report.slotKey || '').split(':')[1] || '0000';
+      const { slotDate, slotHHmm } = parseReportSlotKey(report.slotKey);
+      const requiredTitle = requiredPhotos.find((item) => item.code === photoCode)?.title || '';
       const uploaded = await uploadPhoto(bitrixClient.diskApi, {
         rootFolderId,
-        azsName: report.azsId,
+        azsId: report.azsId,
+        slotDate,
         slotHHmm,
         photoCode,
+        requiredTitle,
+        originalName: file.originalname,
+        mimeType: file.mimetype,
         capturedAt: exifValidation.exifAt || new Date(),
-        extension: file.originalname.split('.').pop() || 'jpg',
         content: file.buffer,
         folderNameTemplate: settings.disk?.folderNameTemplate || '{yyyy-mm}/{dd}/{azs}'
-      }, req.bitrixContext || {});
+      }, diskContext);
 
       await reportsStore.upsertPhoto({
         reportId,
@@ -748,13 +837,13 @@ export const createReportsRouter = ({
         photos: currentPhotos,
         diskFolderId: uploaded.folderId,
         requireReportItem: true,
-        context: req.bitrixContext || {}
+        context: crmSyncContext
       });
 
       const syncedCrmItem = await bitrixClient.getCrmItem({
         entityTypeId: Number(settings.report?.entityTypeId || 0),
         id: Number(report.reportItemId || 0),
-        context: req.bitrixContext || {}
+        context: crmSyncContext
       });
       const syncedFolderId = String(getFieldValue(syncedCrmItem, folderFieldCode) ?? '').trim();
       if (syncedFolderId !== String(uploaded.folderId)) {
@@ -848,6 +937,11 @@ export const createReportsRouter = ({
         );
       }
 
+      const crmSyncContext = await resolveAdminCrmSyncContextOrThrow({
+        authContextStore,
+        requestContext: req.bitrixContext || {}
+      });
+
       await reportsStore.setReportStatus({
         reportId,
         status: 'done'
@@ -861,13 +955,13 @@ export const createReportsRouter = ({
         photos: currentPhotos,
         diskFolderId,
         requireReportItem: true,
-        context: req.bitrixContext || {}
+        context: crmSyncContext
       });
 
       const syncedCrmItem = await bitrixClient.getCrmItem({
         entityTypeId: Number(settings.report?.entityTypeId || 0),
         id: Number(report.reportItemId || 0),
-        context: req.bitrixContext || {}
+        context: crmSyncContext
       });
       const syncedFolderId = String(getFieldValue(syncedCrmItem, folderFieldCode) ?? '').trim();
       if (syncedFolderId !== String(diskFolderId)) {
