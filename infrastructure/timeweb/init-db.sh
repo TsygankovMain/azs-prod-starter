@@ -40,5 +40,18 @@ if [ -f "${INIT_SQL_PATH}" ]; then
   fi
 fi
 
+# Ensure application settings table exists even on already-initialized portals,
+# and grant privileges to the runtime DB user.
+psql -p "${DB_PORT}" -U postgres -d "${DB_NAME}" -v ON_ERROR_STOP=1 <<SQL
+CREATE TABLE IF NOT EXISTS public.app_settings (
+  scope_key TEXT PRIMARY KEY,
+  settings_json TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE public.app_settings OWNER TO "${DB_USER}";
+GRANT USAGE, CREATE ON SCHEMA public TO "${DB_USER}";
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.app_settings TO "${DB_USER}";
+SQL
+
 touch "${READY_FILE}"
 echo "Database initialization completed"

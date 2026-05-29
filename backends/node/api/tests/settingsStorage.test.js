@@ -143,6 +143,34 @@ test('composite settings store falls back to db when bitrix read fails', async (
   assert.equal(dbReadCalled, 1);
 });
 
+test('composite settings store returns defaults when both bitrix and db reads fail', async () => {
+  const store = createCompositeSettingsStore({
+    bitrixStore: {
+      async read() {
+        throw new Error('bitrix unavailable');
+      },
+      async write() {
+        throw new Error('not used');
+      }
+    },
+    dbStore: {
+      async read() {
+        throw new Error('db unavailable');
+      },
+      async write() {
+        throw new Error('not used');
+      }
+    },
+    logger: {
+      warn() {}
+    }
+  });
+
+  const settings = await store.read({ context: { domain: 'example.bitrix24.ru' } });
+  assert.equal(settings.report.fields.folderId, '');
+  assert.equal(settings.timezone, 'Europe/Moscow');
+});
+
 test('composite settings store writes into bitrix and db', async () => {
   const calls = [];
   const store = createCompositeSettingsStore({
@@ -183,6 +211,44 @@ test('composite settings store writes into bitrix and db', async () => {
     ['bitrix', 'example.bitrix24.ru', 'UF_CRM_SAVE'],
     ['db', 'example.bitrix24.ru', 'UF_CRM_SAVE']
   ]);
+});
+
+test('composite settings store keeps bitrix write successful even if db write fails', async () => {
+  const payload = normalizeSettings({
+    report: {
+      fields: {
+        folderId: 'UF_CRM_BITRIX_ONLY'
+      }
+    }
+  });
+
+  const store = createCompositeSettingsStore({
+    bitrixStore: {
+      async read() {
+        return null;
+      },
+      async write(settings) {
+        return normalizeSettings(settings);
+      }
+    },
+    dbStore: {
+      async read() {
+        return normalizeSettings({});
+      },
+      async write() {
+        throw new Error('db write failed');
+      }
+    },
+    logger: {
+      warn() {}
+    }
+  });
+
+  const settings = await store.write(payload, {
+    context: { domain: 'example.bitrix24.ru' }
+  });
+
+  assert.equal(settings.report.fields.folderId, 'UF_CRM_BITRIX_ONLY');
 });
 
 test('database settings store uses portal scope and falls back to global scope', async () => {

@@ -1,3 +1,5 @@
+import { normalizeSettings } from './defaultSettings.js';
+
 const normalizeContext = (value) => (
   value && typeof value === 'object' && !Array.isArray(value)
     ? value
@@ -49,13 +51,20 @@ export const createCompositeSettingsStore = ({
         logger.warn('settings.bitrix_read_failed', { message: error.message });
       }
 
-      return dbStore.read({ context });
+      try {
+        return await dbStore.read({ context });
+      } catch (error) {
+        logger.warn('settings.db_read_failed', { message: error.message });
+        return normalizeSettings({}, { requireBitrixSyncFields: false });
+      }
     },
 
     async write(settings, options = {}) {
       const context = await resolveContext(options);
       const normalized = await bitrixStore.write(settings, { context });
-      await dbStore.write(normalized, { context });
+      await dbStore.write(normalized, { context }).catch((error) => {
+        logger.warn('settings.db_write_failed', { message: error.message });
+      });
       return normalized;
     }
   };
