@@ -18,6 +18,8 @@ type SlotState = {
   confirmed: boolean
   uploaded: boolean
   uploading: boolean
+  uploadState: 'idle' | 'queued' | 'uploading' | 'uploaded' | 'error'
+  uploadTaskId: number
   previewUrl: string
   file: File | null
   fileName: string
@@ -28,6 +30,13 @@ type RequiredPhoto = {
   code: string
   title: string
   sort?: number
+}
+
+type UploadTask = {
+  id: number
+  slotKey: string
+  file: File
+  sessionId: number
 }
 
 const PAGE_TITLE = 'Фотоотчёт АЗС: загрузка'
@@ -55,12 +64,25 @@ const isSubmitting = ref(false)
 const submitError = ref('')
 
 const photoSlots = reactive<SlotState[]>([])
+const queueSlotRefs = new Map<string, HTMLElement>()
+const queueAnchorEl = ref<HTMLElement | null>(null)
+const uploadQueue = reactive<UploadTask[]>([])
+const uploadWorker = reactive({
+  activeCount: 0,
+  maxConcurrency: 2,
+  lowModeSuccessStreak: 0,
+  sessionId: 1
+})
+const workerHalted = ref(false)
+let nextUploadTaskId = 0
 
 const confirmedCount = computed(() => photoSlots.filter((slot) => slot.confirmed).length)
 const uploadedCount = computed(() => photoSlots.filter((slot) => slot.uploaded).length)
 const allConfirmed = computed(() => photoSlots.length > 0 && confirmedCount.value === photoSlots.length)
 const allUploaded = computed(() => photoSlots.length > 0 && uploadedCount.value === photoSlots.length)
-const hasUploading = computed(() => photoSlots.some((slot) => slot.uploading))
+const hasQueued = computed(() => photoSlots.some((slot) => slot.uploadState === 'queued'))
+const hasUploading = computed(() => photoSlots.some((slot) => slot.uploadState === 'uploading'))
+const hasPendingUploads = computed(() => hasQueued.value || hasUploading.value || uploadWorker.activeCount > 0)
 const hasUploadErrors = computed(() => photoSlots.some((slot) => Boolean(slot.error) && slot.confirmed && !slot.uploaded))
 const currentSlotIndex = computed(() => {
   const index = photoSlots.findIndex((slot) => !slot.confirmed)
@@ -125,10 +147,18 @@ const formatReportStatusLabel = (status: string): string => {
 const reportAzsLabel = computed(() => (report.value ? formatAzsLabel(report.value) : '—'))
 const reportSlotKeyLabel = computed(() => (report.value ? formatSlotKeyLabel(report.value.slotKey) : '—'))
 const reportStatusLabel = computed(() => (report.value ? formatReportStatusLabel(report.value.status) : '—'))
+const submitBlockReason = computed(() => {
+  if (report.value?.status === 'done') return 'Отчёт уже отправлен'
+  if (!allConfirmed.value) return 'Подтвердите все фото'
+  if (hasPendingUploads.value) return 'Дождитесь завершения фоновых загрузок'
+  if (hasUploadErrors.value) return 'Исправьте ошибки загрузки'
+  if (!allUploaded.value) return 'Дождитесь загрузки всех подтверждённых фото'
+  return ''
+})
 const canSubmitReport = computed(() => (
   allConfirmed.value
   && allUploaded.value
-  && !hasUploading.value
+  && !hasPendingUploads.value
   && !hasUploadErrors.value
   && !isSubmitting.value
   && report.value?.status !== 'done'
@@ -141,6 +171,8 @@ const makeSlot = (photo: RequiredPhoto): SlotState => ({
   confirmed: false,
   uploaded: false,
   uploading: false,
+  uploadState: 'idle',
+  uploadTaskId: 0,
   previewUrl: '',
   file: null,
   fileName: '',
@@ -233,6 +265,213 @@ const startCameraForSlot = async (slot: SlotState) => {
   }
 }
 
+const setQueueAnchorRef = (el: Element | null) => {
+  queueAnchorEl.value = el instanceof HTMLElement ? el : null
+}
+
+const setQueueSlotRef = (slotKey: string, el: Element | null) => {
+  const key = String(slotKey || '').trim()
+  if (!key) return
+  if (el instanceof HTMLElement) {
+    queueSlotRefs.set(key, el)
+  } else {
+    queueSlotRefs.delete(key)
+  }
+}
+
+const resetUploadWorker = () => {
+  uploadWorker.sessionId += 1
+  uploadWorker.activeCount = 0
+  uploadWorker.maxConcurrency = 2
+  uploadWorker.lowModeSuccessStreak = 0
+  uploadQueue.splice(0, uploadQueue.length)
+}
+
+const isRetryableUploadIssue = ({
+  errorCode,
+  message
+}: {
+  errorCode?: string
+  message?: string
+} = {}): boolean => {
+  if (String(errorCode || '').trim().toLowerCase() === 'bitrix_retryable') {
+    return true
+  }
+  return /(OPERATION_TIME_LIMIT|QUERY_LIMIT_EXCEEDED|HTTP 429|HTTP 504|too many requests|gateway timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|network error|timeout)/i
+    .test(String(message || ''))
+}
+
+const enableLowConcurrencyMode = () => {
+  if (uploadWorker.maxConcurrency !== 1) {
+    uploadWorker.maxConcurrency = 1
+    uploadWorker.lowModeSuccessStreak = 0
+    saveSuccess.value = 'Включён бережный режим загрузки (x1) из-за временной перегрузки Bitrix24.'
+  }
+}
+
+const registerUploadSuccess = () => {
+  if (uploadWorker.maxConcurrency !== 1) {
+    return
+  }
+  uploadWorker.lowModeSuccessStreak += 1
+  if (uploadWorker.lowModeSuccessStreak >= 10) {
+    uploadWorker.maxConcurrency = 2
+    uploadWorker.lowModeSuccessStreak = 0
+    saveSuccess.value = 'Стабильность восстановлена, возвращаем режим фоновой загрузки x2.'
+  }
+}
+
+const scrollToQueueAnchor = () => {
+  queueAnchorEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+const scrollToFirstProblemSlot = () => {
+  const firstProblemSlot = photoSlots.find((slot) => {
+    if (!slot.confirmed) return true
+    if (slot.uploadState === 'queued' || slot.uploadState === 'uploading') return true
+    return Boolean(slot.error) && !slot.uploaded
+  })
+
+  if (firstProblemSlot) {
+    const el = queueSlotRefs.get(firstProblemSlot.key)
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    return
+  }
+
+  scrollToQueueAnchor()
+}
+
+const runUploadTask = async (task: UploadTask) => {
+  const sessionId = uploadWorker.sessionId
+  const slot = photoSlots.find((item) => item.key === task.slotKey)
+  if (!slot) {
+    return
+  }
+  if (task.sessionId !== sessionId) {
+    return
+  }
+  if (slot.uploadTaskId !== task.id || slot.file !== task.file || !slot.confirmed) {
+    return
+  }
+
+  slot.uploading = true
+  slot.uploadState = 'uploading'
+  slot.error = ''
+
+  const id = Number(route.params.reportId)
+  if (!Number.isFinite(id) || id <= 0) {
+    slot.uploading = false
+    slot.uploaded = false
+    slot.uploadState = 'error'
+    slot.error = 'Некорректный reportId'
+    return
+  }
+
+  try {
+    const response = await apiStore.uploadReportPhoto({
+      reportId: id,
+      photoCode: slot.key,
+      file: task.file
+    })
+
+    if (task.sessionId !== uploadWorker.sessionId) {
+      return
+    }
+    if (slot.uploadTaskId !== task.id || slot.file !== task.file) {
+      return
+    }
+
+    slot.uploaded = true
+    slot.uploading = false
+    slot.uploadState = 'uploaded'
+    slot.error = ''
+    const backendFileName = typeof (response.item as Record<string, unknown>)?.fileName === 'string'
+      ? String((response.item as Record<string, unknown>).fileName)
+      : ''
+    slot.fileName = backendFileName || task.file.name
+    registerUploadSuccess()
+  } catch (error) {
+    if (task.sessionId !== uploadWorker.sessionId) {
+      return
+    }
+    if (slot.uploadTaskId !== task.id || slot.file !== task.file) {
+      return
+    }
+
+    slot.uploaded = false
+    slot.uploading = false
+    slot.uploadState = 'error'
+    const responseData = (error as {
+      data?: {
+        message?: string
+        error?: string
+        errorCode?: string
+        currentUserId?: number
+        expectedAdminUserId?: number
+      }
+    })?.data
+    const accessDetails = responseData?.error === 'forbidden_user'
+      ? ` Текущий пользователь: ${String(responseData.currentUserId || '—')}, назначенный админ отчёта: ${String(responseData.expectedAdminUserId || '—')}.`
+      : ''
+    const responseMessage = responseData?.message || responseData?.error || (error instanceof Error ? error.message : 'Не удалось загрузить фото')
+    const retryable = isRetryableUploadIssue({
+      errorCode: responseData?.errorCode,
+      message: responseMessage
+    })
+    slot.error = `${responseMessage}${accessDetails}`
+    if (retryable) {
+      enableLowConcurrencyMode()
+    }
+    saveError.value = slot.error
+  } finally {
+    if (task.sessionId === uploadWorker.sessionId) {
+      uploadWorker.activeCount = Math.max(0, uploadWorker.activeCount - 1)
+      void pumpUploadQueue()
+    }
+  }
+}
+
+const pumpUploadQueue = async () => {
+  if (workerHalted.value) {
+    return
+  }
+  const sessionId = uploadWorker.sessionId
+  while (uploadWorker.activeCount < uploadWorker.maxConcurrency && uploadQueue.length > 0) {
+    const task = uploadQueue.shift()
+    if (!task) {
+      return
+    }
+    if (task.sessionId !== sessionId) {
+      continue
+    }
+    uploadWorker.activeCount += 1
+    void runUploadTask(task)
+  }
+}
+
+const queueSlotUpload = (slot: SlotState, file: File) => {
+  const reportId = Number(route.params.reportId)
+  if (!Number.isFinite(reportId) || reportId <= 0) {
+    slot.uploadState = 'error'
+    slot.error = 'Некорректный reportId'
+    return
+  }
+
+  nextUploadTaskId += 1
+  slot.uploadTaskId = nextUploadTaskId
+  slot.uploadState = 'queued'
+  slot.uploading = false
+  slot.uploaded = false
+  slot.error = ''
+  uploadQueue.push({
+    id: slot.uploadTaskId,
+    slotKey: slot.key,
+    file,
+    sessionId: uploadWorker.sessionId
+  })
+  void pumpUploadQueue()
+}
+
 const loadReport = async () => {
   const id = Number(route.params.reportId)
   if (!Number.isFinite(id) || id <= 0) {
@@ -242,6 +481,7 @@ const loadReport = async () => {
 
   isLoading.value = true
   loadError.value = ''
+  resetUploadWorker()
   try {
     const response = await apiStore.getReportById(id)
     report.value = response.item as ReportRow
@@ -256,6 +496,8 @@ const loadReport = async () => {
       }
       slot.error = ''
       slot.uploading = false
+      slot.uploadState = isUploaded ? 'uploaded' : 'idle'
+      slot.uploadTaskId = 0
     }
   } catch (error) {
     const responseData = (error as {
@@ -267,61 +509,6 @@ const loadReport = async () => {
     loadError.value = responseData?.message || responseData?.error || (error instanceof Error ? error.message : 'Не удалось загрузить отчёт')
   } finally {
     isLoading.value = false
-  }
-}
-
-const uploadSlotFile = async (slot: SlotState, file: File) => {
-  saveError.value = ''
-  saveSuccess.value = ''
-  slot.error = ''
-
-  if (file.size > 10 * 1024 * 1024) {
-    slot.uploaded = false
-    slot.fileName = ''
-    slot.error = 'Файл больше 10 МБ'
-    return
-  }
-
-  const id = Number(route.params.reportId)
-  if (!Number.isFinite(id) || id <= 0) {
-    slot.error = 'Некорректный reportId'
-    return
-  }
-
-  slot.uploading = true
-  try {
-    const response = await apiStore.uploadReportPhoto({
-      reportId: id,
-      photoCode: slot.key,
-      file
-    })
-    slot.uploaded = true
-    const backendFileName = typeof (response.item as Record<string, unknown>)?.fileName === 'string'
-      ? String((response.item as Record<string, unknown>).fileName)
-      : ''
-    slot.fileName = backendFileName || file.name
-    const status = String((response.item as Record<string, unknown>).status || '')
-    if (status === 'in_progress') {
-      saveSuccess.value = 'Фото загружено в фоне.'
-    }
-  } catch (error) {
-    slot.uploaded = false
-    const responseData = (error as {
-      data?: {
-        message?: string
-        error?: string
-        currentUserId?: number
-        expectedAdminUserId?: number
-      }
-    })?.data
-    const accessDetails = responseData?.error === 'forbidden_user'
-      ? ` Текущий пользователь: ${String(responseData.currentUserId || '—')}, назначенный админ отчёта: ${String(responseData.expectedAdminUserId || '—')}.`
-      : ''
-    const responseMessage = responseData?.message || responseData?.error
-    slot.error = `${responseMessage || (error instanceof Error ? error.message : 'Не удалось загрузить фото')}${accessDetails}`
-    saveError.value = slot.error
-  } finally {
-    slot.uploading = false
   }
 }
 
@@ -368,6 +555,9 @@ const captureSlotPreview = async (slot: SlotState) => {
   slot.previewUrl = URL.createObjectURL(file)
   slot.confirmed = false
   slot.uploaded = false
+  slot.uploading = false
+  slot.uploadState = 'idle'
+  slot.uploadTaskId += 1
   slot.fileName = file.name
   closeCamera()
 }
@@ -380,9 +570,17 @@ const acceptSlotPhoto = (slot: SlotState) => {
 
   slot.confirmed = true
   slot.uploaded = false
+  slot.uploading = false
+  slot.uploadState = 'queued'
   slot.error = ''
-  // Fire-and-forget upload. UI must immediately move to the next slot.
-  void uploadSlotFile(slot, slot.file)
+  saveError.value = ''
+  saveSuccess.value = ''
+  if (slot.file.size > 10 * 1024 * 1024) {
+    slot.uploadState = 'error'
+    slot.error = 'Файл больше 10 МБ'
+    return
+  }
+  queueSlotUpload(slot, slot.file)
 
   // If the current active slot was confirmed, automatically open the camera for the next one.
   void Promise.resolve().then(() => ensureCameraForActiveSlot())
@@ -393,6 +591,9 @@ const retakeSlotPhoto = async (slot: SlotState) => {
   slot.file = null
   slot.confirmed = false
   slot.uploaded = false
+  slot.uploading = false
+  slot.uploadState = 'idle'
+  slot.uploadTaskId += 1
   slot.fileName = ''
   slot.error = ''
   await startCameraForSlot(slot)
@@ -403,8 +604,15 @@ const retrySlotUpload = (slot: SlotState) => {
     slot.error = 'Локальный файл недоступен, переснимите фото'
     return
   }
+  if (slot.file.size > 10 * 1024 * 1024) {
+    slot.uploadState = 'error'
+    slot.error = 'Файл больше 10 МБ'
+    return
+  }
+  saveError.value = ''
   slot.error = ''
-  void uploadSlotFile(slot, slot.file)
+  slot.confirmed = true
+  queueSlotUpload(slot, slot.file)
 }
 
 const openCameraForActiveSlot = async () => {
@@ -442,6 +650,10 @@ const ensureCameraForActiveSlot = async () => {
 
 const submitReport = async () => {
   if (!canSubmitReport.value) {
+    submitError.value = submitBlockReason.value || 'Отчёт пока нельзя отправить'
+    if (hasPendingUploads.value || hasUploadErrors.value) {
+      scrollToFirstProblemSlot()
+    }
     return
   }
 
@@ -483,6 +695,7 @@ const openSettings = async () => {
 
 onMounted(async () => {
   try {
+    workerHalted.value = false
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
     await $b24.parent.setTitle(PAGE_TITLE)
@@ -499,11 +712,24 @@ watch(currentSlotIndex, () => {
   void ensureCameraForActiveSlot()
 })
 
+watch(() => route.params.reportId, async (nextValue, prevValue) => {
+  if (String(nextValue || '') === String(prevValue || '')) {
+    return
+  }
+  closeCamera()
+  await loadReport()
+  await nextTick()
+  await ensureCameraForActiveSlot()
+})
+
 onBeforeUnmount(() => {
+  workerHalted.value = true
+  resetUploadWorker()
   closeCamera()
   for (const slot of photoSlots) {
     revokeSlotPreview(slot)
   }
+  queueSlotRefs.clear()
 })
 </script>
 
@@ -544,6 +770,52 @@ onBeforeUnmount(() => {
         description="Сделайте фото, проверьте кадр, подтвердите его. После подтверждения фото загрузится в фоне."
       />
     </B24Card>
+
+    <div
+      v-if="photoSlots.length > 0"
+      class="sticky top-2 z-20"
+    >
+      <B24Card variant="outline">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <B24Badge :color="canSubmitReport ? 'air-primary-success' : 'air-secondary'">
+              {{ uploadedCount }}/{{ photoSlots.length }} загружено
+            </B24Badge>
+            <B24Badge color="air-secondary">
+              режим загрузки x{{ uploadWorker.maxConcurrency }}
+            </B24Badge>
+            <B24Badge v-if="hasPendingUploads" color="air-secondary">
+              идёт фоновая загрузка
+            </B24Badge>
+            <B24Badge v-if="hasUploadErrors" color="air-primary-alert">
+              есть проблемы
+            </B24Badge>
+            <B24Badge v-if="report?.status === 'done'" color="air-primary-success">
+              отчёт отправлен
+            </B24Badge>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <B24Button
+              v-if="!canSubmitReport && (hasPendingUploads || hasUploadErrors)"
+              color="air-secondary"
+              label="Перейти к проблемам"
+              loading-auto
+              @click="scrollToFirstProblemSlot"
+            />
+            <B24Button
+              color="air-primary-success"
+              label="Сдать отчёт"
+              :disabled="!canSubmitReport"
+              loading-auto
+              @click="submitReport"
+            />
+          </div>
+        </div>
+        <ProseP v-if="!canSubmitReport && submitBlockReason" class="mt-2 mb-0 text-[13px] text-gray-500">
+          {{ submitBlockReason }}
+        </ProseP>
+      </B24Card>
+    </div>
 
     <B24Alert
       v-if="loadError"
@@ -706,6 +978,7 @@ onBeforeUnmount(() => {
       </div>
     </B24Card>
 
+    <div :ref="setQueueAnchorRef" />
     <B24Card v-if="photoSlots.length > 0" variant="outline">
       <template #header>
         <div class="flex items-center justify-between gap-3">
@@ -725,6 +998,7 @@ onBeforeUnmount(() => {
         <div
           v-for="(slot, index) in photoSlots"
           :key="slot.key"
+          :ref="(el) => setQueueSlotRef(slot.key, el)"
           class="flex flex-col gap-2 rounded border border-gray-100 p-3"
         >
           <div class="flex items-start justify-between gap-3">
@@ -752,7 +1026,7 @@ onBeforeUnmount(() => {
             <B24Button
               color="air-secondary"
               label="Переснять"
-              :disabled="slot.uploading || cameraBusy"
+              :disabled="slot.uploadState === 'uploading' || cameraBusy"
               loading-auto
               @click="retakeSlotPhoto(slot)"
             />
@@ -760,47 +1034,12 @@ onBeforeUnmount(() => {
               v-if="slot.error && slot.confirmed && !slot.uploaded"
               color="air-primary"
               label="Повторить загрузку"
-              :disabled="slot.uploading"
+              :disabled="slot.uploadState === 'uploading'"
               loading-auto
               @click="retrySlotUpload(slot)"
             />
           </div>
         </div>
-      </div>
-    </B24Card>
-
-    <B24Card v-if="photoSlots.length > 0" variant="outline">
-      <template #header>
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <ProseH3>Отправка отчёта</ProseH3>
-            <ProseP class="mb-0 text-[13px] text-gray-500">
-              Отчёт можно отправить после подтверждения и фоновой загрузки всех фото.
-            </ProseP>
-          </div>
-          <B24Badge :color="canSubmitReport ? 'air-primary-success' : 'air-secondary'">
-            {{ confirmedCount }}/{{ photoSlots.length }} подтверждено
-          </B24Badge>
-        </div>
-      </template>
-
-      <div class="flex flex-wrap items-center gap-2">
-        <B24Button
-          color="air-primary-success"
-          label="Отправить отчёт"
-          :disabled="!canSubmitReport"
-          loading-auto
-          @click="submitReport"
-        />
-        <B24Badge v-if="hasUploading" color="air-secondary">
-          идёт фоновая загрузка
-        </B24Badge>
-        <B24Badge v-if="hasUploadErrors" color="air-primary-alert">
-          есть ошибки загрузки
-        </B24Badge>
-        <B24Badge v-if="report?.status === 'done'" color="air-primary-success">
-          отчёт отправлен
-        </B24Badge>
       </div>
     </B24Card>
   </div>

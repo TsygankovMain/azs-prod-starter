@@ -350,7 +350,257 @@ test('photo upload response returns crm fileId and diskObjectId, and store persi
   assert.equal(jsonResponses[0].status, 200);
   assert.equal(jsonResponses[0].payload?.item?.fileId, 1902);
   assert.equal(jsonResponses[0].payload?.item?.diskObjectId, 902);
+  assert.equal(jsonResponses[0].payload?.item?.syncQueued, true);
 
   assert.equal(upsertCalls.length, 1);
   assert.equal(upsertCalls[0].fileId, 1902);
+});
+
+test('photo route responds before slow CRM sync because sync is queued in background', async () => {
+  let releaseSync;
+  const syncPause = new Promise((resolve) => {
+    releaseSync = resolve;
+  });
+  let syncCalls = 0;
+
+  const reportsStore = {
+    async getById() {
+      return {
+        id: 88,
+        slotKey: '2026-05-29:1010',
+        azsId: '8',
+        adminUserId: 10,
+        status: 'new',
+        reportItemId: 1001,
+        deadlineAt: new Date().toISOString()
+      };
+    },
+    async upsertPhoto() {},
+    async listPhotos() {
+      return [{ reportId: 88, photoCode: '42', fileId: 501, fileName: 'f.jpg', diskFolderId: 700, uploadedBy: 10 }];
+    },
+    async setReportStatus() {}
+  };
+
+  const settingsStore = {
+    async read() {
+      return {
+        azs: { entityTypeId: 145, fields: { photoSet: 'UF_PHOTO_SET' } },
+        photoType: { entityTypeId: 1112 },
+        report: {
+          entityTypeId: 163,
+          fields: { folderId: 'UF_FOLDER', photos: 'UF_PHOTOS' },
+          stages: { inProgress: 'DT163_1:IN_PROGRESS' }
+        },
+        disk: {
+          rootFolderId: 0,
+          folderNameTemplate: '{yyyy-mm}/{dd}/{azs}_{azs_name}'
+        }
+      };
+    }
+  };
+
+  const bitrixClient = {
+    diskApi: {
+      async findChildFolder() { return null; },
+      async findChildFile() { return null; },
+      async createFolder() { return { id: 700 }; },
+      async markFileDeleted() { return { id: 1 }; },
+      async uploadFile(folderId, { fileName }) {
+        return { diskObjectId: 901, crmFileId: 501, fileName, folderId };
+      }
+    },
+    async getCrmItem({ entityTypeId, id }) {
+      if (entityTypeId === 145) return { id, title: 'АЗС Тест', UF_PHOTO_SET: [42] };
+      if (entityTypeId === 1112) return { id, title: '42. Колонки' };
+      if (entityTypeId === 163) return { id, UF_FOLDER: '700' };
+      return null;
+    },
+    async updateReportItem() {
+      syncCalls += 1;
+      await syncPause;
+      return { ok: true };
+    }
+  };
+
+  const authContextStore = {
+    async getLastAdminContext() {
+      return {
+        key: 'admin:ctx:key',
+        context: {
+          memberId: 'member-1',
+          domain: 'example.bitrix24.ru',
+          userId: 1,
+          authId: 'admin-auth',
+          refreshToken: 'admin-refresh',
+          isAdmin: true
+        }
+      };
+    }
+  };
+
+  const router = createReportsRouter({
+    reportsStore,
+    dispatchService: {},
+    settingsStore,
+    bitrixClient,
+    notificationService: {
+      async notifyReportDone() {},
+      async notifyDispatch() {},
+      async notifyReportExpired() {}
+    },
+    authContextStore
+  });
+
+  const layer = router.stack.find((l) => l?.route?.path === '/:id/photo');
+  const handlers = layer.route.stack.map((s) => s.handle);
+  const handler = handlers[handlers.length - 1];
+
+  const responses = [];
+  const req = {
+    params: { id: '88' },
+    body: { photoCode: '42' },
+    file: { originalname: 'upload.jpg', mimetype: 'image/jpeg', buffer: Buffer.from('mock-image') },
+    user: { id: 10 },
+    accessContext: { capabilities: { reports: true } },
+    bitrixContext: {
+      memberId: 'member-1',
+      domain: 'example.bitrix24.ru',
+      userId: 10,
+      authId: 'user-auth',
+      refreshToken: 'user-refresh',
+      isAdmin: false
+    }
+  };
+  const res = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(payload) { responses.push({ status: this.statusCode, payload }); return payload; }
+  };
+
+  const startedAt = Date.now();
+  await handler(req, res);
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(responses[0]?.status, 200);
+  assert.equal(responses[0]?.payload?.item?.syncQueued, true);
+  assert.ok(elapsedMs < 120, `route should return quickly, elapsed=${elapsedMs}ms`);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(syncCalls >= 1);
+
+  releaseSync();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+
+test('photo route returns structured retryable errorCode for transient Bitrix upload failures', async () => {
+  const reportsStore = {
+    async getById() {
+      return {
+        id: 89,
+        slotKey: '2026-05-29:1015',
+        azsId: '8',
+        adminUserId: 10,
+        status: 'new',
+        reportItemId: 1002
+      };
+    },
+    async upsertPhoto() {},
+    async listPhotos() { return []; },
+    async setReportStatus() {}
+  };
+
+  const settingsStore = {
+    async read() {
+      return {
+        azs: { entityTypeId: 145, fields: { photoSet: 'UF_PHOTO_SET' } },
+        photoType: { entityTypeId: 1112 },
+        report: {
+          entityTypeId: 163,
+          fields: { folderId: 'UF_FOLDER', photos: 'UF_PHOTOS' },
+          stages: { inProgress: 'DT163_1:IN_PROGRESS' }
+        },
+        disk: { rootFolderId: 0, folderNameTemplate: '{yyyy-mm}/{dd}/{azs}_{azs_name}' }
+      };
+    }
+  };
+
+  const bitrixClient = {
+    diskApi: {
+      async findChildFolder() { return null; },
+      async findChildFile() { return null; },
+      async createFolder() { return { id: 700 }; },
+      async markFileDeleted() { return { id: 1 }; },
+      async uploadFile() {
+        throw new Error('Bitrix REST disk.folder.uploadfile failed with HTTP 504: gateway timeout');
+      }
+    },
+    async getCrmItem({ entityTypeId, id }) {
+      if (entityTypeId === 145) return { id, title: 'АЗС Тест', UF_PHOTO_SET: [42] };
+      if (entityTypeId === 1112) return { id, title: '42. Колонки' };
+      return null;
+    },
+    async updateReportItem() {
+      return { ok: true };
+    }
+  };
+
+  const authContextStore = {
+    async getLastAdminContext() {
+      return {
+        key: 'admin:ctx:key',
+        context: {
+          memberId: 'member-1',
+          domain: 'example.bitrix24.ru',
+          userId: 1,
+          authId: 'admin-auth',
+          refreshToken: 'admin-refresh',
+          isAdmin: true
+        }
+      };
+    }
+  };
+
+  const router = createReportsRouter({
+    reportsStore,
+    dispatchService: {},
+    settingsStore,
+    bitrixClient,
+    notificationService: {
+      async notifyReportDone() {},
+      async notifyDispatch() {},
+      async notifyReportExpired() {}
+    },
+    authContextStore
+  });
+
+  const layer = router.stack.find((l) => l?.route?.path === '/:id/photo');
+  const handlers = layer.route.stack.map((s) => s.handle);
+  const handler = handlers[handlers.length - 1];
+
+  const responses = [];
+  const req = {
+    params: { id: '89' },
+    body: { photoCode: '42' },
+    file: { originalname: 'upload.jpg', mimetype: 'image/jpeg', buffer: Buffer.from('mock-image') },
+    user: { id: 10 },
+    accessContext: { capabilities: { reports: true } },
+    bitrixContext: {
+      memberId: 'member-1',
+      domain: 'example.bitrix24.ru',
+      userId: 10,
+      authId: 'user-auth',
+      refreshToken: 'user-refresh',
+      isAdmin: false
+    }
+  };
+  const res = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(payload) { responses.push({ status: this.statusCode, payload }); return payload; }
+  };
+
+  await handler(req, res);
+
+  assert.equal(responses[0]?.status, 500);
+  assert.equal(responses[0]?.payload?.errorCode, 'bitrix_retryable');
 });

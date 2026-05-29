@@ -6,6 +6,10 @@ import { updateReportCrmItem } from './reportCrmSync.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const EXIF_MAX_AGE_MINUTES = Number(process.env.EXIF_MAX_AGE_MINUTES || 720);
+const CRM_SYNC_RETRY_BACKOFF_MS = [800, 1600, 3200];
+const RETRYABLE_UPLOAD_ERROR_PATTERN = /(OPERATION_TIME_LIMIT|QUERY_LIMIT_EXCEEDED|HTTP 429|HTTP 504|too many requests|gateway timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|network error|timeout)/i;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 class ReportConfigError extends Error {
   constructor(message, code = 'report_config_error') {
@@ -496,6 +500,103 @@ export const resolveReportCrmAndDiskContexts = async ({ authContextStore, reques
   return { diskContext, crmSyncContext };
 };
 
+const isRetryableUploadError = (error) => RETRYABLE_UPLOAD_ERROR_PATTERN.test(String(error?.message || error || ''));
+
+const createPerReportTaskQueue = () => {
+  const tails = new Map();
+
+  const enqueue = ({ reportId, task }) => {
+    const queueKey = String(Number(reportId) > 0 ? Number(reportId) : reportId || 'unknown');
+    const prev = tails.get(queueKey) || Promise.resolve();
+    const next = prev
+      .catch(() => undefined)
+      .then(() => task());
+    tails.set(queueKey, next);
+    next.finally(() => {
+      if (tails.get(queueKey) === next) {
+        tails.delete(queueKey);
+      }
+    });
+    return next;
+  };
+
+  return { enqueue };
+};
+
+const verifyCrmFolderSync = async ({
+  bitrixClient,
+  settings,
+  report,
+  folderFieldCode,
+  expectedFolderId,
+  context = {}
+}) => {
+  const syncedCrmItem = await bitrixClient.getCrmItem({
+    entityTypeId: Number(settings.report?.entityTypeId || 0),
+    id: Number(report.reportItemId || 0),
+    context
+  });
+  const syncedFolderId = String(getFieldValue(syncedCrmItem, folderFieldCode) ?? '').trim();
+  if (syncedFolderId !== String(expectedFolderId)) {
+    throw new ReportSyncError(
+      `Report CRM folder field "${folderFieldCode}" was not synced. Expected "${String(expectedFolderId)}", got "${syncedFolderId || '<empty>'}"`,
+      'report_folder_sync_failed'
+    );
+  }
+};
+
+const syncReportCrmStrict = async ({
+  bitrixClient,
+  settings,
+  report,
+  status,
+  photos,
+  diskFolderId,
+  folderFieldCode,
+  context = {}
+}) => {
+  await updateReportCrmItem({
+    bitrixClient,
+    settings,
+    report,
+    status,
+    photos,
+    diskFolderId,
+    requireReportItem: true,
+    context
+  });
+
+  await verifyCrmFolderSync({
+    bitrixClient,
+    settings,
+    report,
+    folderFieldCode,
+    expectedFolderId: diskFolderId,
+    context
+  });
+};
+
+const runRetryableCrmSync = async (task, { correlationId = '' } = {}) => {
+  for (let retryIndex = 0; ; retryIndex += 1) {
+    try {
+      return await task();
+    } catch (error) {
+      if (!isRetryableUploadError(error) || retryIndex >= CRM_SYNC_RETRY_BACKOFF_MS.length) {
+        throw error;
+      }
+
+      const waitMs = CRM_SYNC_RETRY_BACKOFF_MS[retryIndex] + Math.floor(Math.random() * 250);
+      console.warn('report_crm_sync_retry', {
+        correlationId,
+        retry: retryIndex + 1,
+        waitMs,
+        message: String(error?.message || error || '')
+      });
+      await sleep(waitMs);
+    }
+  }
+};
+
 export const createReportsRouter = ({
   reportsStore,
   dispatchService,
@@ -509,6 +610,7 @@ export const createReportsRouter = ({
   }
 
   const router = express.Router();
+  const reportCrmSyncQueue = createPerReportTaskQueue();
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -867,6 +969,7 @@ export const createReportsRouter = ({
       }, diskContext);
 
       const { slotDate, slotHHmm } = parseReportSlotKey(report.slotKey);
+      const correlationId = `${reportId}:${photoCode}:${String(report.slotKey || '')}`;
       const requiredTitle = requiredPhotos.find((item) => item.code === photoCode)?.title || '';
       const uploaded = await uploadPhoto(bitrixClient.diskApi, {
         rootFolderId,
@@ -902,29 +1005,32 @@ export const createReportsRouter = ({
         status: nextStatus
       });
 
-      await updateReportCrmItem({
-        bitrixClient,
-        settings,
-        report,
-        status: nextStatus,
-        photos: currentPhotos,
-        diskFolderId: uploaded.folderId,
-        requireReportItem: true,
-        context: crmSyncContext
+      // Keep /photo fast: queue CRM sync in background and return after Disk+DB.
+      // Sync tasks are serialized per report to avoid OPERATION_TIME_LIMIT bursts.
+      void reportCrmSyncQueue.enqueue({
+        reportId,
+        task: async () => runRetryableCrmSync(
+          () => syncReportCrmStrict({
+            bitrixClient,
+            settings,
+            report,
+            status: nextStatus,
+            photos: currentPhotos,
+            diskFolderId: uploaded.folderId,
+            folderFieldCode,
+            context: crmSyncContext
+          }),
+          { correlationId }
+        )
+      }).catch((syncError) => {
+        console.error('report_photo_crm_sync_failed', {
+          correlationId,
+          reportId,
+          photoCode,
+          slotKey: String(report.slotKey || ''),
+          message: String(syncError?.message || syncError || '')
+        });
       });
-
-      const syncedCrmItem = await bitrixClient.getCrmItem({
-        entityTypeId: Number(settings.report?.entityTypeId || 0),
-        id: Number(report.reportItemId || 0),
-        context: crmSyncContext
-      });
-      const syncedFolderId = String(getFieldValue(syncedCrmItem, folderFieldCode) ?? '').trim();
-      if (syncedFolderId !== String(uploaded.folderId)) {
-        throw new ReportSyncError(
-          `Report CRM folder field "${folderFieldCode}" was not synced. Expected "${String(uploaded.folderId)}", got "${syncedFolderId || '<empty>'}"`,
-          'report_folder_sync_failed'
-        );
-      }
 
       return res.json({
         item: {
@@ -939,13 +1045,25 @@ export const createReportsRouter = ({
           allUploaded: allRequiredUploaded,
           uploadedCount: uploadedCodes.size,
           requiredCount: requiredCodes.length,
-          requiredPhotos
+          requiredPhotos,
+          syncQueued: true
         }
       });
     } catch (error) {
       const statusCode = Number(error?.statusCode || 500);
+      const retryable = isRetryableUploadError(error);
+      if (statusCode >= 500 || retryable) {
+        console.error('report_photo_upload_failed', {
+          reportId: Number(req.params?.id || 0) || null,
+          photoCode: normalizePhotoCode(req.body?.photoCode || ''),
+          slotKey: String(req.body?.slotKey || ''),
+          statusCode,
+          message: String(error?.message || error || '')
+        });
+      }
       return res.status(statusCode).json({
         error: error?.code || 'report_photo_upload_failed',
+        errorCode: retryable ? 'bitrix_retryable' : undefined,
         message: error.message,
         currentUserId: error?.currentUserId,
         expectedAdminUserId: error?.expectedAdminUserId
@@ -1015,35 +1133,29 @@ export const createReportsRouter = ({
         authContextStore,
         requestContext: req.bitrixContext || {}
       });
+      const correlationId = `${reportId}:submit:${String(report.slotKey || '')}`;
 
       await reportsStore.setReportStatus({
         reportId,
         status: 'done'
       });
 
-      await updateReportCrmItem({
-        bitrixClient,
-        settings,
-        report,
-        status: 'done',
-        photos: currentPhotos,
-        diskFolderId,
-        requireReportItem: true,
-        context: crmSyncContext
+      await reportCrmSyncQueue.enqueue({
+        reportId,
+        task: async () => runRetryableCrmSync(
+          () => syncReportCrmStrict({
+            bitrixClient,
+            settings,
+            report,
+            status: 'done',
+            photos: currentPhotos,
+            diskFolderId,
+            folderFieldCode,
+            context: crmSyncContext
+          }),
+          { correlationId }
+        )
       });
-
-      const syncedCrmItem = await bitrixClient.getCrmItem({
-        entityTypeId: Number(settings.report?.entityTypeId || 0),
-        id: Number(report.reportItemId || 0),
-        context: crmSyncContext
-      });
-      const syncedFolderId = String(getFieldValue(syncedCrmItem, folderFieldCode) ?? '').trim();
-      if (syncedFolderId !== String(diskFolderId)) {
-        throw new ReportSyncError(
-          `Report CRM folder field "${folderFieldCode}" was not synced. Expected "${String(diskFolderId)}", got "${syncedFolderId || '<empty>'}"`,
-          'report_folder_sync_failed'
-        );
-      }
 
       const reviewerId = Number(process.env.REPORT_REVIEWER_USER_ID || 0);
       if (reviewerId > 0) {

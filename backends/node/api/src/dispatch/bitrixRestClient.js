@@ -40,6 +40,10 @@ const normalizeContext = (context = {}) => {
   };
 };
 
+const RETRYABLE_TRANSIENT_ERROR_PATTERN = /(OPERATION_TIME_LIMIT|QUERY_LIMIT_EXCEEDED|HTTP 429|HTTP 504|too many requests|gateway timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|network error|timeout)/i;
+const RETRY_BACKOFF_MS = [800, 1600, 3200];
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export const createBitrixRestClient = ({
   endpoint = process.env.BITRIX_REST_ENDPOINT || '',
   authId = process.env.BITRIX_REST_AUTH_ID || '',
@@ -48,6 +52,7 @@ export const createBitrixRestClient = ({
   oauthEndpoint = process.env.BITRIX_OAUTH_ENDPOINT || '',
   clientId = process.env.CLIENT_ID || '',
   clientSecret = process.env.CLIENT_SECRET || '',
+  retryBackoffMs = RETRY_BACKOFF_MS,
   onTokenRefreshed = null,
   logger = console
 } = {}) => {
@@ -62,6 +67,10 @@ export const createBitrixRestClient = ({
   // cycle kicks in instead of bubbling 502 to the caller.
   const REFRESHABLE_AUTH_ERROR_PATTERN = /(expired_token|invalid_token|NO_AUTH_FOUND|Authorization required|wrong_client_id|wrong_token|INVALID_CREDENTIALS|unauthorized)/i;
   const isRefreshableAuthError = (error) => REFRESHABLE_AUTH_ERROR_PATTERN.test(String(error?.message || error || ''));
+  const isRetryableTransientError = (error) => RETRYABLE_TRANSIENT_ERROR_PATTERN.test(String(error?.message || error || ''));
+  const runtimeRetryBackoffMs = (Array.isArray(retryBackoffMs) ? retryBackoffMs : RETRY_BACKOFF_MS)
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value >= 0);
 
   // `invalid_client` from the OAuth token endpoint means CLIENT_ID/SECRET is
   // wrong — no point in retrying, surface it loudly so ops can rotate creds.
@@ -230,7 +239,7 @@ export const createBitrixRestClient = ({
     return responsePayload.result ?? responsePayload;
   };
 
-  const callInternal = async (method, params = {}, options = {}) => {
+  const callInternalWithAuthRefresh = async (method, params = {}, options = {}) => {
     try {
       return await callInternalOnce(method, params, options);
     } catch (error) {
@@ -260,13 +269,40 @@ export const createBitrixRestClient = ({
     }
   };
 
+  const callWithTransientRetry = async ({ method, executor }) => {
+    for (let retryIndex = 0; ; retryIndex += 1) {
+      try {
+        return await executor();
+      } catch (error) {
+        if (!isRetryableTransientError(error) || retryIndex >= runtimeRetryBackoffMs.length) {
+          throw error;
+        }
+        const waitMs = runtimeRetryBackoffMs[retryIndex] + Math.floor(Math.random() * 250);
+        if (typeof logger?.info === 'function') {
+          logger.info('bitrix_rest_retry', {
+            method,
+            retry: retryIndex + 1,
+            waitMs,
+            message: String(error?.message || error || '')
+          });
+        }
+        await sleep(waitMs);
+      }
+    }
+  };
+
+  const callInternal = async (method, params = {}, options = {}) => callWithTransientRetry({
+    method,
+    executor: () => callInternalWithAuthRefresh(method, params, options)
+  });
+
   const call = async (method, params = {}, context = {}) => callInternal(method, params, { context });
   const callWithAuth = async (method, params = {}, authOverride = '', context = {}) => callInternal(method, params, {
     context,
     authOverride
   });
 
-  const callRaw = async (method, params = {}, context = {}) => {
+  const callRawOnce = async (method, params = {}, context = {}) => {
     const runtime = resolveRuntimeContext(context);
     ensureConfigured(runtime);
     const resolvedAuth = String(runtime.authId || '').trim();
@@ -313,9 +349,14 @@ export const createBitrixRestClient = ({
         }
         throw refreshError;
       }
-      return callRaw(method, params, refreshedContext);
+      return callRawOnce(method, params, refreshedContext);
     }
   };
+
+  const callRaw = async (method, params = {}, context = {}) => callWithTransientRetry({
+    method,
+    executor: () => callRawOnce(method, params, context)
+  });
 
   // Bootstrap context is the fallback used ONLY when a per-request `context`
   // is not supplied (e.g. the very first /api/install before a JWT exists).

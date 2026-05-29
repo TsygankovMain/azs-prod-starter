@@ -380,3 +380,76 @@ test('listCrmItems paginates past 50 items using top-level next cursor', async (
     global.fetch = originalFetch;
   }
 });
+
+test('bitrix client retries transient HTTP 429 errors with backoff policy', async () => {
+  const originalFetch = global.fetch;
+  let attempt = 0;
+
+  global.fetch = async (url) => {
+    if (String(url).includes('/app.info.json')) {
+      attempt += 1;
+      if (attempt <= 2) {
+        return {
+          ok: false,
+          status: 429,
+          async text() {
+            return JSON.stringify({
+              error: 'OPERATION_TIME_LIMIT',
+              error_description: 'Method is blocked due to operation time limit.'
+            });
+          }
+        };
+      }
+      return createJsonResponse({ result: { status: 'L' } });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://test.bitrix24.ru/rest',
+      authId: 'token',
+      retryBackoffMs: [0, 0, 0],
+      logger: { info() {}, error() {} }
+    });
+
+    const result = await client.callMethod('app.info', {});
+    assert.equal(result.status, 'L');
+    assert.equal(attempt, 3);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('bitrix client does not retry non-retryable ACCESS_DENIED errors', async () => {
+  const originalFetch = global.fetch;
+  let attempt = 0;
+
+  global.fetch = async (url) => {
+    if (String(url).includes('/crm.item.update.json')) {
+      attempt += 1;
+      return createJsonResponse({
+        error: 'ACCESS_DENIED',
+        error_description: 'Доступ запрещен'
+      }, 400);
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://test.bitrix24.ru/rest',
+      authId: 'token',
+      retryBackoffMs: [0, 0, 0],
+      logger: { info() {}, error() {} }
+    });
+
+    await assert.rejects(
+      () => client.callMethod('crm.item.update', { entityTypeId: 1, id: 1, fields: {} }),
+      /ACCESS_DENIED/
+    );
+    assert.equal(attempt, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
