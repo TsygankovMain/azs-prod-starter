@@ -37,3 +37,12 @@ test('runner is a no-op when the report no longer exists', async () => {
   const runSync = buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore });
   await runSync({ report_id: 999, payload: '{}' }); // must resolve without throwing
 });
+
+test('runner rejects on malformed JSON payload', async () => {
+  const reportsStore = { async getById() { return { id: 1, reportItemId: 1, status: 'new', diskFolderId: 1 }; }, async listPhotos() { return []; } };
+  const settingsStore = { async read() { return { report: { entityTypeId: 199, fields: { folderId: 'UF_FOLDER' } } }; } };
+  const authContextStore = { async getContextByKey() { return null; } };
+  const bitrixClient = { async updateReportItem() { return {}; }, async getCrmItem() { return {}; } };
+  const runSync = buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore });
+  await assert.rejects(() => runSync({ report_id: 1, payload: 'not-json' }));
+});

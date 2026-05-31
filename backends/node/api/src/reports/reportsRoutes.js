@@ -502,26 +502,6 @@ export const resolveReportCrmAndDiskContexts = async ({ authContextStore, reques
 
 const isRetryableUploadError = (error) => RETRYABLE_UPLOAD_ERROR_PATTERN.test(String(error?.message || error || ''));
 
-const createPerReportTaskQueue = () => {
-  const tails = new Map();
-
-  const enqueue = ({ reportId, task }) => {
-    const queueKey = String(Number(reportId) > 0 ? Number(reportId) : reportId || 'unknown');
-    const prev = tails.get(queueKey) || Promise.resolve();
-    const next = prev
-      .catch(() => undefined)
-      .then(() => task());
-    tails.set(queueKey, next);
-    next.finally(() => {
-      if (tails.get(queueKey) === next) {
-        tails.delete(queueKey);
-      }
-    });
-    return next;
-  };
-
-  return { enqueue };
-};
 
 const verifyCrmFolderSync = async ({
   bitrixClient,
@@ -593,7 +573,11 @@ export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, 
   let context = {};
   if (payload.contextKey) {
     const stored = await authContextStore.getContextByKey(payload.contextKey);
-    if (stored) context = { key: payload.contextKey, ...stored };
+    if (stored) {
+      context = { ...stored, key: payload.contextKey };
+    } else {
+      console.warn('crm_sync_context_missing', { reportId, contextKey: payload.contextKey });
+    }
   }
 
   await syncReportCrmStrict({
@@ -608,26 +592,6 @@ export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, 
   });
 };
 
-const runRetryableCrmSync = async (task, { correlationId = '' } = {}) => {
-  for (let retryIndex = 0; ; retryIndex += 1) {
-    try {
-      return await task();
-    } catch (error) {
-      if (!isRetryableUploadError(error) || retryIndex >= CRM_SYNC_RETRY_BACKOFF_MS.length) {
-        throw error;
-      }
-
-      const waitMs = CRM_SYNC_RETRY_BACKOFF_MS[retryIndex] + Math.floor(Math.random() * 250);
-      console.warn('report_crm_sync_retry', {
-        correlationId,
-        retry: retryIndex + 1,
-        waitMs,
-        message: String(error?.message || error || '')
-      });
-      await sleep(waitMs);
-    }
-  }
-};
 
 export const createReportsRouter = ({
   reportsStore,
@@ -635,14 +599,14 @@ export const createReportsRouter = ({
   settingsStore,
   bitrixClient,
   notificationService,
-  authContextStore
+  authContextStore,
+  crmSyncJobStore
 }) => {
-  if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService || !authContextStore) {
-    throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient, notificationService and authContextStore are required');
+  if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService || !authContextStore || !crmSyncJobStore) {
+    throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient, notificationService, authContextStore and crmSyncJobStore are required');
   }
 
   const router = express.Router();
-  const reportCrmSyncQueue = createPerReportTaskQueue();
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -1037,31 +1001,15 @@ export const createReportsRouter = ({
         status: nextStatus
       });
 
-      // Keep /photo fast: queue CRM sync in background and return after Disk+DB.
-      // Sync tasks are serialized per report to avoid OPERATION_TIME_LIMIT bursts.
-      void reportCrmSyncQueue.enqueue({
+      // Durable CRM sync: persist a job; the background worker performs it with
+      // retry and survives process restarts. /photo stays fast (returns after Disk+DB).
+      await crmSyncJobStore.enqueue({
         reportId,
-        task: async () => runRetryableCrmSync(
-          () => syncReportCrmStrict({
-            bitrixClient,
-            settings,
-            report,
-            status: nextStatus,
-            photos: currentPhotos,
-            diskFolderId: uploaded.folderId,
-            folderFieldCode,
-            context: crmSyncContext
-          }),
-          { correlationId }
-        )
-      }).catch((syncError) => {
-        console.error('report_photo_crm_sync_failed', {
-          correlationId,
-          reportId,
-          photoCode,
-          slotKey: String(report.slotKey || ''),
-          message: String(syncError?.message || syncError || '')
-        });
+        payload: {
+          status: nextStatus,
+          diskFolderId: uploaded.folderId,
+          contextKey: req.bitrixContext?.key || ''
+        }
       });
 
       return res.json({
@@ -1172,21 +1120,15 @@ export const createReportsRouter = ({
         status: 'done'
       });
 
-      await reportCrmSyncQueue.enqueue({
+      // Durable CRM sync: persist a job; the background worker performs it with
+      // retry and survives process restarts.
+      await crmSyncJobStore.enqueue({
         reportId,
-        task: async () => runRetryableCrmSync(
-          () => syncReportCrmStrict({
-            bitrixClient,
-            settings,
-            report,
-            status: 'done',
-            photos: currentPhotos,
-            diskFolderId,
-            folderFieldCode,
-            context: crmSyncContext
-          }),
-          { correlationId }
-        )
+        payload: {
+          status: 'done',
+          diskFolderId,
+          contextKey: req.bitrixContext?.key || ''
+        }
       });
 
       const reviewerId = Number(process.env.REPORT_REVIEWER_USER_ID || 0);

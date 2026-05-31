@@ -310,7 +310,8 @@ test('photo upload response returns crm fileId and diskObjectId, and store persi
     settingsStore,
     bitrixClient,
     notificationService,
-    authContextStore
+    authContextStore,
+    crmSyncJobStore: { async enqueue() {} }
   });
 
   const layer = router.stack.find((l) => l?.route?.path === '/:id/photo');
@@ -356,12 +357,8 @@ test('photo upload response returns crm fileId and diskObjectId, and store persi
   assert.equal(upsertCalls[0].fileId, 1902);
 });
 
-test('photo route responds before slow CRM sync because sync is queued in background', async () => {
-  let releaseSync;
-  const syncPause = new Promise((resolve) => {
-    releaseSync = resolve;
-  });
-  let syncCalls = 0;
+test('photo route enqueues a durable CRM sync job with correct payload', async () => {
+  const enqueueCalls = [];
 
   const reportsStore = {
     async getById() {
@@ -413,14 +410,9 @@ test('photo route responds before slow CRM sync because sync is queued in backgr
     async getCrmItem({ entityTypeId, id }) {
       if (entityTypeId === 145) return { id, title: 'АЗС Тест', UF_PHOTO_SET: [42] };
       if (entityTypeId === 1112) return { id, title: '42. Колонки' };
-      if (entityTypeId === 163) return { id, UF_FOLDER: '700' };
       return null;
     },
-    async updateReportItem() {
-      syncCalls += 1;
-      await syncPause;
-      return { ok: true };
-    }
+    async updateReportItem() { return { ok: true }; }
   };
 
   const authContextStore = {
@@ -439,6 +431,10 @@ test('photo route responds before slow CRM sync because sync is queued in backgr
     }
   };
 
+  const crmSyncJobStore = {
+    async enqueue(job) { enqueueCalls.push(job); }
+  };
+
   const router = createReportsRouter({
     reportsStore,
     dispatchService: {},
@@ -449,7 +445,8 @@ test('photo route responds before slow CRM sync because sync is queued in backgr
       async notifyDispatch() {},
       async notifyReportExpired() {}
     },
-    authContextStore
+    authContextStore,
+    crmSyncJobStore
   });
 
   const layer = router.stack.find((l) => l?.route?.path === '/:id/photo');
@@ -469,7 +466,8 @@ test('photo route responds before slow CRM sync because sync is queued in backgr
       userId: 10,
       authId: 'user-auth',
       refreshToken: 'user-refresh',
-      isAdmin: false
+      isAdmin: false,
+      key: 'user-ctx-key'
     }
   };
   const res = {
@@ -478,18 +476,14 @@ test('photo route responds before slow CRM sync because sync is queued in backgr
     json(payload) { responses.push({ status: this.statusCode, payload }); return payload; }
   };
 
-  const startedAt = Date.now();
   await handler(req, res);
-  const elapsedMs = Date.now() - startedAt;
 
   assert.equal(responses[0]?.status, 200);
   assert.equal(responses[0]?.payload?.item?.syncQueued, true);
-  assert.ok(elapsedMs < 120, `route should return quickly, elapsed=${elapsedMs}ms`);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.ok(syncCalls >= 1);
-
-  releaseSync();
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(enqueueCalls.length, 1, 'must enqueue exactly one durable job');
+  assert.equal(enqueueCalls[0].reportId, 88);
+  assert.equal(enqueueCalls[0].payload.status, 'in_progress');
+  assert.equal(enqueueCalls[0].payload.contextKey, 'user-ctx-key');
 });
 
 test('photo route returns structured retryable errorCode for transient Bitrix upload failures', async () => {
@@ -570,7 +564,8 @@ test('photo route returns structured retryable errorCode for transient Bitrix up
       async notifyDispatch() {},
       async notifyReportExpired() {}
     },
-    authContextStore
+    authContextStore,
+    crmSyncJobStore: { async enqueue() {} }
   });
 
   const layer = router.stack.find((l) => l?.route?.path === '/:id/photo');
