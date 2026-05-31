@@ -548,16 +548,23 @@ export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, 
   const photos = await reportsStore.listPhotos(reportId);
   const folderFieldCode = String(settings.report?.fields?.folderId || '').trim();
 
-  // Resolve per-user Bitrix context from the stored context key.
-  // getContextByKey(key) exists in authContextStore; req.bitrixContext.key is what gets stored in the job payload.
+  // CRM writes to the report SPA require admin scope (regular AZS-user tokens
+  // hit insufficient_scope). Resolve the portal admin context for the sync.
+  // payload.contextKey (the uploader) is kept only as an audit/fallback key.
   let context = {};
-  if (payload.contextKey) {
+  const adminEntry = await authContextStore.getLastAdminContext();
+  if (adminEntry?.context) {
+    context = { key: adminEntry.key, ...adminEntry.context };
+  } else if (payload.contextKey) {
+    // Fallback: no admin context available — try the uploader's stored context.
     const stored = await authContextStore.getContextByKey(payload.contextKey);
     if (stored) {
       context = { ...stored, key: payload.contextKey };
     } else {
       console.warn('crm_sync_context_missing', { reportId, contextKey: payload.contextKey });
     }
+  } else {
+    console.warn('crm_sync_admin_context_missing', { reportId });
   }
 
   await syncReportCrmStrict({

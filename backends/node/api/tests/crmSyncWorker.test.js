@@ -58,6 +58,35 @@ test('worker marks failed immediately on non-retryable error', async () => {
   assert.equal(calls.reschedule.length, 0);
 });
 
+test('recover() reclaims stale running jobs and returns the count when the store supports it', async () => {
+  const calls = { reclaim: [] };
+  const store = {
+    async claimNextDue() { return null; },
+    async markDone() {}, async markFailed() {}, async reschedule() {},
+    async reclaimStale(args) { calls.reclaim.push(args); return 3; }
+  };
+  const logs = [];
+  const worker = createCrmSyncWorker({
+    store,
+    runSync: async () => {},
+    logger: { error() {}, log: (...a) => logs.push(a) }
+  });
+  const n = await worker.recover();
+  assert.equal(n, 3, 'recover returns the reclaimed count');
+  assert.equal(calls.reclaim.length, 1, 'reclaimStale called exactly once');
+});
+
+test('recover() resolves to 0 without throwing when the store lacks reclaimStale', async () => {
+  const store = {
+    async claimNextDue() { return null; },
+    async markDone() {}, async markFailed() {}, async reschedule() {}
+    // no reclaimStale
+  };
+  const worker = createCrmSyncWorker({ store, runSync: async () => {} });
+  const n = await worker.recover();
+  assert.equal(n, 0, 'recover is a safe no-op when reclaimStale is absent');
+});
+
 test('worker does not misclassify a markDone failure as a sync failure', async () => {
   const calls = { failed: [], reschedule: [] };
   let job = makeJob({ attempts: 0, max_attempts: 4 });

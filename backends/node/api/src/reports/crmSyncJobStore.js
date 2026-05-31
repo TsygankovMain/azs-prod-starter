@@ -68,6 +68,26 @@ const createPostgresStore = (pool) => ({
     return updateResult.rows[0] ?? null;
   },
 
+  async reclaimStale({ runningTimeoutMs } = {}) {
+    // Re-queue orphaned 'running' jobs (e.g. a process that crashed mid-run).
+    // With no timeout: reset ALL 'running' rows — correct for the single-worker-
+    // per-process model, where the worker only calls this at startup (so any
+    // 'running' row is by definition orphaned). With a timeout: only rows whose
+    // updated_at predates the cutoff, so future multi-worker setups stay safe.
+    if (Number.isFinite(runningTimeoutMs)) {
+      const cutoff = new Date(Date.now() - Number(runningTimeoutMs));
+      const result = await pool.query(
+        `UPDATE crm_sync_jobs SET status = 'pending', next_attempt_at = NOW(), updated_at = NOW() WHERE status = 'running' AND updated_at < $1`,
+        [cutoff]
+      );
+      return result.rowCount ?? 0;
+    }
+    const result = await pool.query(
+      `UPDATE crm_sync_jobs SET status = 'pending', next_attempt_at = NOW(), updated_at = NOW() WHERE status = 'running'`
+    );
+    return result.rowCount ?? 0;
+  },
+
   async markDone({ id }) {
     await pool.query(
       `UPDATE crm_sync_jobs SET status = 'done', updated_at = NOW() WHERE id = $1`,
@@ -156,6 +176,22 @@ const createMysqlStore = (pool) => ({
       [candidate.id]
     );
     return rows[0] ?? null;
+  },
+
+  async reclaimStale({ runningTimeoutMs } = {}) {
+    // See PG impl above for semantics. Returns affectedRows.
+    if (Number.isFinite(runningTimeoutMs)) {
+      const cutoffSql = toDateSql(new Date(Date.now() - Number(runningTimeoutMs)));
+      const [result] = await pool.execute(
+        `UPDATE crm_sync_jobs SET status = 'pending', next_attempt_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE status = 'running' AND updated_at < ?`,
+        [cutoffSql]
+      );
+      return result?.affectedRows ?? 0;
+    }
+    const [result] = await pool.execute(
+      `UPDATE crm_sync_jobs SET status = 'pending', next_attempt_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE status = 'running'`
+    );
+    return result?.affectedRows ?? 0;
   },
 
   async markDone({ id }) {

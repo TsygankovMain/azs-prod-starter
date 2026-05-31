@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCrmSyncJobStore } from '../src/reports/crmSyncJobStore.js';
 
+// The MySQL store serializes timestamps via toDateSql (a UTC ISO slice with a
+// space). Re-parsing such a string with `new Date()` would treat it as LOCAL
+// time and drift by the host offset, so parse it back as UTC explicitly.
+const parseSqlUtc = (value) => {
+  if (value instanceof Date) return value;
+  const s = String(value);
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s)
+    ? new Date(`${s.replace(' ', 'T')}Z`)
+    : new Date(s);
+};
+
 // Minimal in-memory fake of a pg Pool: records SQL, serves canned rows.
 const createFakePgPool = () => {
   const rows = [];
@@ -45,6 +56,21 @@ const createFakePgPool = () => {
         const row = rows.find((r) => r.id === params[1]);
         if (row) { row.status = 'failed'; row.last_error = params[0]; row.updated_at = new Date(); }
         return { rows: [] };
+      }
+      // reclaimStale: move stuck 'running' jobs back to 'pending'.
+      // Two shapes: with a WHERE updated_at < $1 cutoff (params[0]) or unconditional.
+      if (text.startsWith("UPDATE crm_sync_jobs SET status = 'pending', next_attempt_at = NOW()")) {
+        const cutoff = text.includes('AND updated_at <') ? new Date(params[0]) : null;
+        let count = 0;
+        for (const row of rows) {
+          if (row.status !== 'running') continue;
+          if (cutoff && !(new Date(row.updated_at) < cutoff)) continue;
+          row.status = 'pending';
+          row.next_attempt_at = new Date();
+          row.updated_at = new Date();
+          count += 1;
+        }
+        return { rows: [], rowCount: count };
       }
       if (text.startsWith("UPDATE crm_sync_jobs SET status = 'pending'")) {
         const row = rows.find((r) => r.id === params[2]);
@@ -154,6 +180,23 @@ const createFakeMysqlPool = ({ affectedRowsOnUpdate = 1 } = {}) => {
         if (row) { row.status = 'failed'; row.last_error = params[0]; row.updated_at = new Date(); }
         return [{ affectedRows: 1 }];
       }
+      // reclaimStale: move stuck 'running' jobs back to 'pending'.
+      // Store next_attempt_at as the same SQL-string shape enqueue uses so the
+      // subsequent claimNextDue (which compares against a SQL-string `now`) works.
+      if (text.startsWith("UPDATE crm_sync_jobs SET status = 'pending', next_attempt_at = CURRENT_TIMESTAMP")) {
+        const cutoff = text.includes('AND updated_at <') ? parseSqlUtc(params[0]) : null;
+        const nowSql = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        let count = 0;
+        for (const row of rows) {
+          if (row.status !== 'running') continue;
+          if (cutoff && !(new Date(row.updated_at) < cutoff)) continue;
+          row.status = 'pending';
+          row.next_attempt_at = nowSql;
+          row.updated_at = new Date();
+          count += 1;
+        }
+        return [{ affectedRows: count }];
+      }
       if (text.startsWith("UPDATE crm_sync_jobs SET status = 'pending'")) {
         const row = rows.find((r) => r.id === params[2]);
         if (row) { row.status = 'pending'; row.next_attempt_at = params[0]; row.last_error = params[1]; row.attempts += 1; row.updated_at = new Date(); }
@@ -204,4 +247,80 @@ test('PG: markFailed sets status failed and records last_error', async () => {
   const listed = await store.listByReport(5);
   assert.equal(listed[0].status, 'failed');
   assert.equal(listed[0].last_error, 'network timeout');
+});
+
+// ---------------------------------------------------------------------------
+// C1: reclaimStale — orphaned 'running' jobs must be rescuable on boot
+// ---------------------------------------------------------------------------
+
+test('PG: reclaimStale resets a running job back to pending so it can be reclaimed', async () => {
+  const pool = createFakePgPool();
+  const store = createCrmSyncJobStore({ pool, dbType: 'postgresql' });
+  await store.ensureSchema();
+  await store.enqueue({ reportId: 9, payload: { a: 1 } });
+  const claimed = await store.claimNextDue({ now: new Date() });
+  assert.equal(claimed.status, 'running');
+  // The report is now skipped by claimNextDue (has a running job).
+  assert.equal(await store.claimNextDue({ now: new Date() }), null);
+
+  const reclaimed = await store.reclaimStale();
+  assert.equal(reclaimed, 1, 'reclaimStale returns the reclaimed count');
+
+  const afterReclaim = (await store.listByReport(9))[0];
+  assert.equal(afterReclaim.status, 'pending', 'running job is pending again');
+
+  const reclaimedAgain = await store.claimNextDue({ now: new Date() });
+  assert.ok(reclaimedAgain, 'the previously-orphaned job is claimable once more');
+  assert.equal(reclaimedAgain.report_id, 9);
+});
+
+test('PG: reclaimStale with runningTimeoutMs only resets rows older than the cutoff', async () => {
+  const pool = createFakePgPool();
+  const store = createCrmSyncJobStore({ pool, dbType: 'postgresql' });
+  await store.ensureSchema();
+  await store.enqueue({ reportId: 11, payload: { a: 1 } });
+  await store.claimNextDue({ now: new Date() }); // → running, updated_at = now
+
+  // Large timeout → cutoff far in the past → recent running row NOT reclaimed.
+  const none = await store.reclaimStale({ runningTimeoutMs: 60 * 60 * 1000 });
+  assert.equal(none, 0, 'recent running row is not reclaimed under a large timeout');
+  assert.equal((await store.listByReport(11))[0].status, 'running');
+
+  // Negative timeout → cutoff is in the future → every running row IS reclaimed.
+  const some = await store.reclaimStale({ runningTimeoutMs: -1000 });
+  assert.equal(some, 1, 'row is reclaimed when the cutoff is in the future');
+  assert.equal((await store.listByReport(11))[0].status, 'pending');
+});
+
+test('MySQL: reclaimStale resets running jobs back to pending and returns affectedRows', async () => {
+  const pool = createFakeMysqlPool({ affectedRowsOnUpdate: 1 });
+  const store = createCrmSyncJobStore({ pool, dbType: 'mysql' });
+  await store.ensureSchema();
+  await store.enqueue({ reportId: 21, payload: { a: 1 } });
+  const claimed = await store.claimNextDue({ now: new Date() });
+  assert.equal(claimed.status, 'running');
+
+  const reclaimed = await store.reclaimStale();
+  assert.equal(reclaimed, 1);
+  assert.equal((await store.listByReport(21))[0].status, 'pending');
+
+  const reclaimedAgain = await store.claimNextDue({ now: new Date() });
+  assert.ok(reclaimedAgain);
+  assert.equal(reclaimedAgain.report_id, 21);
+});
+
+test('MySQL: reclaimStale with runningTimeoutMs respects the cutoff', async () => {
+  const pool = createFakeMysqlPool({ affectedRowsOnUpdate: 1 });
+  const store = createCrmSyncJobStore({ pool, dbType: 'mysql' });
+  await store.ensureSchema();
+  await store.enqueue({ reportId: 22, payload: { a: 1 } });
+  await store.claimNextDue({ now: new Date() });
+
+  const none = await store.reclaimStale({ runningTimeoutMs: 60 * 60 * 1000 });
+  assert.equal(none, 0);
+  assert.equal((await store.listByReport(22))[0].status, 'running');
+
+  const some = await store.reclaimStale({ runningTimeoutMs: -1000 });
+  assert.equal(some, 1);
+  assert.equal((await store.listByReport(22))[0].status, 'pending');
 });

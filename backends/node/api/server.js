@@ -595,8 +595,15 @@ const crmSyncWorker = createCrmSyncWorker({
   isRetryable: (error) => /(OPERATION_TIME_LIMIT|QUERY_LIMIT_EXCEEDED|HTTP 429|HTTP 504|too many requests|gateway timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|network error|timeout)/i.test(String(error?.message || error || ''))
 });
 if (String(process.env.CRM_SYNC_WORKER_ENABLED || 'true').toLowerCase() === 'true') {
-  crmSyncWorker.start();
-  console.log('crm_sync worker started');
+  // Crash recovery first: re-queue any 'running' jobs orphaned by a previous
+  // process that died mid-run, otherwise their reports never sync again.
+  crmSyncWorker.recover()
+    .then((n) => { if (n) console.log(`crm_sync reclaimed ${n} stale running job(s)`); })
+    .catch((error) => console.error('crm_sync reclaim failed', error))
+    .finally(() => {
+      crmSyncWorker.start();
+      console.log('crm_sync worker started');
+    });
 }
 
 const tokenRefreshScheduler = createTokenRefreshScheduler({

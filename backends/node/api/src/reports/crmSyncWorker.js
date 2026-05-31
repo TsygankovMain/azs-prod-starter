@@ -89,6 +89,22 @@ export const createCrmSyncWorker = ({
   };
 
   /**
+   * Crash recovery: re-queue 'running' jobs orphaned by a previous process that
+   * died mid-run. Without this, a stuck 'running' row blocks its report from
+   * ever syncing again (claimNextDue skips reports that have a running job), and
+   * even POST /:id/resync can't help. Safe no-op if the store predates
+   * reclaimStale. Returns the number of jobs reclaimed.
+   */
+  const recover = async () => {
+    if (typeof store.reclaimStale !== 'function') return 0;
+    const reclaimed = Number(await store.reclaimStale()) || 0;
+    if (reclaimed > 0 && typeof logger.log === 'function') {
+      logger.log('crm_sync_reclaimed_stale_running', { count: reclaimed });
+    }
+    return reclaimed;
+  };
+
+  /**
    * Start the polling interval. Idempotent — calling start() twice is a no-op.
    */
   const start = () => {
@@ -109,7 +125,7 @@ export const createCrmSyncWorker = ({
     }
   };
 
-  return { tick, drain, start, stop };
+  return { tick, drain, recover, start, stop };
 };
 
 export default createCrmSyncWorker;

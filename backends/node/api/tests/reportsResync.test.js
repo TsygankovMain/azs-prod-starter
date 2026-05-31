@@ -144,6 +144,8 @@ test('POST /:id/resync enqueues a job and returns {ok:true, syncQueued:true}', a
   assert.equal(enqueueCalls[0].reportId, 55);
   assert.equal(enqueueCalls[0].payload.status, 'in_progress');
   assert.equal(enqueueCalls[0].payload.diskFolderId, 42);
+  // contextKey is the caller's key, stored only as an audit/fallback hint. The
+  // worker syncs under the portal ADMIN context (see buildCrmSyncRunner / I2).
   assert.equal(enqueueCalls[0].payload.contextKey, 'reviewer-ctx-key');
 });
 
