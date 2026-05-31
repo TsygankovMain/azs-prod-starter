@@ -41,3 +41,35 @@ test('worker reschedules a retryable failure, then marks failed once attempts ex
   await worker.tick();
   assert.equal(calls.failed.length, 1);
 });
+
+test('worker marks failed immediately on non-retryable error', async () => {
+  const calls = { failed: [], reschedule: [] };
+  let job = makeJob({ attempts: 0, max_attempts: 4 });
+  const store = {
+    async claimNextDue() { const j = job; job = null; return j; },
+    async markDone() {},
+    async markFailed(x) { calls.failed.push(x); },
+    async reschedule(x) { calls.reschedule.push(x); }
+  };
+  const runSync = async () => { throw new Error('VALIDATION_ERROR'); };
+  const worker = createCrmSyncWorker({ store, runSync, backoffMs: [10], now: () => 1000, isRetryable: () => false });
+  await worker.tick();
+  assert.equal(calls.failed.length, 1);
+  assert.equal(calls.reschedule.length, 0);
+});
+
+test('worker does not misclassify a markDone failure as a sync failure', async () => {
+  const calls = { failed: [], reschedule: [] };
+  let job = makeJob({ attempts: 0, max_attempts: 4 });
+  const store = {
+    async claimNextDue() { const j = job; job = null; return j; },
+    async markDone() { throw new Error('db down'); },
+    async markFailed(x) { calls.failed.push(x); },
+    async reschedule(x) { calls.reschedule.push(x); }
+  };
+  const runSync = async () => {}; // sync SUCCEEDS
+  const worker = createCrmSyncWorker({ store, runSync, backoffMs: [10], now: () => 1000 });
+  await assert.rejects(() => worker.tick(), /db down/);
+  assert.equal(calls.failed.length, 0);
+  assert.equal(calls.reschedule.length, 0);
+});

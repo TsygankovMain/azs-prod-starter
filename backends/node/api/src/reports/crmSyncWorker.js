@@ -35,35 +35,37 @@ export const createCrmSyncWorker = ({
     const job = await store.claimNextDue({ now: new Date(now()) });
     if (!job) return false;
 
+    let syncError = null;
     try {
       await runSync(job);
-      await store.markDone({ id: job.id });
     } catch (err) {
-      const attempts = Number(job.attempts || 0);
-      const maxAttempts = Number(job.max_attempts || backoffMs.length + 1);
-      const retryable = isRetryable(err);
-      const errorMsg = String(err?.message || err || '');
+      syncError = err;
+    }
 
-      if (retryable && attempts + 1 < maxAttempts) {
-        const backoffIndex = Math.min(attempts, backoffMs.length - 1);
-        const jitter = Math.floor(Math.random() * 250);
-        const wait = backoffMs[backoffIndex] + jitter;
-        await store.reschedule({
-          id: job.id,
-          nextAttemptAt: new Date(now() + wait),
-          error: errorMsg,
-        });
-      } else {
-        await store.markFailed({ id: job.id, error: errorMsg });
-        logger.error('crm_sync_job_failed', {
-          jobId: job.id,
-          reportId: job.report_id,
-          attempts,
-          maxAttempts,
-          retryable,
-          error: errorMsg,
-        });
-      }
+    if (!syncError) {
+      await store.markDone({ id: job.id });
+      return true;
+    }
+
+    const attempts = Number(job.attempts || 0);
+    const retryable = isRetryable(syncError);
+    const maxAttempts = Number(job.max_attempts || backoffMs.length + 1);
+    const errorMsg = String(syncError?.message || syncError || '');
+
+    if (retryable && attempts + 1 < maxAttempts) {
+      const wait = backoffMs[Math.min(attempts, backoffMs.length - 1)] + Math.floor(Math.random() * 250);
+      await store.reschedule({
+        id: job.id,
+        nextAttemptAt: new Date(now() + wait),
+        error: errorMsg,
+      });
+    } else {
+      await store.markFailed({ id: job.id, error: errorMsg });
+      logger.error('crm_sync_job_failed', {
+        jobId: job.id,
+        reportId: job.report_id,
+        message: errorMsg,
+      });
     }
 
     return true;
@@ -91,7 +93,9 @@ export const createCrmSyncWorker = ({
    */
   const start = () => {
     if (timer) return;
-    timer = setInterval(() => { void drain(); }, pollIntervalMs);
+    timer = setInterval(() => {
+      drain().catch((error) => logger.error('crm_sync_drain_error', { message: String(error?.message || error || '') }));
+    }, pollIntervalMs);
     if (typeof timer.unref === 'function') timer.unref();
   };
 
