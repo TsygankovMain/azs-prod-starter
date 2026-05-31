@@ -576,6 +576,38 @@ const syncReportCrmStrict = async ({
   });
 };
 
+export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, authContextStore }) => async (job) => {
+  const reportId = Number(job.report_id ?? job.reportId);
+  const payload = typeof job.payload === 'string' ? JSON.parse(job.payload || '{}') : (job.payload || {});
+  const report = await reportsStore.getById(reportId);
+  if (!report) {
+    // Report no longer exists — nothing to sync; resolve normally so the worker marks the job done.
+    return;
+  }
+  const settings = await settingsStore.read();
+  const photos = await reportsStore.listPhotos(reportId);
+  const folderFieldCode = String(settings.report?.fields?.folderId || '').trim();
+
+  // Resolve per-user Bitrix context from the stored context key.
+  // getContextByKey(key) exists in authContextStore; req.bitrixContext.key is what gets stored in the job payload.
+  let context = {};
+  if (payload.contextKey) {
+    const stored = await authContextStore.getContextByKey(payload.contextKey);
+    if (stored) context = { key: payload.contextKey, ...stored };
+  }
+
+  await syncReportCrmStrict({
+    bitrixClient,
+    settings,
+    report,
+    status: payload.status || report.status,
+    photos,
+    diskFolderId: payload.diskFolderId ?? report.diskFolderId ?? null,
+    folderFieldCode,
+    context
+  });
+};
+
 const runRetryableCrmSync = async (task, { correlationId = '' } = {}) => {
   for (let retryIndex = 0; ; retryIndex += 1) {
     try {
