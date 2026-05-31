@@ -12,6 +12,37 @@ Format per entry:
 
 ---
 
+## 2026-05-31 — Sprints 2-5 (v2.0): frontend + deep-link flag + docs — IMPLEMENTED & REVIEWED
+
+### Scope
+Branch `feature/v2.0`. Sprints 2-5 from the design spec, executed with parallel Sonnet agents (disjoint file sets, controller-committed) + per-screen regression reviews.
+
+### What shipped
+| Sprint | Commit | Result |
+|---|---|---|
+| Docs | `201a2ac` | Consolidated `docs/`: README index, `CHANGELOG.md`, `RELEASES.md`, `architecture/overview.md` + `architecture/feature-map.md`; sprint logs archived to `docs/logs/archive/`; deleted stub `bitrix24-portal-setup.md`. |
+| S5 | `fd2d57c` | Bot deep-link button behind `ENABLE_REPORT_DEEP_LINK` (default off) — `dispatchService` builds keyboard via `reportLinks`, `notificationService` threads it; flag-off byte-identical. index/install screens get B24 status-step panels + error alerts. +4 tests. |
+| S2 | `5f185c4` | Admin `[reportId]` → mobile **focus-mode A1**: hero camera for active slot, sticky progress stepper, big touch buttons, auto-advance, "Все слоты" collapsible. Script/queue/camera logic untouched. |
+| S3 | `5f185c4` | Reviewer: schedule UX hint ("задаётся один раз"); manual AZS **multi-select** ("Запросить у N АЗС", backend already took arrays); per-AZS filter + mini-KPI (client-side from existing reports); resync button → new `api.resyncReport`. |
+| S4 | `5f185c4` | Settings: adaptive nav (desktop sidebar w/ completion ✓ / mobile B24Accordion); field "?" hints; per-section completion badges; sticky save; raw HTML → B24 components. Smart-process mapping logic preserved. |
+
+### Regression reviews (per screen)
+- **Settings (highest risk — select→B24Select):** ✅ verified every smart-process selector still triggers `loadFieldsForModule`/`loadReportStages` on change; all v-model paths and handlers intact. No regression.
+- **Admin focus-mode:** ❌→✅ caught + fixed a **Critical** bug — `scrollToFirstProblemSlot` ("К проблемам" + auto-scroll on blocked submit) silently no-opped when the collapsed-by-default "Все слоты" list left its slot refs unmounted. Fixed: expand list + `nextTick` before scrolling. Restored the concurrency-mode badge ("бережный режим" on x1).
+- **Reviewer:** all 4 changes verified; `manualRequest.azsId` fully migrated to `azsIds` (no dangling refs).
+
+### Verification
+- Backend suite **130/130 green** (Sprint 1's 126 + 4 deep-link tests).
+- All 4 touched frontend files lint-clean (0 errors, 0 warnings after `--fix`).
+- Frontend `typecheck` not run to completion — known `oxc-parser` native-binding issue in this environment (pre-existing, unrelated). **Follow-up:** run `nuxi typecheck` in a working CI/dev env before release.
+
+### Known follow-ups
+- syncStatus badge in the reviewer feed: the feed data doesn't yet carry per-report `syncStatus`; the resync button works, but the "не синхронизировано" badge needs the feed to surface sync state (TODO in code).
+- Live device test of mobile admin camera/upload flow (can't verify in this env).
+- Folder-template default alignment (former Sprint-1 T9) — dropped per user; revisit only if a reinstall reintroduces the old structure.
+
+---
+
 ## 2026-05-31 — Sprint 1 (v2.0): durable CRM-sync queue — IMPLEMENTED & REVIEWED
 
 ### Scope
