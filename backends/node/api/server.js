@@ -16,7 +16,9 @@ import createDispatchScheduler from './src/dispatch/dispatchScheduler.js';
 import createTimeoutWatcher from './src/dispatch/timeoutWatcher.js';
 import { readDispatchCandidates } from './src/dispatch/dispatchCandidatesFileStore.js';
 import createReportsStore from './src/reports/reportsStore.js';
-import createReportsRouter from './src/reports/reportsRoutes.js';
+import createReportsRouter, { buildCrmSyncRunner } from './src/reports/reportsRoutes.js';
+import createCrmSyncJobStore from './src/reports/crmSyncJobStore.js';
+import { createCrmSyncWorker } from './src/reports/crmSyncWorker.js';
 import createNotificationService from './src/notifications/notificationService.js';
 import createBotRegistryService from './src/notifications/botRegistryService.js';
 import { createAuthContextStore } from './src/auth/authContextStore.js';
@@ -154,6 +156,7 @@ const ensureRestAppUriPlacement = async ({
 
 const dispatchLogStore = createDispatchLogStore({ pool, dbType });
 const reportsStore = createReportsStore({ pool, dbType });
+const crmSyncJobStore = createCrmSyncJobStore({ pool, dbType });
 const dbSettingsStore = createDatabaseSettingsStore({ pool, dbType });
 const authContextStore = createAuthContextStore();
 const bitrixClient = createBitrixRestClient({
@@ -319,7 +322,8 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
   settingsStore,
   bitrixClient,
   notificationService,
-  authContextStore
+  authContextStore,
+  crmSyncJobStore
 }));
 
 app.post('/api/install', async (req, res) => {
@@ -550,6 +554,10 @@ reportsStore.ensurePhotoSchema()
     console.error('Failed to prepare report_photo schema', error);
   });
 
+crmSyncJobStore.ensureSchema()
+  .then(() => console.log('crm_sync_jobs schema is ready'))
+  .catch((error) => console.error('Failed to prepare crm_sync_jobs schema', error));
+
 const scheduler = createDispatchScheduler({
   dispatchService,
   getCandidates: () => readDispatchCandidates(),
@@ -578,6 +586,18 @@ const scheduler = createDispatchScheduler({
 scheduler.start().catch((error) => {
   console.error('Failed to start scheduler', error);
 });
+
+const crmSyncWorker = createCrmSyncWorker({
+  store: crmSyncJobStore,
+  runSync: buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore }),
+  backoffMs: [800, 1600, 3200],
+  pollIntervalMs: Number(process.env.CRM_SYNC_POLL_MS || 1000),
+  isRetryable: (error) => /(OPERATION_TIME_LIMIT|QUERY_LIMIT_EXCEEDED|HTTP 429|HTTP 504|too many requests|gateway timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|network error|timeout)/i.test(String(error?.message || error || ''))
+});
+if (String(process.env.CRM_SYNC_WORKER_ENABLED || 'true').toLowerCase() === 'true') {
+  crmSyncWorker.start();
+  console.log('crm_sync worker started');
+}
 
 const tokenRefreshScheduler = createTokenRefreshScheduler({
   authContextStore,
