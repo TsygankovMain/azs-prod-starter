@@ -101,7 +101,22 @@ test('buildFolderPath supports {azs_name} token with fallback when azsName is em
   assert.equal(path, '2026-04/28/17_AZS_17');
 });
 
-test('buildPhotoFileName creates AZS/date/time/category filename', () => {
+test('buildPhotoFileName uses the AZS name (not id) as the first segment', () => {
+  const fileName = buildPhotoFileName({
+    azsId: 4,
+    azsName: 'АЗС 17',
+    slotDate: '2026-05-28',
+    slotHHmm: '1414',
+    photoCode: '42',
+    requiredTitle: '42. Колонки',
+    originalName: 'photo.JPEG',
+    mimeType: 'image/jpeg'
+  });
+
+  assert.equal(fileName, 'АЗС_17_2026-05-28_1414_Колонки.jpg');
+});
+
+test('buildPhotoFileName falls back to azsId when azsName is empty', () => {
   const fileName = buildPhotoFileName({
     azsId: 4,
     slotDate: '2026-05-28',
@@ -226,7 +241,7 @@ test('uploadPhoto creates folder path and uploads file with required pattern', a
   });
 
   assert.equal(result.folderPath, '2026-05/28/4_АЗС 4');
-  assert.equal(result.fileName, '4_2026-05-28_0930_Колонки.jpg');
+  assert.equal(result.fileName, 'АЗС_4_2026-05-28_0930_Колонки.jpg');
   assert.equal(diskApi.uploads.length, 1);
   assert.equal(diskApi.deletedFileIds.length, 0);
   assert.equal(diskApi.uploads[0].fileName, result.fileName);

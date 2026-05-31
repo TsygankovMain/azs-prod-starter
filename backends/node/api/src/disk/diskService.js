@@ -203,6 +203,7 @@ export const buildFolderPath = ({
 
 export const buildPhotoFileName = ({
   azsId,
+  azsName,
   slotDate,
   slotHHmm,
   requiredTitle,
@@ -225,7 +226,11 @@ export const buildPhotoFileName = ({
     throw new Error('slotDate must be YYYY-MM-DD');
   }
 
-  const safeAzs = sanitizeFileSegment(azsId, 'AZS');
+  // Filename leads with the AZS NAME (same source as the folder name), not the
+  // smart-process item id. Fall back to the id only when no name is available.
+  // Keep azsId required above so the fallback always has a value.
+  const azsSource = String(azsName ?? '').trim() || azsId;
+  const safeAzs = sanitizeFileSegment(azsSource, 'AZS');
   const safeSlot = sanitizeFileSegment(slotHHmm, '0000').replace(/[^0-9]/g, '').slice(0, 4) || '0000';
   const safeCategory = buildPhotoCategory({ requiredTitle, photoCode });
   const extension = resolvePhotoFileExtension({ originalName, mimeType });
@@ -306,7 +311,7 @@ export const uploadPhoto = async (diskApi, {
 
   const folderPath = buildFolderPath({ capturedAt: folderDate, azsId, azsName, folderNameTemplate });
   const targetFolderId = await ensureFolderPath(diskApi, { rootFolderId, path: folderPath }, context);
-  const fileName = buildPhotoFileName({ azsId, slotDate, slotHHmm, requiredTitle, photoCode, originalName, mimeType });
+  const fileName = buildPhotoFileName({ azsId, azsName, slotDate, slotHHmm, requiredTitle, photoCode, originalName, mimeType });
   const uploaded = await uploadFileReplacingDuplicate(diskApi, {
     folderId: targetFolderId,
     fileName,
