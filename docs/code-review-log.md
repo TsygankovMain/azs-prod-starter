@@ -12,6 +12,41 @@ Format per entry:
 
 ---
 
+## 2026-05-31 — Sprint 1 (v2.0): durable CRM-sync queue — IMPLEMENTED & REVIEWED
+
+### Scope
+Branch `feature/v2.0` (from `master @ 2e60861`). Sprint 1 of the v2.0 plan (`docs/superpowers/plans/2026-05-31-azs-v2-sprint1-durable-crm-sync.md`): close the P0 in-memory CRM-sync loss identified in the prior review. Executed subagent-driven (fresh implementer + spec reviewer + code-quality reviewer per task).
+
+### What shipped (commits on feature/v2.0)
+| Task | Commits | Result |
+|---|---|---|
+| T1-2 | `0882cb8`, `db3d044` | `src/reports/crmSyncJobStore.js` — durable job table `crm_sync_jobs` (PG+MySQL), enqueue/claim/markDone/markFailed/reschedule. Fixed MySQL double-claim (affectedRows guard) + toDateSql NaN guard. |
+| T3-4 | `28ddc67`, `2f170ba` | `src/reports/crmSyncWorker.js` — polling worker, backoff `[800,1600,3200]`+jitter, exhaust→failed. Fixed: separate sync-error vs persistence-error in tick(); log drain failures. |
+| T5 | `96878ec` | `buildCrmSyncRunner` extracted — worker reuses the same `syncReportCrmStrict` path; resolves per-user context via `getContextByKey`. |
+| T6 | `ed70458`, `88f0001` | `/photo` + `/submit` now enqueue a durable job instead of the in-memory queue; in-memory `createPerReportTaskQueue` + `runRetryableCrmSync` removed. **Also removed the admin-context 502 gate from the upload/submit request path** (deferred sync resolves context itself) — uploads no longer fail when the admin OAuth token is briefly unavailable. |
+| T7 | `20da35b`, `1ff3638` | `POST /:id/resync` (reviewer-guarded) + `syncStatus {synced,lastSyncError,syncState}` on `GET /:id`. |
+| T8 | `0612e07`, `d8cdbdd` | Boot wiring in `server.js`: construct store+worker, `ensureSchema`, start worker (gated `CRM_SYNC_WORKER_ENABLED`, default on); `.env.example` updated. |
+| T9 | — | **DEFERRED** (folder-template default alignment) — blocked on confirming the exact production template string from portal settings; also needs `{yyyy-mm-dd}` token support in `diskService.js`. |
+
+### Risk closed
+- **P0 CRM-sync loss on restart (was high):** sync jobs now persist in `crm_sync_jobs` and resume after a crash/deploy. `synced=false` + `lastSyncError` are visible to reviewers; a manual "Пересинхронизировать" re-enqueue exists. No more silent orphaned smart-process items.
+- **Secondary win:** removed an admin-token 502 gate from photo upload/submit — directly reduces the token-fragility class of failures.
+
+### Verification
+- Sprint-1 test suites: **27/27 green** (`crmSyncJobStore`, `crmSyncWorker`, `buildCrmSyncRunner`, `reportsResync`, `reportsPhotoCrmContext`).
+- Each task passed an independent spec-compliance review AND a code-quality review; all reviewer-found issues (MySQL double-claim, worker error misclassification, admin-context gate, missing 403 test) were fixed and re-verified before marking complete.
+- `node --check server.js` passes; boot wiring traced (import → construct → inject → ensureSchema → worker start).
+- **Not yet run:** live kill-restart smoke (requires a running DB) — to be done in staging: upload photo → kill process before sync → restart → confirm the job resumes and CRM item syncs.
+
+### Pre-existing failures (NOT introduced by Sprint 1)
+4 tests fail at the sprint baseline `fcd336f` (verified by running them at base before any Sprint-1 code): `authContextStore` (persists/restores last admin), `dispatchService` (duplicate-prevention + jitter), `verifyToken` (×2). They are assertion failures unrelated to CRM-sync — likely environment-sensitive (filesystem `auth-context.json` writes, `Math.random` jitter determinism, JWT timing). **Follow-up:** triage separately; out of Sprint 1 scope.
+
+### Next
+- T9 once the operator confirms the prod folder-template string.
+- Sprints 2-5 (frontend) per their own plans.
+
+---
+
 ## 2026-05-31 — Review of master vs client chat feedback + sprint-10 verification
 
 ### Scope
