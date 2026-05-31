@@ -151,6 +151,7 @@ export const createNotificationService = ({
     azsTitle,
     deadlineAt,
     timezone,
+    keyboard = null,
     context = {}
   }) => {
     const message = buildDispatchMessage({
@@ -162,6 +163,7 @@ export const createNotificationService = ({
     return notify({
       userId,
       message,
+      keyboard,
       context
     });
   };

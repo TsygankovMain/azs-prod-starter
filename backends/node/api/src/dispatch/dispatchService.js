@@ -1,3 +1,5 @@
+import { buildRestAppUriLink } from '../notifications/reportLinks.js';
+
 const MINUTES_TO_MS = 60 * 1000;
 
 const pad2 = (value) => String(value).padStart(2, '0');
@@ -190,12 +192,33 @@ export const createDispatchService = ({
           azsId: candidate.azsId,
           context
         });
+
+        let dispatchKeyboard = null;
+        if (process.env.ENABLE_REPORT_DEEP_LINK === 'true') {
+          try {
+            const appCode = String(process.env.BITRIX_APP_CODE || '').trim();
+            const reserveItemId = reportItemId || reserve.id;
+            if (appCode && reserveItemId) {
+              const deepLink = buildRestAppUriLink({ appCode, reportId: reserveItemId });
+              if (deepLink) {
+                dispatchKeyboard = [[{
+                  TEXT: 'Открыть отчёт',
+                  LINK: deepLink
+                }]];
+              }
+            }
+          } catch {
+            // Defensive: skip keyboard if link building fails
+          }
+        }
+
         await notificationService.notifyDispatch({
           userId: Number(candidate.adminUserId),
           azsId: candidate.azsId,
           azsTitle,
           deadlineAt,
           timezone: settings.timezone,
+          keyboard: dispatchKeyboard,
           context
         });
       } catch (notifyError) {

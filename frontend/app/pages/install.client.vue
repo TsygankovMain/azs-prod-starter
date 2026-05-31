@@ -33,9 +33,17 @@ $logger.log('Installation started', {
 const confetti = useConfetti()
 
 const isShowDebug = ref(false)
+const installError = ref('')
 
 const progressColor = ref<ProgressProps['color']>('air-primary')
 const progressValue = ref<null | number>(null)
+
+// Install step labels shown in the status card
+const installStepLabels: Record<string, string> = {
+  init: 'Авторизация',
+  serverSide: 'Регистрация бота / Привязка размещения',
+  finish: 'Готово'
+}
 
 const apiStore = useApiStore()
 // endregion ////
@@ -145,6 +153,8 @@ onMounted(async () => {
       await step.action()
     }
   } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error || 'Неизвестная ошибка')
+    installError.value = msg
     processErrorGlobal(error)
   }
 })
@@ -174,6 +184,38 @@ onMounted(async () => {
         {{ steps[stepCode]?.caption || '...' }}
       </ProseP>
     </div>
+
+    <!-- Status steps card -->
+    <B24Card class="mt-4 w-full max-w-sm" variant="outline">
+      <div class="space-y-2">
+        <div
+          v-for="([key, label]) in Object.entries(installStepLabels)"
+          :key="key"
+          class="flex items-center gap-2 text-sm"
+        >
+          <B24Badge
+            :color="stepCode === 'finish' && key !== 'finish'
+              ? 'air-primary-success'
+              : (key === stepCode ? 'air-primary' : (Object.keys(installStepLabels).indexOf(key) < Object.keys(installStepLabels).indexOf(stepCode) ? 'air-primary-success' : 'air-secondary'))"
+            class="shrink-0"
+          >
+            {{ Object.keys(installStepLabels).indexOf(key) < Object.keys(installStepLabels).indexOf(stepCode) || stepCode === 'finish'
+              ? '✓'
+              : (key === stepCode ? '...' : '○') }}
+          </B24Badge>
+          <span :class="key === stepCode && stepCode !== 'finish' ? 'font-semibold' : 'text-gray-500'">{{ label }}</span>
+        </div>
+      </div>
+    </B24Card>
+
+    <!-- Error banner -->
+    <B24Alert
+      v-if="installError"
+      class="mt-3 w-full max-w-sm"
+      color="air-primary-alert"
+      title="Ошибка установки"
+      :description="installError"
+    />
 
     <ProsePre v-if="isShowDebug">
       {{ stepsData }}

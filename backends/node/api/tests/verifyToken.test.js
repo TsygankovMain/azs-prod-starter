@@ -1,9 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import jwt from 'jsonwebtoken';
-import { createVerifyToken } from '../utils/verifyToken.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key_here';
+// verifyToken.js captures process.env.JWT_SECRET at module load (and the app
+// signs JWTs with the same env var). Pin a secret BEFORE importing it so the
+// sign side here and the verify side there always agree, even when no .env /
+// JWT_SECRET is present in the environment.
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-jwt-secret';
+const { createVerifyToken } = await import('../utils/verifyToken.js');
+
+const JWT_SECRET = process.env.JWT_SECRET;
 
 const createRes = () => {
   const state = {

@@ -325,7 +325,7 @@ const scrollToQueueAnchor = () => {
   queueAnchorEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
-const scrollToFirstProblemSlot = () => {
+const scrollToFirstProblemSlot = async () => {
   const firstProblemSlot = photoSlots.find((slot) => {
     if (!slot.confirmed) return true
     if (slot.uploadState === 'queued' || slot.uploadState === 'uploading') return true
@@ -333,9 +333,16 @@ const scrollToFirstProblemSlot = () => {
   })
 
   if (firstProblemSlot) {
+    // The "Все слоты" list is collapsed by default (v-if), so its per-slot
+    // refs are not mounted. Expand it and wait a tick so setQueueSlotRef has
+    // registered the element before we scroll to it.
+    showAllSlots.value = true
+    await nextTick()
     const el = queueSlotRefs.get(firstProblemSlot.key)
-    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    return
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
   }
 
   scrollToQueueAnchor()
@@ -731,92 +738,105 @@ onBeforeUnmount(() => {
   }
   queueSlotRefs.clear()
 })
+
+// ── Focus Mode: toggle for the "all slots" list ──────────────────────────────
+const showAllSlots = ref(false)
 </script>
 
 <template>
-  <div class="w-full max-w-[920px] mx-auto px-4 py-4 space-y-4">
-    <B24Card>
-      <template #header>
-        <div class="flex items-center justify-between">
-          <div class="space-y-2">
-            <ProseH2>Экран Администратора АЗС</ProseH2>
-            <div class="flex flex-wrap items-center gap-2">
+  <div class="w-full max-w-[600px] mx-auto px-3 py-3 space-y-3">
+
+    <!-- ─── SLIM STICKY HEADER ──────────────────────────────────────────────── -->
+    <div class="sticky top-0 z-30">
+      <div class="bg-white/95 backdrop-blur-sm border-b border-gray-100 rounded-b-xl shadow-sm px-3 py-2 space-y-2">
+
+        <!-- Row 1: title + nav buttons -->
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex items-center gap-1.5 min-w-0">
+            <span class="text-[13px] font-semibold text-gray-800 truncate">Фотоотчёт АЗС</span>
+            <HelpButton default-role="admin" />
+          </div>
+          <div class="flex items-center gap-1.5">
+            <B24Button
+              color="air-secondary"
+              variant="outline"
+              size="xs"
+              label="Выйти"
+              @click="leaveReport"
+            />
+            <B24Button
+              color="air-primary"
+              variant="outline"
+              size="xs"
+              label="Настройки"
+              @click="openSettings"
+            />
+          </div>
+        </div>
+
+        <!-- Row 2: progress stepper (only when slots are loaded) -->
+        <template v-if="photoSlots.length > 0">
+          <!-- Slot counter + status badges -->
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-[13px] font-medium text-gray-700">
+                Слот {{ activeSlot ? activeSlotNumber : photoSlots.length }}&nbsp;/&nbsp;{{ photoSlots.length }}
+              </span>
+              <B24Badge :color="canSubmitReport ? 'air-primary-success' : (hasUploadErrors ? 'air-primary-alert' : 'air-secondary')" size="xs">
+                {{ uploadedCount }}/{{ photoSlots.length }} загружено
+              </B24Badge>
+              <B24Badge v-if="hasPendingUploads" color="air-secondary" size="xs">загрузка...</B24Badge>
+              <B24Badge v-if="hasPendingUploads && uploadWorker.maxConcurrency === 1" color="air-secondary" size="xs">бережный режим</B24Badge>
+              <B24Badge v-if="hasUploadErrors" color="air-primary-alert" size="xs">есть ошибки</B24Badge>
+              <B24Badge v-if="report?.status === 'done'" color="air-primary-success" size="xs">отправлен</B24Badge>
+            </div>
+            <!-- Submit button always in sticky header -->
+            <div class="flex items-center gap-1.5">
               <B24Button
+                v-if="!canSubmitReport && (hasPendingUploads || hasUploadErrors)"
                 color="air-secondary"
-                variant="outline"
-                label="Выйти из отчёта"
-                @click="leaveReport"
+                size="xs"
+                label="К проблемам"
+                loading-auto
+                @click="scrollToFirstProblemSlot"
               />
               <B24Button
-                color="air-primary"
-                variant="solid"
-                label="В настройки"
-                @click="openSettings"
+                color="air-primary-success"
+                size="xs"
+                label="Сдать отчёт"
+                :disabled="!canSubmitReport"
+                loading-auto
+                @click="submitReport"
               />
             </div>
           </div>
-          <div class="flex items-center gap-2">
-            <B24Badge :color="allUploaded ? 'air-primary-success' : 'air-secondary'">
-              {{ uploadedCount }}/{{ photoSlots.length }} загружено
-            </B24Badge>
-            <HelpButton default-role="admin" />
-          </div>
-        </div>
-      </template>
 
-      <B24Alert
-        color="air-secondary"
-        title="Пошаговый сбор фото"
-        description="Сделайте фото, проверьте кадр, подтвердите его. После подтверждения фото загрузится в фоне."
-      />
-    </B24Card>
-
-    <div
-      v-if="photoSlots.length > 0"
-      class="sticky top-2 z-20"
-    >
-      <B24Card variant="outline">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <div class="flex flex-wrap items-center gap-2">
-            <B24Badge :color="canSubmitReport ? 'air-primary-success' : 'air-secondary'">
-              {{ uploadedCount }}/{{ photoSlots.length }} загружено
-            </B24Badge>
-            <B24Badge color="air-secondary">
-              режим загрузки x{{ uploadWorker.maxConcurrency }}
-            </B24Badge>
-            <B24Badge v-if="hasPendingUploads" color="air-secondary">
-              идёт фоновая загрузка
-            </B24Badge>
-            <B24Badge v-if="hasUploadErrors" color="air-primary-alert">
-              есть проблемы
-            </B24Badge>
-            <B24Badge v-if="report?.status === 'done'" color="air-primary-success">
-              отчёт отправлен
-            </B24Badge>
-          </div>
-          <div class="flex flex-wrap items-center gap-2">
-            <B24Button
-              v-if="!canSubmitReport && (hasPendingUploads || hasUploadErrors)"
-              color="air-secondary"
-              label="Перейти к проблемам"
-              loading-auto
-              @click="scrollToFirstProblemSlot"
-            />
-            <B24Button
-              color="air-primary-success"
-              label="Сдать отчёт"
-              :disabled="!canSubmitReport"
-              loading-auto
-              @click="submitReport"
+          <!-- Segmented progress bar -->
+          <div class="flex gap-0.5 h-1.5 rounded-full overflow-hidden">
+            <div
+              v-for="(slot, index) in photoSlots"
+              :key="slot.key"
+              class="flex-1 rounded-full transition-colors duration-300"
+              :class="{
+                'bg-green-500': slot.uploaded,
+                'bg-yellow-400': slot.confirmed && !slot.uploaded && !slot.error,
+                'bg-red-400': slot.error && !slot.uploaded,
+                'bg-blue-500': index === currentSlotIndex && !slot.uploaded && !slot.confirmed,
+                'bg-gray-200': index > currentSlotIndex && !slot.confirmed
+              }"
             />
           </div>
-        </div>
-        <ProseP v-if="!canSubmitReport && submitBlockReason" class="mt-2 mb-0 text-[13px] text-gray-500">
-          {{ submitBlockReason }}
-        </ProseP>
-      </B24Card>
+
+          <!-- Block reason hint -->
+          <p v-if="!canSubmitReport && submitBlockReason" class="text-[11px] text-gray-400 leading-tight m-0">
+            {{ submitBlockReason }}
+          </p>
+        </template>
+      </div>
     </div>
+    <!-- ─── END STICKY HEADER ───────────────────────────────────────────────── -->
 
+    <!-- ─── GLOBAL ALERTS ───────────────────────────────────────────────────── -->
     <B24Alert
       v-if="loadError"
       color="air-primary-alert"
@@ -824,16 +844,16 @@ onBeforeUnmount(() => {
       :description="loadError"
     />
     <B24Alert
-      v-if="!isLoading && !loadError && photoSlots.length === 0"
-      color="air-primary-alert"
-      title="Нет обязательных фото"
-      description="Для этого отчёта не определён набор обязательных фото. Проверьте настройки и карточку АЗС."
-    />
-    <B24Alert
       v-if="isLoading"
       color="air-secondary"
       title="Загрузка"
       description="Загружаем карточку отчёта..."
+    />
+    <B24Alert
+      v-if="!isLoading && !loadError && photoSlots.length === 0"
+      color="air-primary-alert"
+      title="Нет обязательных фото"
+      description="Для этого отчёта не определён набор обязательных фото. Проверьте настройки и карточку АЗС."
     />
     <B24Alert
       v-if="saveSuccess"
@@ -854,178 +874,244 @@ onBeforeUnmount(() => {
       :description="submitError"
     />
 
-    <B24Card v-if="report">
-      <template #header>
-        <ProseH3>Отчёт #{{ report.id }}</ProseH3>
-      </template>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-        <B24Badge color="air-secondary">АЗС: {{ reportAzsLabel }}</B24Badge>
-        <B24Badge color="air-secondary">Слот: {{ reportSlotKeyLabel }}</B24Badge>
-        <B24Badge color="air-secondary">Статус: {{ reportStatusLabel }}</B24Badge>
-        <B24Badge color="air-secondary">Дедлайн: {{ report.deadlineAt || '—' }}</B24Badge>
+    <!-- ─── COMPACT REPORT META ─────────────────────────────────────────────── -->
+    <B24Card v-if="report" variant="outline">
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[12px]">
+        <span class="font-semibold text-gray-700">Отчёт&nbsp;#{{ report.id }}</span>
+        <B24Badge color="air-secondary" size="xs">АЗС: {{ reportAzsLabel }}</B24Badge>
+        <B24Badge color="air-secondary" size="xs">Слот: {{ reportSlotKeyLabel }}</B24Badge>
+        <B24Badge color="air-secondary" size="xs">{{ reportStatusLabel }}</B24Badge>
+        <B24Badge v-if="report.deadlineAt" color="air-secondary" size="xs">до {{ report.deadlineAt }}</B24Badge>
       </div>
     </B24Card>
 
-    <B24Card v-if="activeSlot" variant="outline">
+    <!-- ─── FOCUS ZONE: ACTIVE SLOT ─────────────────────────────────────────── -->
+    <B24Card v-if="activeSlot && !isLoading" variant="outline">
       <template #header>
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <ProseH3>Слот {{ activeSlotNumber }}/{{ photoSlots.length }}: {{ activeSlot.title }}</ProseH3>
-            <ProseP class="mb-0 text-[13px] text-gray-500">
-              Подтвердите фото, после этого загрузка пойдёт в фоне, а камера автоматически откроется для следующего слота.
-            </ProseP>
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <p class="m-0 text-[15px] font-semibold text-gray-900 leading-tight">
+              {{ activeSlot.title }}
+            </p>
+            <p class="m-0 text-[12px] text-gray-500 mt-0.5 leading-tight">
+              Слот {{ activeSlotNumber }}&nbsp;из&nbsp;{{ photoSlots.length }} · Сделайте фото и подтвердите
+            </p>
           </div>
-          <B24Badge :color="activeSlot.uploaded ? 'air-primary-success' : (activeSlot.error ? 'air-primary-alert' : 'air-secondary')">
+          <B24Badge
+            :color="activeSlot.uploaded ? 'air-primary-success' : (activeSlot.error ? 'air-primary-alert' : (activeSlot.confirmed ? 'air-secondary' : 'air-secondary'))"
+            size="xs"
+            class="shrink-0"
+          >
             {{
               activeSlot.uploading ? 'загрузка...' :
-              (activeSlot.uploaded ? 'загружено' : (activeSlot.confirmed ? 'ожидает загрузки' : 'ожидает фото'))
+              activeSlot.uploaded ? 'загружено' :
+              activeSlot.confirmed ? 'ожидает загрузки' :
+              'ожидает фото'
             }}
           </B24Badge>
         </div>
       </template>
 
-      <div class="space-y-2">
-        <div
-          v-if="activeSlot.previewUrl"
-          class="rounded overflow-hidden bg-black"
-        >
-          <img
-            :src="activeSlot.previewUrl"
-            :alt="activeSlot.title"
-            class="w-full max-h-[420px] object-contain"
-          >
-        </div>
+      <div class="space-y-3">
 
-        <div class="flex flex-wrap gap-2">
-          <B24Button
-            v-if="!activeSlot.previewUrl && !activeSlot.confirmed"
-            color="air-primary"
-            :label="activeCameraSlotKey === activeSlot.key ? 'Камера активна' : 'Открыть камеру'"
-            :disabled="activeSlot.uploading || cameraBusy"
-            loading-auto
-            @click="openCameraForActiveSlot"
-          />
-          <B24Button
-            v-if="activeCameraSlotKey === activeSlot.key"
-            color="air-primary-success"
-            label="Сделать фото"
-            :disabled="activeSlot.uploading"
-            loading-auto
-            @click="captureSlotPreview(activeSlot)"
-          />
-          <B24Button
-            v-if="activeCameraSlotKey === activeSlot.key"
-            color="air-secondary"
-            label="Закрыть камеру"
-            :disabled="activeSlot.uploading"
-            loading-auto
-            @click="closeCamera"
-          />
-          <B24Button
-            v-if="activeSlot.previewUrl && !activeSlot.confirmed"
-            color="air-primary-success"
-            label="Использовать фото"
-            :disabled="activeSlot.uploading"
-            loading-auto
-            @click="acceptSlotPhoto(activeSlot)"
-          />
-          <B24Button
-            v-if="activeSlot.previewUrl && !activeSlot.uploaded"
-            color="air-secondary"
-            label="Переснять"
-            :disabled="activeSlot.uploading || cameraBusy"
-            loading-auto
-            @click="retakeSlotPhoto(activeSlot)"
-          />
-          <B24Button
-            v-if="activeSlot.error && activeSlot.confirmed && !activeSlot.uploaded"
-            color="air-primary"
-            label="Повторить загрузку"
-            :disabled="activeSlot.uploading"
-            loading-auto
-            @click="retrySlotUpload(activeSlot)"
-          />
-        </div>
-
-        <div v-if="activeCameraSlotKey === activeSlot.key" class="rounded overflow-hidden bg-black">
+        <!-- Camera live view (shown when camera is open for this slot) -->
+        <div v-if="activeCameraSlotKey === activeSlot.key" class="rounded-xl overflow-hidden bg-black aspect-[4/3]">
           <video
             :ref="setCameraVideoRef"
-            class="w-full max-h-[420px] object-cover"
+            class="w-full h-full object-cover"
             autoplay
             playsinline
             muted
           />
         </div>
+
+        <!-- Captured preview -->
+        <div
+          v-if="activeSlot.previewUrl"
+          class="rounded-xl overflow-hidden bg-black aspect-[4/3]"
+        >
+          <img
+            :src="activeSlot.previewUrl"
+            :alt="activeSlot.title"
+            class="w-full h-full object-contain"
+          >
+        </div>
+
+        <!-- Camera / preview alerts -->
         <B24Alert
           v-if="isCameraOpen && activeCameraSlotKey === activeSlot.key"
           color="air-secondary"
           title="Режим камеры"
-          description="Фото берётся только с камеры, выбор файла из галереи отключен в интерфейсе приложения."
+          description="Фото берётся только с камеры, выбор файла из галереи отключен."
         />
         <B24Alert
-          v-if="cameraError && activeCameraSlotKey === activeSlot.key"
+          v-if="cameraError"
           color="air-primary-alert"
           title="Ошибка камеры"
           :description="cameraError"
         />
-        <ProseP v-if="activeSlot.fileName" class="text-[13px]">Файл: {{ activeSlot.fileName }}</ProseP>
         <B24Alert
           v-if="activeSlot.error"
           color="air-primary-alert"
-          title="Ошибка файла"
+          title="Ошибка"
           :description="activeSlot.error"
         />
+        <p v-if="activeSlot.fileName && activeSlot.uploaded" class="m-0 text-[11px] text-gray-400">
+          Файл: {{ activeSlot.fileName }}
+        </p>
+
+        <!-- PRIMARY ACTION BUTTONS — full-width, large touch targets -->
+        <div class="flex flex-col gap-2">
+
+          <!-- Open camera (no preview, not confirmed yet) -->
+          <B24Button
+            v-if="!activeSlot.previewUrl && !activeSlot.confirmed && activeCameraSlotKey !== activeSlot.key"
+            color="air-primary"
+            variant="solid"
+            :label="cameraBusy ? 'Запуск камеры...' : 'Открыть камеру'"
+            :disabled="cameraBusy"
+            loading-auto
+            class="w-full min-h-[48px] text-base"
+            @click="openCameraForActiveSlot"
+          />
+
+          <!-- Capture photo (camera is live) -->
+          <B24Button
+            v-if="activeCameraSlotKey === activeSlot.key"
+            color="air-primary-success"
+            variant="solid"
+            label="Сделать фото"
+            :disabled="activeSlot.uploading"
+            loading-auto
+            class="w-full min-h-[48px] text-base"
+            @click="captureSlotPreview(activeSlot)"
+          />
+
+          <!-- Accept photo (preview ready, not yet confirmed) -->
+          <B24Button
+            v-if="activeSlot.previewUrl && !activeSlot.confirmed"
+            color="air-primary-success"
+            variant="solid"
+            label="Использовать фото"
+            :disabled="activeSlot.uploading"
+            loading-auto
+            class="w-full min-h-[48px] text-base"
+            @click="acceptSlotPhoto(activeSlot)"
+          />
+
+          <!-- Retry upload (confirmed but errored) -->
+          <B24Button
+            v-if="activeSlot.error && activeSlot.confirmed && !activeSlot.uploaded"
+            color="air-primary"
+            variant="solid"
+            label="Повторить загрузку"
+            :disabled="activeSlot.uploading"
+            loading-auto
+            class="w-full min-h-[48px]"
+            @click="retrySlotUpload(activeSlot)"
+          />
+
+          <!-- Secondary row: retake + close camera -->
+          <div class="flex gap-2">
+            <B24Button
+              v-if="activeSlot.previewUrl && !activeSlot.uploaded"
+              color="air-secondary"
+              variant="outline"
+              label="Переснять"
+              :disabled="activeSlot.uploading || cameraBusy"
+              loading-auto
+              class="flex-1 min-h-[44px]"
+              @click="retakeSlotPhoto(activeSlot)"
+            />
+            <B24Button
+              v-if="activeCameraSlotKey === activeSlot.key"
+              color="air-secondary"
+              variant="outline"
+              label="Закрыть камеру"
+              :disabled="activeSlot.uploading"
+              loading-auto
+              class="flex-1 min-h-[44px]"
+              @click="closeCamera"
+            />
+          </div>
+        </div>
       </div>
     </B24Card>
 
-    <div :ref="setQueueAnchorRef" />
-    <B24Card v-if="photoSlots.length > 0" variant="outline">
-      <template #header>
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <ProseH3>Очередь и история</ProseH3>
-            <ProseP class="mb-0 text-[13px] text-gray-500">
-              Активный слот всегда один. Предыдущие слоты можно переснять или повторить загрузку.
-            </ProseP>
-          </div>
-          <B24Badge :color="allUploaded ? 'air-primary-success' : 'air-secondary'">
-            {{ uploadedCount }}/{{ photoSlots.length }} загружено
-          </B24Badge>
-        </div>
-      </template>
+    <!-- All slots done — no more active slot -->
+    <B24Alert
+      v-if="!isLoading && !loadError && photoSlots.length > 0 && !activeSlot"
+      color="air-primary-success"
+      title="Все фото сделаны"
+      description="Все слоты заполнены. Нажмите «Сдать отчёт» в шапке."
+    />
 
-      <div class="space-y-2">
+    <!-- ─── COLLAPSIBLE ALL-SLOTS LIST ──────────────────────────────────────── -->
+    <div :ref="setQueueAnchorRef" />
+    <div v-if="photoSlots.length > 0">
+      <!-- Toggle button -->
+      <button
+        type="button"
+        class="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border border-gray-200 bg-white text-left text-[13px] font-medium text-gray-700 hover:bg-gray-50 active:bg-gray-100 transition-colors"
+        @click="showAllSlots = !showAllSlots"
+      >
+        <span class="flex items-center gap-2">
+          <span>{{ showAllSlots ? 'Скрыть все слоты' : 'Показать все слоты' }}</span>
+          <B24Badge :color="allUploaded ? 'air-primary-success' : (hasUploadErrors ? 'air-primary-alert' : 'air-secondary')" size="xs">
+            {{ uploadedCount }}/{{ photoSlots.length }}
+          </B24Badge>
+        </span>
+        <span class="text-gray-400 text-[11px]">{{ showAllSlots ? '▲' : '▼' }}</span>
+      </button>
+
+      <!-- Slots list (collapsed by default) -->
+      <div v-if="showAllSlots" class="mt-2 space-y-2">
         <div
           v-for="(slot, index) in photoSlots"
           :key="slot.key"
           :ref="(el) => setQueueSlotRef(slot.key, el)"
-          class="flex flex-col gap-2 rounded border border-gray-100 p-3"
+          class="flex flex-col gap-2 rounded-xl border p-3 transition-colors"
+          :class="{
+            'border-blue-300 bg-blue-50': index === currentSlotIndex,
+            'border-green-200 bg-green-50': slot.uploaded,
+            'border-red-200 bg-red-50': slot.error && !slot.uploaded,
+            'border-gray-100 bg-white': !slot.uploaded && !slot.error && index !== currentSlotIndex
+          }"
         >
           <div class="flex items-start justify-between gap-3">
-            <div>
-              <ProseP class="mb-0 font-medium">
+            <div class="min-w-0">
+              <p class="m-0 text-[13px] font-medium text-gray-800 leading-tight">
                 {{ index + 1 }}. {{ slot.title }}
-              </ProseP>
-              <ProseP class="mb-0 text-[13px] text-gray-500">
+              </p>
+              <p class="m-0 text-[11px] text-gray-500 mt-0.5 leading-tight">
                 {{
                   index === currentSlotIndex ? 'Активный слот' :
                   index < currentSlotIndex ? 'Завершён (можно переснять)' :
                   'В очереди'
                 }}
-              </ProseP>
+              </p>
             </div>
-            <B24Badge :color="slot.uploaded ? 'air-primary-success' : (slot.error ? 'air-primary-alert' : 'air-secondary')">
+            <B24Badge
+              :color="slot.uploaded ? 'air-primary-success' : (slot.error ? 'air-primary-alert' : 'air-secondary')"
+              size="xs"
+              class="shrink-0"
+            >
               {{
                 slot.uploading ? 'загрузка...' :
-                (slot.uploaded ? 'загружено' : (slot.confirmed ? 'ожидает загрузки' : 'ожидает фото'))
+                slot.uploaded ? 'загружено' :
+                slot.confirmed ? 'ожидает загрузки' :
+                'ожидает фото'
               }}
             </B24Badge>
           </div>
 
+          <!-- Actions for completed/errored slots -->
           <div v-if="index < currentSlotIndex" class="flex flex-wrap gap-2">
             <B24Button
               color="air-secondary"
+              variant="outline"
               label="Переснять"
+              size="xs"
               :disabled="slot.uploadState === 'uploading' || cameraBusy"
               loading-auto
               @click="retakeSlotPhoto(slot)"
@@ -1033,7 +1119,9 @@ onBeforeUnmount(() => {
             <B24Button
               v-if="slot.error && slot.confirmed && !slot.uploaded"
               color="air-primary"
+              variant="outline"
               label="Повторить загрузку"
+              size="xs"
               :disabled="slot.uploadState === 'uploading'"
               loading-auto
               @click="retrySlotUpload(slot)"
@@ -1041,6 +1129,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
-    </B24Card>
+    </div>
+
   </div>
 </template>

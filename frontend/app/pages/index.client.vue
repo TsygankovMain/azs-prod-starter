@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { B24Frame } from '@bitrix24/b24jssdk'
+import Logo from '~/components/Logo.vue'
 
 const PAGE_TITLE = 'Фото-отчёты АЗС'
 useHead({ title: PAGE_TITLE })
@@ -19,6 +20,26 @@ const healthStatus = ref<'unknown' | 'ok' | 'error'>('unknown')
 const healthText = ref('Проверка API...')
 const homeNotice = ref('')
 const currentRole = ref<'admin' | 'reviewer' | 'azs_admin'>('azs_admin')
+
+// Step tracker for the loading panel (index 0 = B24 connect, 1 = role check, 2 = redirect)
+const initStepIndex = ref(0)
+const initSteps = computed(() => [
+  {
+    label: 'Соединение с Битрикс24',
+    done: initStepIndex.value > 0,
+    active: initStepIndex.value === 0 && isLoading.value
+  },
+  {
+    label: 'Проверка прав доступа',
+    done: initStepIndex.value > 1,
+    active: initStepIndex.value === 1 && isLoading.value
+  },
+  {
+    label: 'Переход на ваш экран',
+    done: initStepIndex.value > 2,
+    active: initStepIndex.value === 2 && isLoading.value
+  }
+])
 const currentCapabilities = ref({
   settings: false,
   reviewer: false,
@@ -227,24 +248,33 @@ const openMyActiveReportIfAny = async () => {
 onMounted(async () => {
   try {
     isLoading.value = true
+    initStepIndex.value = 0
+
+    // Step 0: connect to Bitrix24
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
     await $b24.parent.setTitle(PAGE_TITLE)
     applyLocalPortalAdminFallback()
+    initStepIndex.value = 1
 
+    // Step 1: check roles / permissions
     const contextReportId = resolveContextReportId($b24)
+    await checkBackend()
+    initStepIndex.value = 2
+
+    // Step 2: navigate to appropriate screen
     if (contextReportId > 0) {
       await navigateTo(`/admin/${contextReportId}`)
       return
     }
 
-    await checkBackend()
     if (currentRole.value === 'azs_admin') {
       const redirectedToActive = await openMyActiveReportIfAny()
       if (redirectedToActive) {
         return
       }
     }
+    initStepIndex.value = 3
     isInit.value = true
   } catch (error) {
     processErrorGlobal(error)
@@ -256,7 +286,32 @@ onMounted(async () => {
 
 <template>
   <div class="w-full max-w-[1120px] mx-auto px-4 py-4 space-y-4">
-    <B24Card>
+
+    <!-- Loading / status panel shown while init is in progress -->
+    <B24Card v-if="isLoading">
+      <div class="flex flex-col items-center gap-5 py-6">
+        <Logo class="size-16 text-(--ui-color-accent-soft-green-1)" />
+        <div class="w-full max-w-sm space-y-2">
+          <div
+            v-for="(step, idx) in initSteps"
+            :key="idx"
+            class="flex items-center gap-2 text-sm"
+          >
+            <B24Badge
+              :color="step.done ? 'air-primary-success' : (step.active ? 'air-primary' : 'air-secondary')"
+              class="shrink-0"
+            >
+              {{ step.done ? '✓' : (step.active ? '...' : '○') }}
+            </B24Badge>
+            <span :class="step.active ? 'font-semibold' : 'text-gray-500'">{{ step.label }}</span>
+          </div>
+        </div>
+        <ProseP small accent="less" class="text-center">Подождите, выполняется инициализация…</ProseP>
+      </div>
+    </B24Card>
+
+    <!-- Main screen shown after successful init -->
+    <B24Card v-if="isInit">
       <template #header>
         <div class="flex flex-row items-center justify-between gap-3">
           <div>
@@ -273,7 +328,7 @@ onMounted(async () => {
       </template>
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <B24Card
+        <B24Card
           v-for="screen in visibleScreens"
           :key="screen.key"
           variant="outline"
@@ -301,6 +356,15 @@ onMounted(async () => {
         :description="homeNotice"
       />
 
+      <!-- API error banner inside the main card -->
+      <B24Alert
+        v-if="healthStatus === 'error'"
+        class="mt-3"
+        color="air-primary-alert"
+        title="Ошибка соединения с backend"
+        :description="healthText"
+      />
+
       <template #footer>
         <div class="flex flex-row items-center justify-between w-full gap-3">
           <ProseP class="text-[12px] text-gray-500">
@@ -316,6 +380,7 @@ onMounted(async () => {
       </template>
     </B24Card>
 
+    <!-- Not initialised and not loading — something went wrong early -->
     <B24Alert
       v-if="!isInit && !isLoading"
       color="air-primary-alert"
