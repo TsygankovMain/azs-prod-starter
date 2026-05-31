@@ -6,10 +6,7 @@ import { updateReportCrmItem } from './reportCrmSync.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const EXIF_MAX_AGE_MINUTES = Number(process.env.EXIF_MAX_AGE_MINUTES || 720);
-const CRM_SYNC_RETRY_BACKOFF_MS = [800, 1600, 3200];
 const RETRYABLE_UPLOAD_ERROR_PATTERN = /(OPERATION_TIME_LIMIT|QUERY_LIMIT_EXCEEDED|HTTP 429|HTTP 504|too many requests|gateway timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|network error|timeout)/i;
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 class ReportConfigError extends Error {
   constructor(message, code = 'report_config_error') {
@@ -482,23 +479,6 @@ export const resolveAdminCrmSyncContext = async ({ authContextStore, requestCont
   };
 };
 
-const resolveAdminCrmSyncContextOrThrow = async ({ authContextStore, requestContext }) => {
-  const adminContext = await resolveAdminCrmSyncContext({ authContextStore, requestContext });
-  if (adminContext) {
-    return adminContext;
-  }
-
-  const error = new Error('Bitrix24 admin OAuth context is not available for CRM sync');
-  error.code = 'admin_context_missing';
-  error.statusCode = 502;
-  throw error;
-};
-
-export const resolveReportCrmAndDiskContexts = async ({ authContextStore, requestContext }) => {
-  const diskContext = requestContext && typeof requestContext === 'object' ? requestContext : {};
-  const crmSyncContext = await resolveAdminCrmSyncContextOrThrow({ authContextStore, requestContext: diskContext });
-  return { diskContext, crmSyncContext };
-};
 
 const isRetryableUploadError = (error) => RETRYABLE_UPLOAD_ERROR_PATTERN.test(String(error?.message || error || ''));
 
@@ -926,7 +906,7 @@ export const createReportsRouter = ({
       const currentUserId = ensureCurrentUserOwnsReport({ req, report });
 
       const settings = await settingsStore.read();
-      const folderFieldCode = ensureFolderFieldMapping(settings);
+      ensureFolderFieldMapping(settings); // guard: throws if folder field not configured
       const requiredPhotos = await readRequiredPhotos({
         bitrixClient,
         settings,
@@ -953,10 +933,7 @@ export const createReportsRouter = ({
         });
       }
 
-      const { diskContext, crmSyncContext } = await resolveReportCrmAndDiskContexts({
-        authContextStore,
-        requestContext: req.bitrixContext || {}
-      });
+      const diskContext = req.bitrixContext || {};
 
       const rootFolderId = await ensureRootFolder(bitrixClient.diskApi, {
         configuredRootFolderId: Number(settings.disk?.rootFolderId || 0),
@@ -965,7 +942,6 @@ export const createReportsRouter = ({
       }, diskContext);
 
       const { slotDate, slotHHmm } = parseReportSlotKey(report.slotKey);
-      const correlationId = `${reportId}:${photoCode}:${String(report.slotKey || '')}`;
       const requiredTitle = requiredPhotos.find((item) => item.code === photoCode)?.title || '';
       const uploaded = await uploadPhoto(bitrixClient.diskApi, {
         rootFolderId,
@@ -1078,7 +1054,7 @@ export const createReportsRouter = ({
       ensureCurrentUserOwnsReport({ req, report });
 
       const settings = await settingsStore.read();
-      const folderFieldCode = ensureFolderFieldMapping(settings);
+      ensureFolderFieldMapping(settings); // guard: throws if folder field not configured
       const requiredPhotos = await readRequiredPhotos({
         bitrixClient,
         settings,
@@ -1108,12 +1084,6 @@ export const createReportsRouter = ({
           'report_folder_missing'
         );
       }
-
-      const crmSyncContext = await resolveAdminCrmSyncContextOrThrow({
-        authContextStore,
-        requestContext: req.bitrixContext || {}
-      });
-      const correlationId = `${reportId}:submit:${String(report.slotKey || '')}`;
 
       await reportsStore.setReportStatus({
         reportId,

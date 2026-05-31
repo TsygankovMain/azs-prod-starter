@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseReportSlotKey,
   createReportsRouter,
-  resolveAdminCrmSyncContext,
-  resolveReportCrmAndDiskContexts
+  resolveAdminCrmSyncContext
 } from '../src/reports/reportsRoutes.js';
 import { updateReportCrmItem } from '../src/reports/reportCrmSync.js';
 
@@ -108,51 +107,6 @@ test('resolveAdminCrmSyncContext returns null when admin context is missing', as
   assert.equal(crmContext, null);
 });
 
-test('resolveReportCrmAndDiskContexts uses current request context for Disk and portal-admin for CRM sync', async () => {
-  const authContextStore = {
-    async getLastAdminContext() {
-      return {
-        key: 'admin:ctx:key',
-        context: {
-          memberId: 'member-1',
-          domain: 'example.bitrix24.ru',
-          userId: 1,
-          authId: 'admin-auth',
-          refreshToken: 'admin-refresh',
-          isAdmin: true
-        }
-      };
-    }
-  };
-
-  const requestContext = {
-    memberId: 'member-1',
-    domain: 'example.bitrix24.ru',
-    userId: 777,
-    authId: 'user-auth',
-    refreshToken: 'user-refresh',
-    isAdmin: false
-  };
-
-  const { diskContext, crmSyncContext } = await resolveReportCrmAndDiskContexts({ authContextStore, requestContext });
-  assert.equal(diskContext, requestContext);
-  assert.equal(crmSyncContext.authId, 'admin-auth');
-  assert.notEqual(crmSyncContext.authId, diskContext.authId);
-});
-
-test('resolveReportCrmAndDiskContexts throws admin_context_missing when admin context is missing', async () => {
-  const authContextStore = {
-    async getLastAdminContext() {
-      return null;
-    }
-  };
-  const requestContext = { memberId: 'member-1', domain: 'example.bitrix24.ru' };
-
-  await assert.rejects(
-    () => resolveReportCrmAndDiskContexts({ authContextStore, requestContext }),
-    (error) => error?.code === 'admin_context_missing' && error?.statusCode === 502
-  );
-});
 
 test('resolveAdminCrmSyncContext requires current request portal identity', async () => {
   const authContextStore = {
