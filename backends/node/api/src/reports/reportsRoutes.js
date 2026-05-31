@@ -790,17 +790,22 @@ export const createReportsRouter = ({
 
       const settings = await settingsStore.read();
       const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
-      const [photos, requiredPhotos] = await Promise.all([
+      const [photos, requiredPhotos, syncJobs] = await Promise.all([
         reportsStore.listPhotos(id),
         readRequiredPhotos({
           bitrixClient,
           settings,
           azsId: item.azsId,
           context: req.bitrixContext || {}
-        })
+        }),
+        crmSyncJobStore.listByReport(id)
       ]);
       const azsTitle = await resolveAzsTitle(item.azsId);
-      return res.json({ item: { ...item, azsTitle }, photos, requiredPhotos });
+      const latestJob = syncJobs.length ? syncJobs[syncJobs.length - 1] : null;
+      const syncStatus = latestJob
+        ? { synced: latestJob.status === 'done', lastSyncError: latestJob.last_error || null, syncState: latestJob.status }
+        : { synced: true, lastSyncError: null, syncState: 'none' };
+      return res.json({ item: { ...item, azsTitle }, photos, requiredPhotos, syncStatus });
     } catch (error) {
       const statusCode = Number(error?.statusCode || 500);
       return res.status(statusCode).json({
@@ -1131,6 +1136,34 @@ export const createReportsRouter = ({
         currentUserId: error?.currentUserId,
         expectedAdminUserId: error?.expectedAdminUserId
       });
+    }
+  });
+
+  router.post('/:id/resync', async (req, res) => {
+    if (!canUseReviewerTools(req)) {
+      return res.status(403).json({ error: 'forbidden', message: 'Reviewer access is required' });
+    }
+    try {
+      const reportId = Number(req.params.id);
+      if (!Number.isFinite(reportId) || reportId <= 0) {
+        return res.status(400).json({ error: 'invalid_report_id', message: 'report id must be a positive number' });
+      }
+      const report = await reportsStore.getById(reportId);
+      if (!report) {
+        return res.status(404).json({ error: 'report_not_found' });
+      }
+      await crmSyncJobStore.enqueue({
+        reportId,
+        payload: {
+          status: report.status,
+          diskFolderId: report.diskFolderId ?? null,
+          contextKey: req.bitrixContext?.key || ''
+        }
+      });
+      return res.json({ ok: true, reportId, syncQueued: true });
+    } catch (error) {
+      const statusCode = Number(error?.statusCode || 500);
+      return res.status(statusCode).json({ error: error?.code || 'report_resync_failed', message: error.message });
     }
   });
 
