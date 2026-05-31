@@ -304,7 +304,11 @@ test('MySQL: reclaimStale resets running jobs back to pending and returns affect
   assert.equal(reclaimed, 1);
   assert.equal((await store.listByReport(21))[0].status, 'pending');
 
-  const reclaimedAgain = await store.claimNextDue({ now: new Date() });
+  // Claim with `now` safely in the future: the just-requeued row stores
+  // next_attempt_at via toDateSql (second-precision truncation), so a `now`
+  // captured in the same wall-clock second could otherwise sit exactly on the
+  // boundary under load. The +1min margin makes the row unambiguously due.
+  const reclaimedAgain = await store.claimNextDue({ now: new Date(Date.now() + 60_000) });
   assert.ok(reclaimedAgain);
   assert.equal(reclaimedAgain.report_id, 21);
 });
@@ -316,11 +320,15 @@ test('MySQL: reclaimStale with runningTimeoutMs respects the cutoff', async () =
   await store.enqueue({ reportId: 22, payload: { a: 1 } });
   await store.claimNextDue({ now: new Date() });
 
+  // Use wide (±1h) cutoff margins. The MySQL path serializes the cutoff via
+  // toDateSql (second precision), so a ±1s margin could land on a wall-clock
+  // second boundary and flip the comparison under load. ±1h keeps the intent
+  // (past cutoff → keep running; future cutoff → reclaim) with zero boundary risk.
   const none = await store.reclaimStale({ runningTimeoutMs: 60 * 60 * 1000 });
   assert.equal(none, 0);
   assert.equal((await store.listByReport(22))[0].status, 'running');
 
-  const some = await store.reclaimStale({ runningTimeoutMs: -1000 });
+  const some = await store.reclaimStale({ runningTimeoutMs: -60 * 60 * 1000 });
   assert.equal(some, 1);
   assert.equal((await store.listByReport(22))[0].status, 'pending');
 });
