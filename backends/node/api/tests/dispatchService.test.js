@@ -98,7 +98,10 @@ test('dispatch service prevents duplicates by slot + azs and applies jitter', as
   assert.equal(result.summary.failed, 0);
   assert.equal(createdReports.length, 1);
   assert.equal(notifiedUsers.length, 1);
-  assert.equal(notifiedUsers[0].reportId > 0, true);
+  // notifyDispatch is addressed to the AZS admin. (reportId was intentionally
+  // dropped from the notification payload in 2419f8a; it is no longer part of
+  // the contract — assert the field that still is.)
+  assert.equal(notifiedUsers[0].userId, 11);
   assert.equal(result.items[0].jitterMinutes, 15);
 });
 

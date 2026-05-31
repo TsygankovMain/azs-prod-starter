@@ -116,8 +116,14 @@ export class AuthContextStore {
   }
 
   async upsertContext(contextInput = {}) {
-    const context = normalizeContextRecord(contextInput);
-    const key = buildAuthContextKey(context);
+    // Merge the RAW input (only the keys actually supplied) over the existing
+    // record. Pre-normalizing the input here would fill every field with
+    // empty-string/false defaults, so a partial upsert (e.g. a fresh access
+    // token without a new refreshToken) would wipe previously stored values
+    // such as refreshToken / isAdmin instead of keeping them. Normalization
+    // happens once, after the merge below.
+    const source = isPlainObject(contextInput) ? contextInput : {};
+    const key = buildAuthContextKey(source);
     if (!key) {
       throw new Error('memberId, domain and userId are required for auth context upsert');
     }
@@ -127,7 +133,7 @@ export class AuthContextStore {
       const previous = next.contexts[key] || {};
       const merged = normalizeContextRecord({
         ...previous,
-        ...context,
+        ...source,
         updatedAt: new Date().toISOString()
       });
       next.contexts[key] = merged;
