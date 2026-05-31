@@ -12,6 +12,23 @@ Format per entry:
 
 ---
 
+## 2026-05-31 — Bugfix: «Загруженные фото» в карточке (file-UF) + имя файла + кнопка обновить
+
+### Scope
+Прод-баги после деплоя v2.0, разобраны через systematic-debugging + Bitrix MCP.
+
+### Bug: поле «Загруженные фото» = битые 4-байтные файлы (commit `a8c8f1e`)
+- **Корень (по MCP/докам, не догадка):** код слал `fields[UF_PHOTOS] = [crmFileId, ...]` — массив голых b_file ID. Bitrix `file`-UF при записи через `crm.item.update` требует СОДЕРЖИМОЕ: `[[имя, base64], ...]`. Голые числа → мусор (скачанные из карточки файлы = 4 байта `d78db7e7`).
+- **Проверено по MCP `crm.userfield.types`:** типа поля «Диск» НЕ существует — только `file`. Значит вариант «ссылка на Диск» невозможен; единственный путь — file + base64.
+- **Рецидив-механизм:** тест `reportCrmSync.test.js` проверял `UF_PHOTOS=[11,12]` как «правильное» (bless-the-bug) — переписан.
+- **Фикс:** `report_photo.disk_object_id` (миграция идемпотентная: PG `ADD COLUMN IF NOT EXISTS`, MySQL через `information_schema`); `diskApi.downloadFileContent` (disk.file.get→DOWNLOAD_URL→fetch→base64); `buildReportPhotoFieldValue` строит `[[имя,base64],...]`; поле заполняется ТОЛЬКО на `status='done'` (избегаем O(n²) перекачки и rate-limit). Backend 135/135.
+- **Известные ограничения:** (1) у СТАРЫХ отчётов (загружены до деплоя) `disk_object_id=NULL` → их фото в карточку при ре-синке НЕ попадут (только новые загрузки после деплоя); нужен бэкфилл-скрипт при необходимости. (2) Не проверено на живом портале — нужен смоук. (3) Поле PHOTOS в портале должно быть типа «Файл».
+
+### Bug: имя файла = ID вместо названия АЗС (commit `564f666`) — см. ниже отдельной записью контекст; исправлено (`АЗС_17_...jpg`).
+### Feature: кнопка «↻ Обновить» на экране проверяющего (commit `564f666`).
+
+---
+
 ## 2026-05-31 — Sprints 2-5 (v2.0): frontend + deep-link flag + docs — IMPLEMENTED & REVIEWED
 
 ### Scope
