@@ -1,6 +1,8 @@
 export const buildReportCrmUpdateFields = ({
   settings,
   status,
+  // photos param kept in signature for caller compatibility but no longer used here.
+  // Photos are populated async-only via buildReportPhotoFieldValue on done syncs.
   photos = [],
   diskFolderId = null
 }) => {
@@ -24,19 +26,30 @@ export const buildReportCrmUpdateFields = ({
     fields[fieldsMap.folderId] = String(diskFolderId);
   }
 
-  if (fieldsMap.photos) {
-    const fileIds = [...new Set(
-      photos
-        .map((photo) => Number(photo.fileId))
-        .filter((fileId) => Number.isFinite(fileId) && fileId > 0)
-    )];
-
-    if (fileIds.length) {
-      fields[fieldsMap.photos] = fileIds;
-    }
-  }
+  // NOTE: photos field intentionally NOT set here.
+  // Bare b_file integer IDs are invalid for Bitrix file-type user fields.
+  // Photos are written as [name, base64] pairs only on status=done via buildReportPhotoFieldValue.
 
   return fields;
+};
+
+/**
+ * Downloads disk file content for each photo that has a diskObjectId and
+ * returns an array of [fileName, base64] pairs suitable for a Bitrix
+ * `file`-type user field written via crm.item.update.
+ *
+ * Photos without a diskObjectId are silently skipped.
+ */
+export const buildReportPhotoFieldValue = async ({ photos = [], diskApi, context = {} }) => {
+  if (!diskApi || typeof diskApi.downloadFileContent !== 'function') return [];
+  const withDisk = photos.filter((p) => Number(p?.diskObjectId) > 0);
+  const pairs = [];
+  for (const photo of withDisk) {
+    const { base64, name } = await diskApi.downloadFileContent(Number(photo.diskObjectId), context);
+    const fileName = String(photo.fileName || name || `photo_${photo.diskObjectId}`);
+    pairs.push([fileName, base64]);
+  }
+  return pairs;
 };
 
 export const updateReportCrmItem = async ({
@@ -71,6 +84,22 @@ export const updateReportCrmItem = async ({
     photos,
     diskFolderId
   });
+
+  // On done syncs: attach photos as [name, base64] pairs (correct Bitrix file field format).
+  // On in_progress syncs: do NOT touch the photos field — reviewers see photos via Disk folder.
+  if (status === 'done') {
+    const photosFieldCode = String(settings?.report?.fields?.photos || '');
+    if (photosFieldCode && bitrixClient.diskApi && photos.length > 0) {
+      const pairs = await buildReportPhotoFieldValue({
+        photos,
+        diskApi: bitrixClient.diskApi,
+        context
+      });
+      if (pairs.length) {
+        fields[photosFieldCode] = pairs;
+      }
+    }
+  }
 
   if (!Object.keys(fields).length) {
     return null;

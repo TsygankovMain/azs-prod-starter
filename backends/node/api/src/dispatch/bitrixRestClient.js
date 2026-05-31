@@ -587,6 +587,18 @@ export const createBitrixRestClient = ({
         return { diskObjectId, crmFileId, fileName: String(fileName) };
       },
 
+      async downloadFileContent(diskObjectId, context = {}) {
+        const id = Number(diskObjectId);
+        if (!id) throw new Error('downloadFileContent requires a disk object id');
+        const info = await call('disk.file.get', { id }, context);
+        const url = String(info?.DOWNLOAD_URL || info?.downloadUrl || info?.download_url || '').trim();
+        if (!url) throw new Error('disk.file.get response has no DOWNLOAD_URL');
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`Disk download failed HTTP ${resp.status}`);
+        const buf = Buffer.from(await resp.arrayBuffer());
+        return { base64: buf.toString('base64'), name: String(info?.NAME || info?.name || `file_${id}`) };
+      },
+
       async markFileDeleted(fileId, context = {}) {
         if (!Number(fileId)) {
           throw new Error('disk.file.markdeleted requires file id');

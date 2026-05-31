@@ -46,6 +46,7 @@ const createPostgresStore = (pool) => ({
         file_id BIGINT NULL,
         file_name TEXT NULL,
         disk_folder_id BIGINT NULL,
+        disk_object_id BIGINT NULL,
         uploaded_by BIGINT NOT NULL,
         exif_at TIMESTAMPTZ NULL,
         uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -53,6 +54,10 @@ const createPostgresStore = (pool) => ({
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE(report_id, photo_code)
       )
+    `);
+    // Idempotent migration for existing tables (Postgres supports IF NOT EXISTS).
+    await pool.query(`
+      ALTER TABLE report_photo ADD COLUMN IF NOT EXISTS disk_object_id BIGINT NULL
     `);
   },
 
@@ -142,27 +147,29 @@ const createPostgresStore = (pool) => ({
     fileId,
     fileName,
     diskFolderId,
+    diskObjectId,
     uploadedBy,
     exifAt
   }) {
     await pool.query(
-      `INSERT INTO report_photo(report_id, photo_code, file_id, file_name, disk_folder_id, uploaded_by, exif_at)
-       VALUES($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO report_photo(report_id, photo_code, file_id, file_name, disk_folder_id, disk_object_id, uploaded_by, exif_at)
+       VALUES($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT(report_id, photo_code) DO UPDATE
        SET file_id = EXCLUDED.file_id,
            file_name = EXCLUDED.file_name,
            disk_folder_id = EXCLUDED.disk_folder_id,
+           disk_object_id = EXCLUDED.disk_object_id,
            uploaded_by = EXCLUDED.uploaded_by,
            exif_at = EXCLUDED.exif_at,
            uploaded_at = NOW(),
            updated_at = NOW()`,
-      [reportId, photoCode, fileId, fileName, diskFolderId, uploadedBy, exifAt ?? null]
+      [reportId, photoCode, fileId, fileName, diskFolderId, diskObjectId ?? null, uploadedBy, exifAt ?? null]
     );
   },
 
   async listPhotos(reportId) {
     const result = await pool.query(
-      'SELECT report_id, photo_code, file_id, file_name, disk_folder_id, uploaded_by, exif_at, uploaded_at FROM report_photo WHERE report_id = $1 ORDER BY photo_code ASC',
+      'SELECT report_id, photo_code, file_id, file_name, disk_folder_id, disk_object_id, uploaded_by, exif_at, uploaded_at FROM report_photo WHERE report_id = $1 ORDER BY photo_code ASC',
       [reportId]
     );
     return result.rows.map((row) => ({
@@ -171,6 +178,7 @@ const createPostgresStore = (pool) => ({
       fileId: row.file_id ? Number(row.file_id) : null,
       fileName: row.file_name || null,
       diskFolderId: row.disk_folder_id ? Number(row.disk_folder_id) : null,
+      diskObjectId: row.disk_object_id ? Number(row.disk_object_id) : null,
       uploadedBy: Number(row.uploaded_by),
       exifAt: normalizeDate(row.exif_at),
       uploadedAt: normalizeDate(row.uploaded_at)
@@ -278,6 +286,7 @@ const createMysqlStore = (pool) => ({
         file_id BIGINT NULL,
         file_name VARCHAR(255) NULL,
         disk_folder_id BIGINT NULL,
+        disk_object_id BIGINT NULL,
         uploaded_by BIGINT NOT NULL,
         exif_at DATETIME NULL,
         uploaded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -286,6 +295,18 @@ const createMysqlStore = (pool) => ({
         UNIQUE KEY ux_report_photo_report_code (report_id, photo_code)
       )
     `);
+    // MySQL lacks ADD COLUMN IF NOT EXISTS — guard with information_schema check.
+    const [colRows] = await pool.execute(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'report_photo'
+         AND COLUMN_NAME = 'disk_object_id'`
+    );
+    if (Number(colRows[0]?.c || 0) === 0) {
+      await pool.execute(
+        `ALTER TABLE report_photo ADD COLUMN disk_object_id BIGINT NULL`
+      );
+    }
   },
 
   async list({ dateFrom, dateTo, status, azsId, azsIds = [], limit = 200 } = {}) {
@@ -369,16 +390,18 @@ const createMysqlStore = (pool) => ({
     fileId,
     fileName,
     diskFolderId,
+    diskObjectId,
     uploadedBy,
     exifAt
   }) {
     await pool.execute(
-      `INSERT INTO report_photo(report_id, photo_code, file_id, file_name, disk_folder_id, uploaded_by, exif_at)
-       VALUES(?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO report_photo(report_id, photo_code, file_id, file_name, disk_folder_id, disk_object_id, uploaded_by, exif_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          file_id = VALUES(file_id),
          file_name = VALUES(file_name),
          disk_folder_id = VALUES(disk_folder_id),
+         disk_object_id = VALUES(disk_object_id),
          uploaded_by = VALUES(uploaded_by),
          exif_at = VALUES(exif_at),
          uploaded_at = CURRENT_TIMESTAMP`,
@@ -388,6 +411,7 @@ const createMysqlStore = (pool) => ({
         fileId ?? null,
         fileName ?? null,
         diskFolderId ?? null,
+        diskObjectId ?? null,
         uploadedBy,
         exifAt ? exifAt.toISOString().slice(0, 19).replace('T', ' ') : null
       ]
@@ -396,7 +420,7 @@ const createMysqlStore = (pool) => ({
 
   async listPhotos(reportId) {
     const [rows] = await pool.execute(
-      'SELECT report_id, photo_code, file_id, file_name, disk_folder_id, uploaded_by, exif_at, uploaded_at FROM report_photo WHERE report_id = ? ORDER BY photo_code ASC',
+      'SELECT report_id, photo_code, file_id, file_name, disk_folder_id, disk_object_id, uploaded_by, exif_at, uploaded_at FROM report_photo WHERE report_id = ? ORDER BY photo_code ASC',
       [reportId]
     );
     return rows.map((row) => ({
@@ -405,6 +429,7 @@ const createMysqlStore = (pool) => ({
       fileId: row.file_id ? Number(row.file_id) : null,
       fileName: row.file_name || null,
       diskFolderId: row.disk_folder_id ? Number(row.disk_folder_id) : null,
+      diskObjectId: row.disk_object_id ? Number(row.disk_object_id) : null,
       uploadedBy: Number(row.uploaded_by),
       exifAt: normalizeDate(row.exif_at),
       uploadedAt: normalizeDate(row.uploaded_at)

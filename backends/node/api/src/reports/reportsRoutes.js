@@ -977,6 +977,7 @@ export const createReportsRouter = ({
         fileId: uploaded.fileId,
         fileName: uploaded.fileName,
         diskFolderId: uploaded.folderId,
+        diskObjectId: uploaded.diskObjectId,
         uploadedBy: currentUserId,
         exifAt: exifValidation.exifAt
       });
