@@ -12,6 +12,55 @@ Format per entry:
 
 ---
 
+## 2026-05-31 — Review of master vs client chat feedback + sprint-10 verification
+
+### Scope
+- Branch `master` @ `2e60861`.
+- Code review against 6 client requests from the support chat (АЗС photo reports app):
+  #1 «отчёт по АЗС / добавить АЗС в выборку», #2 «непонятно как настроить расписание», #3 «задание прилетело управляющему, а должно на аккаунт АЗС», #4 «имена папок/файлов сбились», #5 «внеплановый запрос — нужен мультивыбор АЗС», #6 «кнопка в уведомлении бота → переход к отчёту (выключена)».
+- Verification of the other agent's «Sprint 10: admin upload reliability» work.
+- Method: 5 parallel read-only Haiku review agents + manual verification of the two P0 findings.
+
+### Findings
+
+| # | Topic | Verdict | Evidence (file:line) |
+|---|---|---|---|
+| 3 | Notification addressing | **FIXED in code; data/config risk** | recipient = `adminUserId` from AZS entity admin field `UF_CRM_AZS_ADMIN` (`dispatchScheduler.js:185`) → `dispatchService.js:194` → `notificationService.js:52` as `dialogId`. Routes to AZS account, not manager. Residual risk: which user sits in `UF_CRM_AZS_ADMIN` per station is data, not code. |
+| 4 | Disk folder naming | **OK in prod (settings override); code defaults stale** | Confirmed by client: already fixed. Mechanism: effective template comes from saved settings `disk.folderNameTemplate` (`reportsRoutes.js:986`, `diskService.js:167`), overridden in the portal to the client-required «date → AZS number» form. ⚠️ Code defaults still hold the OLD 3-level template in TWO places: `defaultSettings.js:43` and `diskService.js:1` (`'{yyyy-mm}/{dd}/{azs}_{azs_name}'`). If settings are ever reset/reinstalled, the regression returns. Recommend aligning both defaults to the agreed template. |
+| 4 | Disk file naming | **OK** | `{azs}_{slotDate}_{slotHHmm}_{category}.ext` (`diskService.js:233`) → `4_2026-05-28_1414_Колонки.jpg`. Matches `[Код_АЗС]_[Дата]_[Время]_[Категория].jpg`. |
+| 2 | Schedule config UX | **UNCLEAR** | Slot times + jitter set once globally in `settings.client.vue:1149-1185`; reviewer card `reviewer.client.vue:878-959` shows them with label «Времена утренней и дневной рассылки» + removable ×-tags, implying per-day editing. No «set once, runs daily» hint. |
+| 5 | Manual multi-select | **Frontend-only gap** | UI single-select `reviewer.client.vue:971-976` (`manualRequest.azsId` string). Backend ALREADY accepts arrays: `resolveManualCandidates` handles `candidates[]` / `azsIds[]` (`reportsRoutes.js:200-206`). |
+| 1 | Report by AZS | **Partial** | List + summary accept `azsIds` filter (`reportsRoutes.js:637,670`); `azs-options` endpoint exists (`:682-741`). Gap: `/summary` is portal-wide, no per-AZS breakdown; UI has no AZS filter control. |
+| 6 | Bot deep-link button | **Infra present, not wired** | `reportLinks.js:15-26` builds correct `/marketplace/view/{APP_CODE}/?params[path]=/admin/{id}`. `notificationService.js:45-58` supports a `keyboard` param, but `dispatchService.js` notify call does NOT pass it. No feature flag exists yet. |
+
+### Sprint-10 verification (other agent, commit 2e60861)
+- Claim 1 (admin sticky panel + «Сдать отчёт» + «Перейти к проблемам»): **CONFIRMED** (`admin/[reportId].client.vue:776-817`).
+- Claim 2 (frontend upload queue, x2→x1 on retryable, recover after 10): **CONFIRMED** (`admin/[reportId].client.vue:69-322`).
+- Claim 3 (backend CRM-sync serialized per-report queue + backoff `[800,1600,3200]`+jitter, `syncQueued:true`, `errorCode:bitrix_retryable`): **CONFIRMED** (`reportsRoutes.js:505-524,579-598,1010-1066`; `reportCrmSync.js`).
+
+### Risks
+- **#4 (resolved in prod; latent regression):** Effective folder template matches client SOP via saved settings. Latent risk: a settings reset/reinstall falls back to the OLD default in `defaultSettings.js:43` + `diskService.js:1`. Cleanup: align both code defaults to the agreed template.
+- **CRM-sync queue is in-memory (high):** `reportCrmSyncQueue` is recreated on every process restart (`reportsRoutes.js:613`). A crash/deploy between photo upload (Disk+DB committed, response already 200) and CRM sync **silently loses** the sync → orphaned smart-process item, no retry, no audit, `synced=false` invisible to admin (`reportsRoutes.js:1025-1033`).
+- **#3 (medium, data):** If `UF_CRM_AZS_ADMIN` per station points to a manager, the message goes to the manager again — code is correct, mapping must be audited in the portal.
+- **#2 (medium, UX):** Misleading labels make schedule config look daily → support load + risk of accidental edits.
+
+### Decision (proposed, pending approval)
+- P0: make CRM-sync queue durable (DB-backed retry, surface `synced=false`). Cleanup: align stale folder-template defaults in `defaultSettings.js:43` + `diskService.js:1` so a reinstall can't reintroduce the #4 regression.
+- P1: schedule-config UX clarity (#2).
+- P2: manual multi-select (#5, frontend-only) + report-by-AZS (#1: surface existing `azsIds` filter on reviewer screen → pick 1 AZS → its summary + list; backend already supports it).
+- Backlog/flagged: bot deep-link button (#6) behind `ENABLE_REPORT_DEEP_LINK` until mobile app update ships.
+- #3: no code change; add portal data-audit step + a guard log if recipient resolves to a non-AZS role.
+
+### Verification (planned per fix)
+- #4: unit test on `buildFolderRelativePath` asserting exact target structure; smoke upload → check Disk tree.
+- CRM-sync durability: kill process mid-sync test → on restart pending syncs resume; `synced=false` shown in reviewer.
+- #5/#1: `pnpm test` for backend; manual reviewer-screen multi-select + per-AZS summary.
+
+### Next review
+- After P0 fixes land: re-verify folder tree on a live report and confirm no CRM-sync loss across a deploy.
+
+---
+
 ## 2026-05-01 — Token lifecycle audit + functional coverage
 
 ### Scope

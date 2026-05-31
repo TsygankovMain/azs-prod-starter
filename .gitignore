@@ -33,3 +33,6 @@ backends/node/api/data
 
 # dev/build outputs
 backend/php/vendor
+
+# Visual brainstorming companion (local mockups)
+.superpowers/
