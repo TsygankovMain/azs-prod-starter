@@ -804,6 +804,7 @@ export const createReportsRouter = ({
       const latestJob = syncJobs.length ? syncJobs[syncJobs.length - 1] : null;
       const syncStatus = latestJob
         ? { synced: latestJob.status === 'done', lastSyncError: latestJob.last_error || null, syncState: latestJob.status }
+        // No sync job for this report (e.g. pre-CRM-sync legacy / nothing queued) → treat as synced.
         : { synced: true, lastSyncError: null, syncState: 'none' };
       return res.json({ item: { ...item, azsTitle }, photos, requiredPhotos, syncStatus });
     } catch (error) {

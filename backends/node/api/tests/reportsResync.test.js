@@ -172,7 +172,39 @@ test('POST /:id/resync returns 404 when report does not exist', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 3: GET /:id syncStatus reflects the latest job state
+// Test 3: POST /:id/resync returns 403 when caller lacks reviewer/settings capability
+// ---------------------------------------------------------------------------
+
+test('POST /:id/resync returns 403 with {error:"forbidden"} and does not enqueue when caller has no reviewer/settings capability', async () => {
+  const enqueueCalls = [];
+
+  const deps = makeMinimalDeps({
+    crmSyncJobStore: {
+      async enqueue(job) { enqueueCalls.push(job); return { id: 1 }; },
+      async listByReport() { return []; }
+    }
+  });
+
+  const router = createReportsRouter(deps);
+  const handler = findHandler(router, 'post', '/:id/resync');
+
+  const req = {
+    params: { id: '55' },
+    body: {},
+    accessContext: { capabilities: {} },
+    bitrixContext: { key: 'no-caps-key' }
+  };
+  const res = makeRes();
+
+  await handler(req, res);
+
+  assert.equal(res.statusCode, 403);
+  assert.equal(res._payload?.error, 'forbidden');
+  assert.equal(enqueueCalls.length, 0, 'enqueue must NOT be called when 403');
+});
+
+// ---------------------------------------------------------------------------
+// Test 4: GET /:id syncStatus reflects the latest job state
 // ---------------------------------------------------------------------------
 
 test('GET /:id includes syncStatus derived from crmSyncJobStore', async () => {
