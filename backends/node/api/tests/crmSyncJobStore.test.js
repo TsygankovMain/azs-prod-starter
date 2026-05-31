@@ -97,3 +97,111 @@ test('markDone sets status done; reschedule bumps attempts and keeps pending', a
   const done = (await store.listByReport(7))[0];
   assert.equal(done.status, 'done');
 });
+
+// ---------------------------------------------------------------------------
+// MySQL fake pool + tests
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates a minimal mysql2-style fake pool.
+ * execute(sql, params) returns [rowsOrResult, fields].
+ * Call sequence is tracked via `calls` to serve canned responses per invocation.
+ */
+const createFakeMysqlPool = ({ affectedRowsOnUpdate = 1 } = {}) => {
+  const rows = [];
+  let seq = 0;
+  return {
+    rows,
+    async execute(sql, params = []) {
+      const text = String(sql).replace(/\s+/g, ' ').trim();
+      if (text.startsWith('CREATE TABLE')) return [{ affectedRows: 0 }];
+      if (text.startsWith('INSERT INTO crm_sync_jobs')) {
+        seq += 1;
+        const row = {
+          id: seq, report_id: params[0], payload: params[1], status: 'pending',
+          attempts: 0, max_attempts: params[2], last_error: null,
+          next_attempt_at: params[3], created_at: new Date(), updated_at: new Date()
+        };
+        rows.push(row);
+        return [{ insertId: seq }];
+      }
+      if (text.startsWith('SELECT * FROM crm_sync_jobs WHERE id = ?')) {
+        const id = params[0];
+        return [[rows.find((r) => r.id === id)]];
+      }
+      if (text.startsWith('SELECT * FROM crm_sync_jobs WHERE report_id = ?')) {
+        return [rows.filter((r) => r.report_id === params[0])];
+      }
+      if (text.startsWith("SELECT * FROM crm_sync_jobs WHERE status = 'pending'")) {
+        const nowVal = params[0];
+        const runningIds = new Set(rows.filter((r) => r.status === 'running').map((r) => r.report_id));
+        const due = rows.filter((r) => r.status === 'pending' && r.next_attempt_at <= nowVal && !runningIds.has(r.report_id)).sort((a, b) => a.id - b.id);
+        return [due.slice(0, 1)];
+      }
+      if (text.startsWith("UPDATE crm_sync_jobs SET status = 'running'")) {
+        const id = params[0];
+        const row = rows.find((r) => r.id === id && r.status === 'pending');
+        if (row && affectedRowsOnUpdate > 0) { row.status = 'running'; row.updated_at = new Date(); }
+        return [{ affectedRows: affectedRowsOnUpdate }];
+      }
+      if (text.startsWith("UPDATE crm_sync_jobs SET status = 'done'")) {
+        const row = rows.find((r) => r.id === params[0]);
+        if (row) { row.status = 'done'; row.updated_at = new Date(); }
+        return [{ affectedRows: 1 }];
+      }
+      if (text.startsWith("UPDATE crm_sync_jobs SET status = 'failed'")) {
+        const row = rows.find((r) => r.id === params[1]);
+        if (row) { row.status = 'failed'; row.last_error = params[0]; row.updated_at = new Date(); }
+        return [{ affectedRows: 1 }];
+      }
+      if (text.startsWith("UPDATE crm_sync_jobs SET status = 'pending'")) {
+        const row = rows.find((r) => r.id === params[2]);
+        if (row) { row.status = 'pending'; row.next_attempt_at = params[0]; row.last_error = params[1]; row.attempts += 1; row.updated_at = new Date(); }
+        return [{ affectedRows: 1 }];
+      }
+      return [{ affectedRows: 0 }];
+    }
+  };
+};
+
+test('MySQL: enqueue returns the inserted row', async () => {
+  const pool = createFakeMysqlPool();
+  const store = createCrmSyncJobStore({ pool, dbType: 'mysql' });
+  await store.ensureSchema();
+  const job = await store.enqueue({ reportId: 10, payload: { key: 'val' } });
+  assert.equal(job.report_id, 10);
+  assert.equal(job.status, 'pending');
+  assert.equal(job.id, 1);
+});
+
+test('MySQL: claimNextDue returns the job when affectedRows=1', async () => {
+  const pool = createFakeMysqlPool({ affectedRowsOnUpdate: 1 });
+  const store = createCrmSyncJobStore({ pool, dbType: 'mysql' });
+  await store.ensureSchema();
+  await store.enqueue({ reportId: 20, payload: { x: 1 } });
+  const claimed = await store.claimNextDue({ now: new Date() });
+  assert.ok(claimed, 'should return the job');
+  assert.equal(claimed.report_id, 20);
+  assert.equal(claimed.status, 'running');
+});
+
+test('MySQL: claimNextDue returns null when affectedRows=0 (double-claim guard)', async () => {
+  const pool = createFakeMysqlPool({ affectedRowsOnUpdate: 0 });
+  const store = createCrmSyncJobStore({ pool, dbType: 'mysql' });
+  await store.ensureSchema();
+  await store.enqueue({ reportId: 30, payload: { y: 2 } });
+  const claimed = await store.claimNextDue({ now: new Date() });
+  assert.equal(claimed, null, 'loser worker must get null, not a double-claimed row');
+});
+
+test('PG: markFailed sets status failed and records last_error', async () => {
+  const pool = createFakePgPool();
+  const store = createCrmSyncJobStore({ pool, dbType: 'postgresql' });
+  await store.ensureSchema();
+  const job = await store.enqueue({ reportId: 5, payload: { z: 3 } });
+  const claimed = await store.claimNextDue({ now: new Date() });
+  await store.markFailed({ id: claimed.id, error: 'network timeout' });
+  const listed = await store.listByReport(5);
+  assert.equal(listed[0].status, 'failed');
+  assert.equal(listed[0].last_error, 'network timeout');
+});

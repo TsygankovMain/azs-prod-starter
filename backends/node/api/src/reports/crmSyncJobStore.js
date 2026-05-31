@@ -4,6 +4,7 @@ const DEFAULT_MAX_ATTEMPTS = 4;
 
 const toDateSql = (date) => {
   const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) throw new TypeError(`toDateSql: invalid date value: ${date}`);
   return d.toISOString().slice(0, 19).replace('T', ' ');
 };
 
@@ -145,10 +146,11 @@ const createMysqlStore = (pool) => ({
     const candidate = candidates[0];
     if (!candidate) return null;
 
-    await pool.execute(
+    const [updateResult] = await pool.execute(
       `UPDATE crm_sync_jobs SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'`,
       [candidate.id]
     );
+    if (!updateResult || updateResult.affectedRows === 0) return null;
     const [rows] = await pool.execute(
       `SELECT * FROM crm_sync_jobs WHERE id = ? LIMIT 1`,
       [candidate.id]
@@ -183,6 +185,7 @@ const createMysqlStore = (pool) => ({
 // Factory
 // ---------------------------------------------------------------------------
 
+/** NOTE: payload is JSON.stringified on write and returned as a raw JSON string on read — caller must JSON.parse. */
 export const createCrmSyncJobStore = ({ pool, dbType } = {}) => {
   if (!pool) {
     throw new Error('pool is required');
