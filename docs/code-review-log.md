@@ -32,14 +32,24 @@ Branch `feature/v2.0` (from `master @ 2e60861`). Sprint 1 of the v2.0 plan (`doc
 - **P0 CRM-sync loss on restart (was high):** sync jobs now persist in `crm_sync_jobs` and resume after a crash/deploy. `synced=false` + `lastSyncError` are visible to reviewers; a manual "Пересинхронизировать" re-enqueue exists. No more silent orphaned smart-process items.
 - **Secondary win:** removed an admin-token 502 gate from photo upload/submit — directly reduces the token-fragility class of failures.
 
-### Verification
-- Sprint-1 test suites: **27/27 green** (`crmSyncJobStore`, `crmSyncWorker`, `buildCrmSyncRunner`, `reportsResync`, `reportsPhotoCrmContext`).
-- Each task passed an independent spec-compliance review AND a code-quality review; all reviewer-found issues (MySQL double-claim, worker error misclassification, admin-context gate, missing 403 test) were fixed and re-verified before marking complete.
-- `node --check server.js` passes; boot wiring traced (import → construct → inject → ensureSchema → worker start).
-- **Not yet run:** live kill-restart smoke (requires a running DB) — to be done in staging: upload photo → kill process before sync → restart → confirm the job resumes and CRM item syncs.
+### Final whole-feature review (Opus) — 2 issues found & fixed
+A final integration review across the whole sprint (commit `c463efc`) caught what per-task reviews missed:
+- **C1 (critical):** orphaned `running` jobs were permanent. A crash mid-sync left a row `running`; `claimNextDue` excludes any report with a `running` job, so that report would NEVER sync again — and even manual resync couldn't rescue it. This re-introduced the exact durable-stuck failure the sprint targeted (strictly worse than the old in-memory loss, which self-cleared). **Fix:** `crmSyncJobStore.reclaimStale()` (both drivers, optional `runningTimeoutMs`) + `crmSyncWorker.recover()` called at boot before polling resets orphaned `running`→`pending`. 7 dedicated tests.
+- **I2 (important):** Task 6's dead-code removal accidentally made the sync run under the **uploader's** token instead of admin — but report-SPA CRM writes require admin scope (regular AZS-user tokens hit `insufficient_scope`, per the strict-admin design in `authContextStore.getLastAdminContext`). **Fix:** `buildCrmSyncRunner` now resolves admin context via `getLastAdminContext()`, falling back to the uploader's `contextKey` only if no admin context exists.
+- **#7 worker-before-schema:** reviewed, NOT a problem — `drain().catch` logs and self-heals once `ensureSchema` finishes.
 
-### Pre-existing failures (NOT introduced by Sprint 1)
-4 tests fail at the sprint baseline `fcd336f` (verified by running them at base before any Sprint-1 code): `authContextStore` (persists/restores last admin), `dispatchService` (duplicate-prevention + jitter), `verifyToken` (×2). They are assertion failures unrelated to CRM-sync — likely environment-sensitive (filesystem `auth-context.json` writes, `Math.random` jitter determinism, JWT timing). **Follow-up:** triage separately; out of Sprint 1 scope.
+### Pre-existing 4 failures — root-caused & fixed (commit `91c3ce7`)
+The 4 long-standing failures (present at baseline `fcd336f`) were triaged and fixed:
+- **`authContextStore.upsertContext` (real bug):** normalized input BEFORE merging, so a partial upsert (fresh access token, no new refresh token) wiped stored `refreshToken`/`isAdmin` — the same isAdmin-loss class flagged in the 2026-05-01 audit. Fixed to merge raw input over previous, normalize once after.
+- **`verifyToken.test` (test harness):** pin `JWT_SECRET` before importing the module that captures it at load.
+- **`dispatchService.test` (stale assertion):** asserted `notifiedUsers[0].reportId > 0`, but `notifyDispatch` never receives `reportId` (payload is `{userId, azsId, azsTitle, deadlineAt, timezone, context}`; reportId only appears in an error log). Changed to assert `userId === 11` (the AZS admin recipient) — honest, matches the real contract.
+
+### Verification
+- **Full backend suite: 126/126 green, stable across 3 consecutive runs** (first time fully green).
+- Sprint-1 feature suites 34/34; C1 recovery + I2 admin-context paths have dedicated tests.
+- Each task passed independent spec + code-quality review; all reviewer findings (MySQL double-claim, worker error misclassification, admin-context gate, missing 403 test, C1 stuck-running, I2 scope) fixed and re-verified.
+- `node --check server.js` passes.
+- **Still pending (needs live DB):** kill-restart smoke in staging — upload photo → kill process mid-sync → restart → confirm `recover()` re-queues the orphaned job and the CRM item syncs.
 
 ### Next
 - T9 once the operator confirms the prod folder-template string.
