@@ -128,6 +128,19 @@ const roleCapabilities = ref<AppCapabilities>({
   reports: true
 })
 
+// ─── Section navigation state ────────────────────────────────────────────────
+type SectionId = 'azs' | 'photo-type' | 'report' | 'stages' | 'disk' | 'access' | 'manage'
+const activeSection = ref<SectionId>('azs')
+const mobileOpenSection = ref<SectionId | ''>('azs')
+
+function scrollToSection(id: SectionId) {
+  activeSection.value = id
+  const el = document.getElementById(`section-${id}`)
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
+
 function applySystemAdminFallback() {
   if (Number(userStore.id || 0) !== 498) {
     return
@@ -455,32 +468,49 @@ const statusColor = computed(() => {
   return 'air-primary-success'
 })
 
-function addDispatchTimeSlot() {
-  if (!Array.isArray(form.report.dispatchTimes)) {
-    form.report.dispatchTimes = []
-  }
-  form.report.dispatchTimes.push('09:00')
-}
+// ─── Section completion computed ─────────────────────────────────────────────
+const sectionComplete = computed(() => ({
+  azs: Boolean(
+    form.azs.entityTypeId
+    && form.azs.fields.admin
+    && form.azs.fields.reviewers
+    && form.azs.fields.photoSet
+    && form.azs.fields.enabled
+  ),
+  photoType: Boolean(form.photoType.entityTypeId),
+  report: Boolean(
+    form.report.entityTypeId
+    && form.report.fields.azs
+    && form.report.fields.folderId
+  ),
+  stages: Boolean(
+    form.report.stages.new
+    && form.report.stages.inProgress
+    && form.report.stages.done
+    && form.report.stages.expired
+  ),
+  disk: Boolean(form.disk.rootFolderId && form.disk.folderNameTemplate && form.timezone),
+  access: Boolean(form.access.adminUserIds.length),
+  manage: true
+}))
 
-function removeDispatchTimeSlot(index: number) {
-  form.report.dispatchTimes.splice(index, 1)
-}
+// ─── Smart-process select items (for B24Select) ───────────────────────────────
+const smartProcessSelectItems = computed(() =>
+  smartProcesses.value.map((item) => ({ label: item.label, value: String(item.value) }))
+)
 
-function getB24Result(data: unknown): unknown {
-  const response = data as { getData?: () => unknown }
-  const payload = typeof response?.getData === 'function' ? response.getData() : data
-  return (payload as { result?: unknown })?.result ?? payload
-}
+// ─── Navigation sections definition ──────────────────────────────────────────
+const navSections = computed(() => [
+  { id: 'azs' as SectionId, label: 'АЗС', complete: sectionComplete.value.azs },
+  { id: 'photo-type' as SectionId, label: 'Типы фото', complete: sectionComplete.value.photoType },
+  { id: 'report' as SectionId, label: 'Отчёт', complete: sectionComplete.value.report },
+  { id: 'stages' as SectionId, label: 'Сроки и этапы', complete: sectionComplete.value.stages },
+  { id: 'disk' as SectionId, label: 'Диск и часовой пояс', complete: sectionComplete.value.disk },
+  { id: 'access' as SectionId, label: 'Роли доступа', complete: sectionComplete.value.access },
+  { id: 'manage' as SectionId, label: 'Управление', complete: true }
+])
 
-async function callB24(method: string, params: JsonObject = {}) {
-  if (!$b24) {
-    throw new Error('Bitrix24 frame is not initialized')
-  }
-
-  const response = await $b24.callMethod(method, params)
-  return getB24Result(response)
-}
-
+// ─── Helpers for B24Select controlled binding ─────────────────────────────────
 function entitySelectValue(module: ModuleKey) {
   return String(form[module].entityTypeId || '')
 }
@@ -499,6 +529,14 @@ function getModuleFieldValue(module: ModuleKey, key: FieldMapKey) {
 
 function setModuleFieldValue(module: ModuleKey, key: FieldMapKey, value: string) {
   ;(form[module].fields as Record<string, string>)[key] = value
+}
+
+function fieldSelectItems(module: ModuleKey) {
+  return fieldsByModule[module].map((f) => ({ label: f.label, value: f.value }))
+}
+
+function stageSelectItems() {
+  return reportStages.value.map((s) => ({ label: s.label, value: s.value }))
 }
 
 function normalizeFieldOptions(fields: JsonObject): CrmFieldOption[] {
@@ -655,6 +693,21 @@ async function createMappedField(module: ModuleKey, requirement: FieldRequiremen
   }
 }
 
+function getB24Result(data: unknown): unknown {
+  const response = data as { getData?: () => unknown }
+  const payload = typeof response?.getData === 'function' ? response.getData() : data
+  return (payload as { result?: unknown })?.result ?? payload
+}
+
+async function callB24(method: string, params: JsonObject = {}) {
+  if (!$b24) {
+    throw new Error('Bitrix24 frame is not initialized')
+  }
+
+  const response = await $b24.callMethod(method, params)
+  return getB24Result(response)
+}
+
 async function loadSettings() {
   if (!$b24) {
     return
@@ -774,6 +827,17 @@ async function refreshBotAvatar() {
   }
 }
 
+function addDispatchTimeSlot() {
+  if (!Array.isArray(form.report.dispatchTimes)) {
+    form.report.dispatchTimes = []
+  }
+  form.report.dispatchTimes.push('09:00')
+}
+
+function removeDispatchTimeSlot(index: number) {
+  form.report.dispatchTimes.splice(index, 1)
+}
+
 onMounted(async () => {
   try {
     isLoading.value = true
@@ -799,7 +863,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="mx-auto flex w-full max-w-[1360px] flex-col gap-4 p-4">
+  <!-- Page shell -->
+  <div class="mx-auto flex w-full max-w-[1360px] flex-col gap-4 p-4 pb-24">
+    <!-- ── Page header ──────────────────────────────────────────────────────── -->
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div class="flex min-w-0 items-start gap-3">
         <B24Button
@@ -836,20 +902,19 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <!-- ── Global alerts ────────────────────────────────────────────────────── -->
     <B24Alert
       v-if="loadError"
       color="air-primary-alert"
       title="Не удалось загрузить настройки"
       :description="loadError"
     />
-
     <B24Alert
       v-if="!isAdminReady && isLoaded"
       color="air-secondary"
       title="Просмотр доступен, редактирование отключено"
       description="Сохранение настроек доступно только для роли Администратор приложения."
     />
-
     <B24Alert
       v-if="portalLoadError"
       color="air-primary-alert"
@@ -857,514 +922,1008 @@ onUnmounted(() => {
       :description="portalLoadError"
     />
 
-    <div class="grid gap-4 xl:grid-cols-2">
-      <B24Card
-        variant="outline"
-        :b24ui="{
-          body: 'p-4 sm:p-5',
-          header: 'p-4 sm:p-5',
-        }"
-      >
-        <template #header>
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <ProseH3 class="mb-1">
-                АЗС
-              </ProseH3>
-              <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                Выберите СП АЗС и сопоставьте поля карточки станции.
-              </ProseP>
-            </div>
-          </div>
-        </template>
-
-        <div class="space-y-4">
-          <B24FormField label="Смарт-процесс АЗС">
-            <select
-              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-              :value="entitySelectValue('azs')"
-              :disabled="!isAdminReady"
-              @change="setEntitySelectValue('azs', ($event.target as HTMLSelectElement).value)"
-            >
-              <option value="">Выберите СП</option>
-              <option v-for="item in smartProcesses" :key="item.value" :value="item.value">
-                {{ item.label }}
-              </option>
-            </select>
-          </B24FormField>
-
-          <div class="overflow-auto">
-            <table class="min-w-full text-sm">
-              <tbody>
-                <tr v-for="requirement in azsFieldRequirements" :key="requirement.key" class="border-b border-gray-100">
-                  <td class="w-[38%] py-2 pr-3">
-                    <div class="font-medium">{{ requirement.label }}</div>
-                    <div class="text-xs text-gray-500">{{ requirement.type }}</div>
-                  </td>
-                  <td class="py-2 pr-2">
-                    <select
-                      class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-                      :value="getModuleFieldValue('azs', requirement.key)"
-                      :disabled="!isAdminReady || !form.azs.entityTypeId"
-                      @change="setModuleFieldValue('azs', requirement.key, ($event.target as HTMLSelectElement).value)"
-                    >
-                      <option value="">Не сопоставлено</option>
-                      <option v-for="field in fieldsByModule.azs" :key="field.value" :value="field.value">
-                        {{ field.label }}
-                      </option>
-                    </select>
-                  </td>
-                  <td class="w-[120px] py-2 text-right">
-                    <B24Button
-                      size="xs"
-                      color="air-secondary"
-                      label="Создать"
-                      :disabled="!isAdminReady || !form.azs.entityTypeId || Boolean(creatingFieldKey)"
-                      loading-auto
-                      @click="createMappedField('azs', requirement)"
-                    />
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </B24Card>
-
-      <B24Card
-        variant="outline"
-        :b24ui="{
-          body: 'p-4 sm:p-5',
-          header: 'p-4 sm:p-5',
-        }"
-      >
-        <template #header>
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <ProseH3 class="mb-1">
-                Типы фото
-              </ProseH3>
-              <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                Справочник обязательных фото, который выбирается в карточке АЗС.
-              </ProseP>
-            </div>
-          </div>
-        </template>
-
-        <div class="space-y-4">
-          <B24FormField label="Смарт-процесс Типы фото">
-            <select
-              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-              :value="entitySelectValue('photoType')"
-              :disabled="!isAdminReady"
-              @change="setEntitySelectValue('photoType', ($event.target as HTMLSelectElement).value)"
-            >
-              <option value="">Выберите СП</option>
-              <option v-for="item in smartProcesses" :key="item.value" :value="item.value">
-                {{ item.label }}
-              </option>
-            </select>
-          </B24FormField>
-
-          <p class="text-sm text-gray-600">
-            Достаточно выбрать смарт-процесс. Идентификатор и название каждой позиции берутся из стандартных полей записи. Порядок показа — по возрастанию id записи.
+    <!-- ── Main layout: sidebar (desktop) + sections ────────────────────────── -->
+    <div class="flex gap-6">
+      <!-- LEFT SIDEBAR (desktop only) -->
+      <aside class="hidden lg:block w-52 shrink-0">
+        <div class="sticky top-4 rounded-lg border border-(--ui-color-base-20) bg-(--ui-color-base-0) p-3">
+          <p class="mb-2 px-2 text-xs font-semibold uppercase tracking-wide text-(--ui-color-base-50)">
+            Разделы
           </p>
-        </div>
-      </B24Card>
-
-      <B24Card
-        variant="outline"
-        :b24ui="{
-          body: 'p-4 sm:p-5',
-          header: 'p-4 sm:p-5',
-        }"
-      >
-        <template #header>
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <ProseH3 class="mb-1">
-                Отчёт
-              </ProseH3>
-              <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                Используем штатные поля title, assignedById, begindate, closedate и stageId; здесь сопоставляются только недостающие поля.
-              </ProseP>
-            </div>
-          </div>
-        </template>
-
-        <div class="space-y-4">
-          <B24FormField label="Смарт-процесс Отчёт АЗС">
-            <select
-              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-              :value="entitySelectValue('report')"
-              :disabled="!isAdminReady"
-              @change="setEntitySelectValue('report', ($event.target as HTMLSelectElement).value)"
+          <nav class="flex flex-col gap-0.5">
+            <button
+              v-for="section in navSections"
+              :key="section.id"
+              type="button"
+              class="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-(--ui-color-base-10)"
+              :class="activeSection === section.id ? 'bg-(--ui-color-base-10) font-semibold text-(--ui-color-base-90)' : 'text-(--ui-color-base-70)'"
+              @click="scrollToSection(section.id)"
             >
-              <option value="">Выберите СП</option>
-              <option v-for="item in smartProcesses" :key="item.value" :value="item.value">
-                {{ item.label }}
-              </option>
-            </select>
-          </B24FormField>
+              <span class="truncate">{{ section.label }}</span>
+              <span
+                v-if="section.complete"
+                class="ml-1 shrink-0 text-green-500"
+                title="Заполнено"
+              >✓</span>
+              <span
+                v-else
+                class="ml-1 shrink-0 h-1.5 w-1.5 rounded-full bg-amber-400"
+                title="Не заполнено"
+              />
+            </button>
+          </nav>
+        </div>
+      </aside>
 
-          <div class="overflow-auto">
-            <table class="min-w-full text-sm">
-              <tbody>
-                <tr v-for="requirement in reportFieldRequirements" :key="requirement.key" class="border-b border-gray-100">
-                  <td class="w-[38%] py-2 pr-3">
-                    <div class="font-medium">{{ requirement.label }}</div>
-                    <div class="text-xs text-gray-500">{{ requirement.type }}</div>
-                  </td>
-                  <td class="py-2 pr-2">
-                    <select
-                      class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-                      :value="getModuleFieldValue('report', requirement.key)"
-                      :disabled="!isAdminReady || !form.report.entityTypeId"
-                      @change="setModuleFieldValue('report', requirement.key, ($event.target as HTMLSelectElement).value)"
+      <!-- CONTENT COLUMN -->
+      <div class="min-w-0 flex-1 flex flex-col gap-4">
+
+        <!-- ── MOBILE: Accordion navigation (< lg) ─────────────────────────── -->
+        <div class="lg:hidden">
+          <B24Accordion
+            :model-value="mobileOpenSection"
+            type="single"
+            collapsible
+            :items="navSections.map((s) => ({
+              value: s.id,
+              label: s.label,
+              slot: s.id
+            }))"
+            @update:model-value="(v) => { mobileOpenSection = (v as SectionId | '') }"
+          >
+            <!-- АЗС section slot -->
+            <template #azs-body>
+              <div class="space-y-4 p-4">
+                <!-- АЗС smart-process -->
+                <B24FormField label="Смарт-процесс АЗС">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Смарт-процесс АЗС
+                      <B24Tooltip text="Смарт-процесс (СП) в CRM Битрикс24, карточки которого соответствуют станциям. Должен иметь поля admin, reviewers, photoSet, enabled.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <B24Select
+                    :items="[{ label: 'Выберите СП', value: '' }, ...smartProcessSelectItems]"
+                    :model-value="entitySelectValue('azs')"
+                    :disabled="!isAdminReady"
+                    placeholder="Выберите СП"
+                    class="w-full"
+                    @update:model-value="(v) => setEntitySelectValue('azs', String(v ?? ''))"
+                  />
+                </B24FormField>
+
+                <!-- AZS field mapping table -->
+                <div class="overflow-auto">
+                  <table class="min-w-full text-sm">
+                    <tbody>
+                      <tr v-for="req in azsFieldRequirements" :key="req.key" class="border-b border-(--ui-color-base-20)">
+                        <td class="w-[38%] py-2 pr-3">
+                          <div class="font-medium">{{ req.label }}</div>
+                          <div class="text-xs text-(--ui-color-base-50)">{{ req.type }}</div>
+                        </td>
+                        <td class="py-2 pr-2">
+                          <B24Select
+                            :items="[{ label: 'Не сопоставлено', value: '' }, ...fieldSelectItems('azs')]"
+                            :model-value="getModuleFieldValue('azs', req.key)"
+                            :disabled="!isAdminReady || !form.azs.entityTypeId"
+                            placeholder="Не сопоставлено"
+                            class="w-full"
+                            @update:model-value="(v) => setModuleFieldValue('azs', req.key, String(v ?? ''))"
+                          />
+                        </td>
+                        <td class="w-[100px] py-2 text-right">
+                          <B24Button
+                            size="xs"
+                            color="air-secondary"
+                            label="Создать"
+                            :disabled="!isAdminReady || !form.azs.entityTypeId || Boolean(creatingFieldKey)"
+                            loading-auto
+                            @click="createMappedField('azs', req)"
+                          />
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
+
+            <!-- Типы фото section slot -->
+            <template #photo-type-body>
+              <div class="space-y-4 p-4">
+                <B24FormField label="Смарт-процесс Типы фото">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Смарт-процесс Типы фото
+                      <B24Tooltip text="Справочный СП — каждая его запись это один тип фото (например «Фасад», «Ценник»). Выбирается в карточке АЗС для формирования обязательного набора.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <B24Select
+                    :items="[{ label: 'Выберите СП', value: '' }, ...smartProcessSelectItems]"
+                    :model-value="entitySelectValue('photoType')"
+                    :disabled="!isAdminReady"
+                    placeholder="Выберите СП"
+                    class="w-full"
+                    @update:model-value="(v) => setEntitySelectValue('photoType', String(v ?? ''))"
+                  />
+                </B24FormField>
+                <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                  Достаточно выбрать смарт-процесс. Идентификатор и название каждой позиции берутся из стандартных полей записи. Порядок показа — по возрастанию id записи.
+                </ProseP>
+              </div>
+            </template>
+
+            <!-- Отчёт section slot -->
+            <template #report-body>
+              <div class="space-y-4 p-4">
+                <B24FormField label="Смарт-процесс Отчёт АЗС">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Смарт-процесс Отчёт АЗС
+                      <B24Tooltip text="СП, в котором хранятся отчёты сотрудников. Используются штатные поля title, assignedById, begindate, closedate, stageId; дополнительные поля сопоставляются ниже.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <B24Select
+                    :items="[{ label: 'Выберите СП', value: '' }, ...smartProcessSelectItems]"
+                    :model-value="entitySelectValue('report')"
+                    :disabled="!isAdminReady"
+                    placeholder="Выберите СП"
+                    class="w-full"
+                    @update:model-value="(v) => setEntitySelectValue('report', String(v ?? ''))"
+                  />
+                </B24FormField>
+
+                <div class="overflow-auto">
+                  <table class="min-w-full text-sm">
+                    <tbody>
+                      <tr v-for="req in reportFieldRequirements" :key="req.key" class="border-b border-(--ui-color-base-20)">
+                        <td class="w-[38%] py-2 pr-3">
+                          <div class="font-medium">{{ req.label }}</div>
+                          <div class="text-xs text-(--ui-color-base-50)">{{ req.type }}</div>
+                        </td>
+                        <td class="py-2 pr-2">
+                          <B24Select
+                            :items="[{ label: 'Не сопоставлено', value: '' }, ...fieldSelectItems('report')]"
+                            :model-value="getModuleFieldValue('report', req.key)"
+                            :disabled="!isAdminReady || !form.report.entityTypeId"
+                            placeholder="Не сопоставлено"
+                            class="w-full"
+                            @update:model-value="(v) => setModuleFieldValue('report', req.key, String(v ?? ''))"
+                          />
+                        </td>
+                        <td class="w-[100px] py-2 text-right">
+                          <B24Button
+                            size="xs"
+                            color="air-secondary"
+                            label="Создать"
+                            :disabled="!isAdminReady || !form.report.entityTypeId || Boolean(creatingFieldKey)"
+                            loading-auto
+                            @click="createMappedField('report', req)"
+                          />
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
+
+            <!-- Сроки и этапы section slot -->
+            <template #stages-body>
+              <div class="grid gap-3 p-4 sm:grid-cols-2">
+                <B24FormField label="Стадия: новая" class="w-full">
+                  <B24Select
+                    v-model="form.report.stages.new"
+                    :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                    :disabled="!isAdminReady || !reportStages.length"
+                    placeholder="Выберите стадию"
+                    class="w-full"
+                  />
+                </B24FormField>
+                <B24FormField label="Стадия: в работе" class="w-full">
+                  <B24Select
+                    v-model="form.report.stages.inProgress"
+                    :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                    :disabled="!isAdminReady || !reportStages.length"
+                    placeholder="Выберите стадию"
+                    class="w-full"
+                  />
+                </B24FormField>
+                <B24FormField label="Стадия: выполнено" class="w-full">
+                  <B24Select
+                    v-model="form.report.stages.done"
+                    :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                    :disabled="!isAdminReady || !reportStages.length"
+                    placeholder="Выберите стадию"
+                    class="w-full"
+                  />
+                </B24FormField>
+                <B24FormField label="Стадия: просрочено" class="w-full">
+                  <B24Select
+                    v-model="form.report.stages.expired"
+                    :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                    :disabled="!isAdminReady || !reportStages.length"
+                    placeholder="Выберите стадию"
+                    class="w-full"
+                  />
+                </B24FormField>
+                <B24FormField label="Таймаут, минут" class="w-full">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Таймаут, минут
+                      <B24Tooltip text="Сколько минут отводится сотруднику на сдачу отчёта после получения запроса. По истечении статус переходит в «Просрочено».">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <B24InputNumber
+                    v-model="form.report.timeoutMinutes"
+                    class="w-full"
+                    :disabled="!isAdminReady"
+                  />
+                </B24FormField>
+                <B24FormField label="Джиттер отправки, минут" class="w-full">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Джиттер отправки, минут
+                      <B24Tooltip text="Случайная задержка (в минутах) для каждой АЗС при авто-рассылке. Разбрасывает запросы во времени, чтобы не нагружать сервер одновременно.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <B24InputNumber
+                    v-model="form.report.dispatchJitterMinutes"
+                    class="w-full"
+                    :disabled="!isAdminReady"
+                  />
+                </B24FormField>
+                <B24FormField label="Авто-отправка по времени" class="w-full sm:col-span-2">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Авто-отправка по времени
+                      <B24Tooltip text="Список времён (HH:MM) для автоматической рассылки запросов отчёта. Бот отправит push в каждую из указанных точек. Поле необязательное — можно оставить пустым.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <div class="space-y-2">
+                    <div
+                      v-for="(slot, index) in form.report.dispatchTimes"
+                      :key="`dispatch-time-${index}`"
+                      class="flex items-center gap-2"
                     >
-                      <option value="">Не сопоставлено</option>
-                      <option v-for="field in fieldsByModule.report" :key="field.value" :value="field.value">
-                        {{ field.label }}
-                      </option>
-                    </select>
-                  </td>
-                  <td class="w-[120px] py-2 text-right">
+                      <input
+                        v-model="form.report.dispatchTimes[index]"
+                        type="time"
+                        step="60"
+                        class="w-full rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                        :disabled="!isAdminReady"
+                      >
+                      <B24Button
+                        size="xs"
+                        color="air-primary-alert"
+                        label="Удалить"
+                        :disabled="!isAdminReady"
+                        @click="removeDispatchTimeSlot(index)"
+                      />
+                    </div>
                     <B24Button
                       size="xs"
                       color="air-secondary"
-                      label="Создать"
-                      :disabled="!isAdminReady || !form.report.entityTypeId || Boolean(creatingFieldKey)"
-                      loading-auto
-                      @click="createMappedField('report', requirement)"
+                      label="Добавить время"
+                      :disabled="!isAdminReady"
+                      @click="addDispatchTimeSlot"
                     />
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </B24Card>
+                    <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
+                      Выберите время через тайм-пикер. В эти моменты бот автоматически отправит запрос отчёта.
+                    </ProseP>
+                  </div>
+                </B24FormField>
+              </div>
+            </template>
 
-      <B24Card
-        variant="outline"
-        :b24ui="{
-          body: 'p-4 sm:p-5',
-          header: 'p-4 sm:p-5',
-        }"
-      >
-        <template #header>
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <ProseH3 class="mb-1">
-                Сроки и этапы
-              </ProseH3>
-              <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                Стадии отчёта, общий timezone, таймаут и джиттер.
-              </ProseP>
-            </div>
-          </div>
-        </template>
+            <!-- Диск и часовой пояс section slot -->
+            <template #disk-body>
+              <div class="grid gap-3 p-4 sm:grid-cols-2">
+                <B24FormField label="Корневая папка Диска" class="w-full">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Корневая папка Диска
+                      <B24Tooltip text="ID папки Диск.Бизнес (Bitrix24 Drive), в которой будут создаваться подкаталоги для фото каждого отчёта. Найти ID можно в адресной строке при открытии папки.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <B24InputNumber
+                    v-model="form.disk.rootFolderId"
+                    class="w-full"
+                    :disabled="!isAdminReady"
+                  />
+                </B24FormField>
+                <B24FormField label="Шаблон имени папки" class="w-full">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Шаблон имени папки
+                      <B24Tooltip text="Шаблон пути подкаталога внутри корневой папки. Переменные: {yyyy-mm} — год-месяц, {dd} — день, {azs} — id АЗС, {azs_name} — название. Пример: {yyyy-mm}/{dd}/{azs}_{azs_name}">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <B24Input
+                    v-model="form.disk.folderNameTemplate"
+                    class="w-full"
+                    placeholder="{yyyy-mm}/{dd}/{azs}_{azs_name}"
+                    :disabled="!isAdminReady"
+                  />
+                </B24FormField>
+                <B24FormField label="Часовой пояс" class="w-full sm:col-span-2">
+                  <B24Input
+                    v-model="form.timezone"
+                    class="w-full"
+                    placeholder="Europe/Moscow"
+                    :disabled="!isAdminReady"
+                  />
+                </B24FormField>
+              </div>
+            </template>
 
-        <div class="grid gap-3 sm:grid-cols-2">
-          <B24FormField
-            label="Стадия: новая"
-            class="w-full"
-          >
-            <select
-              v-model="form.report.stages.new"
-              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-              :disabled="!isAdminReady || !reportStages.length"
-            >
-              <option value="">Выберите стадию</option>
-              <option v-for="stage in reportStages" :key="stage.value" :value="stage.value">
-                {{ stage.label }}
-              </option>
-            </select>
-          </B24FormField>
-          <B24FormField
-            label="Стадия: в работе"
-            class="w-full"
-          >
-            <select
-              v-model="form.report.stages.inProgress"
-              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-              :disabled="!isAdminReady || !reportStages.length"
-            >
-              <option value="">Выберите стадию</option>
-              <option v-for="stage in reportStages" :key="stage.value" :value="stage.value">
-                {{ stage.label }}
-              </option>
-            </select>
-          </B24FormField>
-          <B24FormField
-            label="Стадия: выполнено"
-            class="w-full"
-          >
-            <select
-              v-model="form.report.stages.done"
-              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-              :disabled="!isAdminReady || !reportStages.length"
-            >
-              <option value="">Выберите стадию</option>
-              <option v-for="stage in reportStages" :key="stage.value" :value="stage.value">
-                {{ stage.label }}
-              </option>
-            </select>
-          </B24FormField>
-          <B24FormField
-            label="Стадия: просрочено"
-            class="w-full"
-          >
-            <select
-              v-model="form.report.stages.expired"
-              class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-              :disabled="!isAdminReady || !reportStages.length"
-            >
-              <option value="">Выберите стадию</option>
-              <option v-for="stage in reportStages" :key="stage.value" :value="stage.value">
-                {{ stage.label }}
-              </option>
-            </select>
-          </B24FormField>
-          <B24FormField
-            label="Таймаут, минут"
-            class="w-full"
-          >
-            <B24InputNumber
-              v-model="form.report.timeoutMinutes"
-              class="w-full"
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Джиттер отправки, минут"
-            class="w-full"
-          >
-            <B24InputNumber
-              v-model="form.report.dispatchJitterMinutes"
-              class="w-full"
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Авто-отправка по времени (часы)"
-            class="w-full sm:col-span-2"
-          >
-            <div class="space-y-2">
-              <div
-                v-for="(slot, index) in form.report.dispatchTimes"
-                :key="`dispatch-time-${index}`"
-                class="flex items-center gap-2"
-              >
-                <input
-                  v-model="form.report.dispatchTimes[index]"
-                  type="time"
-                  step="60"
-                  class="w-full rounded border border-gray-200 bg-white px-3 py-2 text-sm"
-                  :disabled="!isAdminReady"
-                >
-                <B24Button
-                  size="xs"
+            <!-- Роли доступа section slot -->
+            <template #access-body>
+              <div class="grid gap-3 p-4">
+                <B24FormField label="Администраторы" class="w-full">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Администраторы (userId через запятую)
+                      <B24Tooltip text="ID пользователей Битрикс24 с полным доступом к настройкам и управлению приложением. Найти userId: профиль сотрудника → адресная строка.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <B24Input
+                    v-model="accessAdminInput"
+                    class="w-full"
+                    placeholder="1, 7, 42"
+                    :disabled="!isAdminReady"
+                  />
+                </B24FormField>
+                <B24FormField label="Проверяющие (userId через запятую)" class="w-full">
+                  <B24Input
+                    v-model="accessReviewerInput"
+                    class="w-full"
+                    placeholder="11, 25"
+                    :disabled="!isAdminReady"
+                  />
+                </B24FormField>
+                <B24FormField label="Администраторы АЗС (userId через запятую, опционально)" class="w-full">
+                  <B24Input
+                    v-model="accessAzsAdminInput"
+                    class="w-full"
+                    placeholder="по умолчанию все пользователи"
+                    :disabled="!isAdminReady"
+                  />
+                </B24FormField>
+                <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
+                  Пользователь вне списков получает роль Администратор АЗС. Администратор портала по умолчанию получает роль Администратор.
+                </ProseP>
+              </div>
+            </template>
+
+            <!-- Управление section slot -->
+            <template #manage-body>
+              <div class="space-y-3 p-4">
+                <div class="flex flex-wrap items-center gap-2">
+                  <B24Button
+                    color="air-tertiary"
+                    label="Обновить аватарку бота"
+                    loading-auto
+                    :disabled="!isAdminReady || isRefreshingBotAvatar"
+                    @click="refreshBotAvatar"
+                  />
+                  <B24Button
+                    color="air-secondary"
+                    label="Перезагрузить"
+                    loading-auto
+                    :disabled="isSaving"
+                    @click="loadSettings"
+                  />
+                  <B24Button
+                    color="air-tertiary"
+                    label="Сбросить"
+                    :disabled="!isLoaded || !isDirty || isSaving"
+                    @click="resetToLoaded"
+                  />
+                </div>
+                <B24Alert
+                  v-if="saveError"
                   color="air-primary-alert"
-                  label="Удалить"
-                  :disabled="!isAdminReady"
-                  @click="removeDispatchTimeSlot(index)"
+                  title="Не удалось сохранить"
+                  :description="saveError"
+                />
+                <B24Alert
+                  v-if="saveSuccess"
+                  color="air-primary-success"
+                  title="Готово"
+                  :description="saveSuccess"
                 />
               </div>
-              <B24Button
-                size="xs"
-                color="air-secondary"
-                label="Добавить время"
-                :disabled="!isAdminReady"
-                @click="addDispatchTimeSlot"
-              />
+            </template>
+          </B24Accordion>
+        </div>
+
+        <!-- ── DESKTOP: full section cards (≥ lg) ──────────────────────────── -->
+        <div class="hidden lg:flex lg:flex-col lg:gap-4">
+
+          <!-- АЗС -->
+          <B24Card
+            id="section-azs"
+            variant="outline"
+            :b24ui="{ body: 'p-4 sm:p-5', header: 'p-4 sm:p-5' }"
+          >
+            <template #header>
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="mb-1 flex items-center gap-2">
+                    <ProseH3 class="mb-0">АЗС</ProseH3>
+                    <B24Badge
+                      rounded
+                      size="sm"
+                      :color="sectionComplete.azs ? 'air-primary-success' : 'air-secondary'"
+                      inverted
+                      :label="sectionComplete.azs ? 'готово' : 'заполнить'"
+                    />
+                  </div>
+                  <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                    Выберите СП АЗС и сопоставьте поля карточки станции.
+                  </ProseP>
+                </div>
+              </div>
+            </template>
+
+            <div class="space-y-4">
+              <B24FormField label="Смарт-процесс АЗС">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    Смарт-процесс АЗС
+                    <B24Tooltip text="Смарт-процесс (СП) в CRM Битрикс24, карточки которого соответствуют станциям. Должен иметь поля admin, reviewers, photoSet, enabled.">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <B24Select
+                  :items="[{ label: 'Выберите СП', value: '' }, ...smartProcessSelectItems]"
+                  :model-value="entitySelectValue('azs')"
+                  :disabled="!isAdminReady"
+                  placeholder="Выберите СП"
+                  class="w-full"
+                  @update:model-value="(v) => setEntitySelectValue('azs', String(v ?? ''))"
+                />
+              </B24FormField>
+
+              <div class="overflow-auto">
+                <table class="min-w-full text-sm">
+                  <tbody>
+                    <tr v-for="req in azsFieldRequirements" :key="req.key" class="border-b border-(--ui-color-base-20)">
+                      <td class="w-[38%] py-2 pr-3">
+                        <div class="font-medium">{{ req.label }}</div>
+                        <div class="text-xs text-(--ui-color-base-50)">{{ req.type }}</div>
+                      </td>
+                      <td class="py-2 pr-2">
+                        <B24Select
+                          :items="[{ label: 'Не сопоставлено', value: '' }, ...fieldSelectItems('azs')]"
+                          :model-value="getModuleFieldValue('azs', req.key)"
+                          :disabled="!isAdminReady || !form.azs.entityTypeId"
+                          placeholder="Не сопоставлено"
+                          class="w-full"
+                          @update:model-value="(v) => setModuleFieldValue('azs', req.key, String(v ?? ''))"
+                        />
+                      </td>
+                      <td class="w-[120px] py-2 text-right">
+                        <B24Button
+                          size="xs"
+                          color="air-secondary"
+                          label="Создать"
+                          :disabled="!isAdminReady || !form.azs.entityTypeId || Boolean(creatingFieldKey)"
+                          loading-auto
+                          @click="createMappedField('azs', req)"
+                        />
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </B24Card>
+
+          <!-- Типы фото -->
+          <B24Card
+            id="section-photo-type"
+            variant="outline"
+            :b24ui="{ body: 'p-4 sm:p-5', header: 'p-4 sm:p-5' }"
+          >
+            <template #header>
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="mb-1 flex items-center gap-2">
+                    <ProseH3 class="mb-0">Типы фото</ProseH3>
+                    <B24Badge
+                      rounded
+                      size="sm"
+                      :color="sectionComplete.photoType ? 'air-primary-success' : 'air-secondary'"
+                      inverted
+                      :label="sectionComplete.photoType ? 'готово' : 'заполнить'"
+                    />
+                  </div>
+                  <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                    Справочник обязательных фото, который выбирается в карточке АЗС.
+                  </ProseP>
+                </div>
+              </div>
+            </template>
+
+            <div class="space-y-4">
+              <B24FormField label="Смарт-процесс Типы фото">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    Смарт-процесс Типы фото
+                    <B24Tooltip text="Справочный СП — каждая его запись это один тип фото (например «Фасад», «Ценник»). Выбирается в карточке АЗС для формирования обязательного набора.">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <B24Select
+                  :items="[{ label: 'Выберите СП', value: '' }, ...smartProcessSelectItems]"
+                  :model-value="entitySelectValue('photoType')"
+                  :disabled="!isAdminReady"
+                  placeholder="Выберите СП"
+                  class="w-full"
+                  @update:model-value="(v) => setEntitySelectValue('photoType', String(v ?? ''))"
+                />
+              </B24FormField>
+
+              <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                Достаточно выбрать смарт-процесс. Идентификатор и название каждой позиции берутся из стандартных полей записи. Порядок показа — по возрастанию id записи.
+              </ProseP>
+            </div>
+          </B24Card>
+
+          <!-- Отчёт -->
+          <B24Card
+            id="section-report"
+            variant="outline"
+            :b24ui="{ body: 'p-4 sm:p-5', header: 'p-4 sm:p-5' }"
+          >
+            <template #header>
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="mb-1 flex items-center gap-2">
+                    <ProseH3 class="mb-0">Отчёт</ProseH3>
+                    <B24Badge
+                      rounded
+                      size="sm"
+                      :color="sectionComplete.report ? 'air-primary-success' : 'air-secondary'"
+                      inverted
+                      :label="sectionComplete.report ? 'готово' : 'заполнить'"
+                    />
+                  </div>
+                  <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                    Используем штатные поля title, assignedById, begindate, closedate и stageId; здесь сопоставляются только недостающие поля.
+                  </ProseP>
+                </div>
+              </div>
+            </template>
+
+            <div class="space-y-4">
+              <B24FormField label="Смарт-процесс Отчёт АЗС">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    Смарт-процесс Отчёт АЗС
+                    <B24Tooltip text="СП, в котором хранятся отчёты сотрудников. Используются штатные поля title, assignedById, begindate, closedate, stageId; дополнительные поля сопоставляются ниже.">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <B24Select
+                  :items="[{ label: 'Выберите СП', value: '' }, ...smartProcessSelectItems]"
+                  :model-value="entitySelectValue('report')"
+                  :disabled="!isAdminReady"
+                  placeholder="Выберите СП"
+                  class="w-full"
+                  @update:model-value="(v) => setEntitySelectValue('report', String(v ?? ''))"
+                />
+              </B24FormField>
+
+              <div class="overflow-auto">
+                <table class="min-w-full text-sm">
+                  <tbody>
+                    <tr v-for="req in reportFieldRequirements" :key="req.key" class="border-b border-(--ui-color-base-20)">
+                      <td class="w-[38%] py-2 pr-3">
+                        <div class="font-medium">{{ req.label }}</div>
+                        <div class="text-xs text-(--ui-color-base-50)">{{ req.type }}</div>
+                      </td>
+                      <td class="py-2 pr-2">
+                        <B24Select
+                          :items="[{ label: 'Не сопоставлено', value: '' }, ...fieldSelectItems('report')]"
+                          :model-value="getModuleFieldValue('report', req.key)"
+                          :disabled="!isAdminReady || !form.report.entityTypeId"
+                          placeholder="Не сопоставлено"
+                          class="w-full"
+                          @update:model-value="(v) => setModuleFieldValue('report', req.key, String(v ?? ''))"
+                        />
+                      </td>
+                      <td class="w-[120px] py-2 text-right">
+                        <B24Button
+                          size="xs"
+                          color="air-secondary"
+                          label="Создать"
+                          :disabled="!isAdminReady || !form.report.entityTypeId || Boolean(creatingFieldKey)"
+                          loading-auto
+                          @click="createMappedField('report', req)"
+                        />
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </B24Card>
+
+          <!-- Сроки и этапы -->
+          <B24Card
+            id="section-stages"
+            variant="outline"
+            :b24ui="{ body: 'p-4 sm:p-5', header: 'p-4 sm:p-5' }"
+          >
+            <template #header>
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="mb-1 flex items-center gap-2">
+                    <ProseH3 class="mb-0">Сроки и этапы</ProseH3>
+                    <B24Badge
+                      rounded
+                      size="sm"
+                      :color="sectionComplete.stages ? 'air-primary-success' : 'air-secondary'"
+                      inverted
+                      :label="sectionComplete.stages ? 'готово' : 'заполнить'"
+                    />
+                  </div>
+                  <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                    Стадии отчёта, общий timezone, таймаут и джиттер.
+                  </ProseP>
+                </div>
+              </div>
+            </template>
+
+            <div class="grid gap-3 sm:grid-cols-2">
+              <B24FormField label="Стадия: новая" class="w-full">
+                <B24Select
+                  v-model="form.report.stages.new"
+                  :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                  :disabled="!isAdminReady || !reportStages.length"
+                  placeholder="Выберите стадию"
+                  class="w-full"
+                />
+              </B24FormField>
+              <B24FormField label="Стадия: в работе" class="w-full">
+                <B24Select
+                  v-model="form.report.stages.inProgress"
+                  :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                  :disabled="!isAdminReady || !reportStages.length"
+                  placeholder="Выберите стадию"
+                  class="w-full"
+                />
+              </B24FormField>
+              <B24FormField label="Стадия: выполнено" class="w-full">
+                <B24Select
+                  v-model="form.report.stages.done"
+                  :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                  :disabled="!isAdminReady || !reportStages.length"
+                  placeholder="Выберите стадию"
+                  class="w-full"
+                />
+              </B24FormField>
+              <B24FormField label="Стадия: просрочено" class="w-full">
+                <B24Select
+                  v-model="form.report.stages.expired"
+                  :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                  :disabled="!isAdminReady || !reportStages.length"
+                  placeholder="Выберите стадию"
+                  class="w-full"
+                />
+              </B24FormField>
+              <B24FormField label="Таймаут, минут" class="w-full">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    Таймаут, минут
+                    <B24Tooltip text="Сколько минут отводится сотруднику на сдачу отчёта после получения запроса. По истечении статус переходит в «Просрочено».">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <B24InputNumber
+                  v-model="form.report.timeoutMinutes"
+                  class="w-full"
+                  :disabled="!isAdminReady"
+                />
+              </B24FormField>
+              <B24FormField label="Джиттер отправки, минут" class="w-full">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    Джиттер отправки, минут
+                    <B24Tooltip text="Случайная задержка (в минутах) для каждой АЗС при авто-рассылке. Разбрасывает запросы во времени, чтобы не нагружать сервер одновременно.">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <B24InputNumber
+                  v-model="form.report.dispatchJitterMinutes"
+                  class="w-full"
+                  :disabled="!isAdminReady"
+                />
+              </B24FormField>
+              <B24FormField label="Авто-отправка по времени" class="w-full sm:col-span-2">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    Авто-отправка по времени
+                    <B24Tooltip text="Список времён (HH:MM) для автоматической рассылки запросов отчёта. Бот отправит push в каждую из указанных точек. Поле необязательное — можно оставить пустым.">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <div class="space-y-2">
+                  <div
+                    v-for="(slot, index) in form.report.dispatchTimes"
+                    :key="`dispatch-time-${index}`"
+                    class="flex items-center gap-2"
+                  >
+                    <input
+                      v-model="form.report.dispatchTimes[index]"
+                      type="time"
+                      step="60"
+                      class="w-full rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                      :disabled="!isAdminReady"
+                    >
+                    <B24Button
+                      size="xs"
+                      color="air-primary-alert"
+                      label="Удалить"
+                      :disabled="!isAdminReady"
+                      @click="removeDispatchTimeSlot(index)"
+                    />
+                  </div>
+                  <B24Button
+                    size="xs"
+                    color="air-secondary"
+                    label="Добавить время"
+                    :disabled="!isAdminReady"
+                    @click="addDispatchTimeSlot"
+                  />
+                  <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
+                    Выберите время через тайм-пикер. В эти моменты бот автоматически отправит запрос отчёта.
+                  </ProseP>
+                </div>
+              </B24FormField>
+            </div>
+          </B24Card>
+
+          <!-- Диск и часовой пояс -->
+          <B24Card
+            id="section-disk"
+            variant="outline"
+            :b24ui="{ body: 'p-4 sm:p-5', header: 'p-4 sm:p-5' }"
+          >
+            <template #header>
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="mb-1 flex items-center gap-2">
+                    <ProseH3 class="mb-0">Диск и часовой пояс</ProseH3>
+                    <B24Badge
+                      rounded
+                      size="sm"
+                      :color="sectionComplete.disk ? 'air-primary-success' : 'air-secondary'"
+                      inverted
+                      :label="sectionComplete.disk ? 'готово' : 'заполнить'"
+                    />
+                  </div>
+                  <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                    Папка для файлов отчёта, шаблон имени каталога и общий timezone.
+                  </ProseP>
+                </div>
+              </div>
+            </template>
+
+            <div class="grid gap-3 sm:grid-cols-2">
+              <B24FormField label="Корневая папка Диска" class="w-full">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    Корневая папка Диска
+                    <B24Tooltip text="ID папки Диск.Бизнес (Bitrix24 Drive), в которой будут создаваться подкаталоги для фото каждого отчёта. Найти ID можно в адресной строке при открытии папки.">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <B24InputNumber
+                  v-model="form.disk.rootFolderId"
+                  class="w-full"
+                  :disabled="!isAdminReady"
+                />
+              </B24FormField>
+              <B24FormField label="Шаблон имени папки" class="w-full">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    Шаблон имени папки
+                    <B24Tooltip text="Шаблон пути подкаталога внутри корневой папки. Переменные: {yyyy-mm} — год-месяц, {dd} — день, {azs} — id АЗС, {azs_name} — название. Пример: {yyyy-mm}/{dd}/{azs}_{azs_name}">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <B24Input
+                  v-model="form.disk.folderNameTemplate"
+                  class="w-full"
+                  placeholder="{yyyy-mm}/{dd}/{azs}_{azs_name}"
+                  :disabled="!isAdminReady"
+                />
+              </B24FormField>
+              <B24FormField label="Часовой пояс" class="w-full sm:col-span-2">
+                <B24Input
+                  v-model="form.timezone"
+                  class="w-full"
+                  placeholder="Europe/Moscow"
+                  :disabled="!isAdminReady"
+                />
+              </B24FormField>
+            </div>
+          </B24Card>
+
+          <!-- Роли доступа -->
+          <B24Card
+            id="section-access"
+            variant="outline"
+            :b24ui="{ body: 'p-4 sm:p-5', header: 'p-4 sm:p-5' }"
+          >
+            <template #header>
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="mb-1 flex items-center gap-2">
+                    <ProseH3 class="mb-0">Роли доступа</ProseH3>
+                    <B24Badge
+                      rounded
+                      size="sm"
+                      :color="sectionComplete.access ? 'air-primary-success' : 'air-secondary'"
+                      inverted
+                      :label="sectionComplete.access ? 'готово' : 'заполнить'"
+                    />
+                  </div>
+                  <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                    Приоритет ролей: Администратор > Проверяющий > Администратор АЗС.
+                  </ProseP>
+                </div>
+              </div>
+            </template>
+
+            <div class="grid gap-3">
+              <B24FormField label="Администраторы" class="w-full">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    Администраторы (userId через запятую)
+                    <B24Tooltip text="ID пользователей Битрикс24 с полным доступом к настройкам и управлению приложением. Найти userId: профиль сотрудника → адресная строка.">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <B24Input
+                  v-model="accessAdminInput"
+                  class="w-full"
+                  placeholder="1, 7, 42"
+                  :disabled="!isAdminReady"
+                />
+              </B24FormField>
+              <B24FormField label="Проверяющие (userId через запятую)" class="w-full">
+                <B24Input
+                  v-model="accessReviewerInput"
+                  class="w-full"
+                  placeholder="11, 25"
+                  :disabled="!isAdminReady"
+                />
+              </B24FormField>
+              <B24FormField label="Администраторы АЗС (userId через запятую, опционально)" class="w-full">
+                <B24Input
+                  v-model="accessAzsAdminInput"
+                  class="w-full"
+                  placeholder="по умолчанию все пользователи"
+                  :disabled="!isAdminReady"
+                />
+              </B24FormField>
               <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
-                Выберите время через тайм-пикер. В эти моменты бот автоматически отправит запрос отчёта.
+                Пользователь вне списков получает роль Администратор АЗС. Администратор портала по умолчанию получает роль Администратор.
               </ProseP>
             </div>
-          </B24FormField>
-        </div>
-      </B24Card>
+          </B24Card>
 
-      <B24Card
-        variant="outline"
-        :b24ui="{
-          body: 'p-4 sm:p-5',
-          header: 'p-4 sm:p-5',
-        }"
-      >
-        <template #header>
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <ProseH3 class="mb-1">
-                Диск и часовой пояс
-              </ProseH3>
-              <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                Папка для файлов отчёта, шаблон имени каталога и общий timezone.
-              </ProseP>
+          <!-- Управление -->
+          <B24Card
+            id="section-manage"
+            variant="outline"
+            :b24ui="{ body: 'p-4 sm:p-5', header: 'p-4 sm:p-5' }"
+          >
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div class="space-y-1">
+                <ProseH3 class="mb-0">Управление</ProseH3>
+                <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                  Сохранение отправляет весь объект <code>settings</code>, перезагрузка подтягивает <code>defaults</code> и сохранённые значения.
+                </ProseP>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <B24Button
+                  color="air-tertiary"
+                  label="Обновить аватарку бота"
+                  loading-auto
+                  :disabled="!isAdminReady || isRefreshingBotAvatar"
+                  @click="refreshBotAvatar"
+                />
+                <B24Button
+                  color="air-secondary"
+                  label="Перезагрузить"
+                  loading-auto
+                  :disabled="isSaving"
+                  @click="loadSettings"
+                />
+                <B24Button
+                  color="air-tertiary"
+                  label="Сбросить"
+                  :disabled="!isLoaded || !isDirty || isSaving"
+                  @click="resetToLoaded"
+                />
+              </div>
             </div>
-          </div>
-        </template>
-
-        <div class="grid gap-3 sm:grid-cols-2">
-          <B24FormField
-            label="Корневая папка Диска"
-            class="w-full"
-          >
-            <B24InputNumber
-              v-model="form.disk.rootFolderId"
-              class="w-full"
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Шаблон имени папки"
-            class="w-full"
-          >
-            <B24Input
-              v-model="form.disk.folderNameTemplate"
-              class="w-full"
-              placeholder="{yyyy-mm}/{dd}/{azs}_{azs_name}"
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Часовой пояс"
-            class="w-full sm:col-span-2"
-          >
-            <B24Input
-              v-model="form.timezone"
-              class="w-full"
-              placeholder="Europe/Moscow"
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-        </div>
-      </B24Card>
-
-      <B24Card
-        variant="outline"
-        :b24ui="{
-          body: 'p-4 sm:p-5',
-          header: 'p-4 sm:p-5',
-        }"
-      >
-        <template #header>
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <ProseH3 class="mb-1">
-                Роли доступа
-              </ProseH3>
-              <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                Приоритет ролей: Администратор > Проверяющий > Администратор АЗС.
-              </ProseP>
+            <div class="mt-4 flex flex-col gap-2">
+              <B24Alert
+                v-if="saveError"
+                color="air-primary-alert"
+                title="Не удалось сохранить"
+                :description="saveError"
+              />
+              <B24Alert
+                v-if="saveSuccess"
+                color="air-primary-success"
+                title="Готово"
+                :description="saveSuccess"
+              />
             </div>
-          </div>
-        </template>
-
-        <div class="grid gap-3 sm:grid-cols-1">
-          <B24FormField
-            label="Администраторы (userId через запятую)"
-            class="w-full"
-          >
-            <B24Input
-              v-model="accessAdminInput"
-              class="w-full"
-              placeholder="1, 7, 42"
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Проверяющие (userId через запятую)"
-            class="w-full"
-          >
-            <B24Input
-              v-model="accessReviewerInput"
-              class="w-full"
-              placeholder="11, 25"
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <B24FormField
-            label="Администраторы АЗС (userId через запятую, опционально)"
-            class="w-full"
-          >
-            <B24Input
-              v-model="accessAzsAdminInput"
-              class="w-full"
-              placeholder="по умолчанию все пользователи"
-              :disabled="!isAdminReady"
-            />
-          </B24FormField>
-          <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
-            Пользователь вне списков получает роль Администратор АЗС. Администратор портала по умолчанию получает роль Администратор.
-          </ProseP>
+          </B24Card>
         </div>
-      </B24Card>
+      </div>
     </div>
 
-    <B24Card
-      variant="outline"
-      :b24ui="{
-        body: 'p-4 sm:p-5',
-        header: 'p-4 sm:p-5',
-      }"
-    >
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div class="space-y-1">
-          <ProseH3 class="mb-0">
-            Управление
-          </ProseH3>
-          <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-            Сохранение отправляет весь объект `settings`, перезагрузка подтягивает `defaults` и сохранённые значения.
-          </ProseP>
+    <!-- ── Sticky save bar ──────────────────────────────────────────────────── -->
+    <div class="fixed bottom-0 left-0 right-0 z-50 border-t border-(--ui-color-base-20) bg-(--ui-color-base-0)/95 px-4 py-3 backdrop-blur-sm">
+      <div class="mx-auto flex max-w-[1360px] items-center justify-between gap-3">
+        <div class="flex items-center gap-2">
+          <B24Badge
+            rounded
+            size="md"
+            :color="statusColor"
+            inverted
+            :label="statusLabel"
+          />
+          <span
+            v-if="isDirty"
+            class="text-sm text-(--ui-color-base-70)"
+          >Есть несохранённые изменения</span>
         </div>
-
-        <div class="flex flex-wrap items-center gap-2">
-          <B24Button
-            color="air-tertiary"
-            label="Обновить аватарку бота"
-            loading-auto
-            :disabled="!isAdminReady || isRefreshingBotAvatar"
-            @click="refreshBotAvatar"
-          />
-          <B24Button
-            color="air-secondary"
-            label="Перезагрузить"
-            loading-auto
-            :disabled="isSaving"
-            @click="loadSettings"
-          />
-          <B24Button
-            color="air-tertiary"
-            label="Сбросить"
-            :disabled="!isLoaded || !isDirty || isSaving"
-            @click="resetToLoaded"
-          />
-          <B24Button
-            color="air-primary-success"
-            label="Сохранить"
-            loading-auto
-            :disabled="!canSave"
-            @click="saveSettings"
-          />
-        </div>
-      </div>
-
-      <div class="mt-4 flex flex-col gap-2">
-        <B24Alert
-          v-if="saveError"
-          color="air-primary-alert"
-          title="Не удалось сохранить"
-          :description="saveError"
-        />
-        <B24Alert
-          v-if="saveSuccess"
+        <B24Button
           color="air-primary-success"
-          title="Готово"
-          :description="saveSuccess"
+          label="Сохранить настройки"
+          loading-auto
+          :disabled="!canSave"
+          @click="saveSettings"
         />
       </div>
-    </B24Card>
+    </div>
   </div>
 </template>

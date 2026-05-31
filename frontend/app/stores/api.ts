@@ -297,6 +297,13 @@ export const useApiStore = defineStore(
       })
     }
 
+    const resyncReport = async (reportId: number): Promise<{ ok: boolean; syncQueued: boolean }> => {
+      return await $api(`/api/reports/${reportId}/resync`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
     const postInstall = async (data: JsonObject): Promise<JsonObject> => {
       return await $api('/api/install', {
         method: 'POST',
@@ -386,7 +393,8 @@ export const useApiStore = defineStore(
       saveSettings,
       refreshBotAvatar,
       getMyRole,
-      reinitToken
+      reinitToken,
+      resyncReport
     }
   }
 )

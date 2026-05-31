@@ -84,6 +84,8 @@ const customDateFrom = ref('')
 const customDateTo = ref('')
 const statusFilter = ref<string>('')
 const feedFilterMode = ref<'all' | 'problems'>('all')
+// AZS filter for feed (#3)
+const azsFilter = ref<string>('')
 
 const scheduleSettings = reactive({
   dispatchTimes: [] as string[],
@@ -105,7 +107,7 @@ const timeSlots = computed(() => {
 })
 
 const manualRequest = reactive({
-  azsId: '',
+  azsIds: [] as string[],
   mode: 'now' as 'now' | 'schedule',
   scheduleDate: '',
   scheduleTime: ''
@@ -172,6 +174,17 @@ const progressBar = computed(() => {
     open: (openCount.value / totalCount.value) * 100,
     failed: (failedCount.value / totalCount.value) * 100
   }
+})
+
+// Mini-KPI for selected AZS (#3) — derived client-side from existing reports data
+const azsFilterKpi = computed(() => {
+  if (!azsFilter.value) return null
+  const rows = reports.value.filter(r => r.azsId === azsFilter.value)
+  const total = rows.length
+  const done = rows.filter(r => r.status === 'done').length
+  const overdue = rows.filter(r => r.status === 'expired').length
+  const inProgress = rows.filter(r => r.status === 'in_progress' || r.status === 'created').length
+  return { total, done, overdue, inProgress }
 })
 
 const deriveEvents = (): FeedEvent[] => {
@@ -268,6 +281,11 @@ const filteredEvents = computed(() => {
     }
     const allowed = statusMap[statusFilter.value] || []
     result = result.filter(e => allowed.includes(e.type))
+  }
+
+  // AZS filter (#3)
+  if (azsFilter.value) {
+    result = result.filter(e => e.azsId === azsFilter.value)
   }
 
   return result
@@ -432,22 +450,32 @@ const saveSchedule = async () => {
   }
 }
 
+// Multi-select helpers (#5)
+const selectAllAzs = () => {
+  manualRequest.azsIds = azsOptions.value.map(o => o.value)
+}
+const clearAllAzs = () => {
+  manualRequest.azsIds = []
+}
+const toggleAzsSelection = (value: string) => {
+  const idx = manualRequest.azsIds.indexOf(value)
+  if (idx === -1) {
+    manualRequest.azsIds.push(value)
+  } else {
+    manualRequest.azsIds.splice(idx, 1)
+  }
+}
+
 const sendManualRequest = async () => {
   manualError.value = ''
   manualSuccess.value = ''
 
-  if (!manualRequest.azsId) {
-    manualError.value = 'Выберите АЗС'
+  if (manualRequest.azsIds.length === 0) {
+    manualError.value = 'Выберите хотя бы одну АЗС'
     return
   }
 
   try {
-    const selectedAzs = azsOptions.value.find(o => o.value === manualRequest.azsId)
-    if (!selectedAzs) {
-      manualError.value = 'АЗС не найдена'
-      return
-    }
-
     const now = new Date()
     const to2 = (n: number) => String(n).padStart(2, '0')
     const defaultDate = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
@@ -455,20 +483,23 @@ const sendManualRequest = async () => {
 
     const slotDate = manualRequest.mode === 'schedule' ? manualRequest.scheduleDate : defaultDate
     const slotTime = manualRequest.mode === 'schedule' ? manualRequest.scheduleTime : defaultTime
-
     const slotHHmm = slotTime.replace(':', '')
 
+    // Build candidates array for all selected AZS
+    const candidates = manualRequest.azsIds.map(id => {
+      const azs = azsOptions.value.find(o => o.value === id)
+      return { azsId: id, adminUserId: azs?.adminUserId ?? 0 }
+    })
+
     await apiStore.createManualReport({
-      candidates: [{
-        azsId: manualRequest.azsId,
-        adminUserId: selectedAzs.adminUserId
-      }],
+      candidates,
       slotDate,
       slotHHmm
     })
 
-    manualSuccess.value = 'Задание отправлено'
-    manualRequest.azsId = ''
+    const count = manualRequest.azsIds.length
+    manualSuccess.value = `Задание отправлено для ${count} АЗС`
+    manualRequest.azsIds = []
     manualRequest.mode = 'now'
 
     await loadAll()
@@ -529,6 +560,22 @@ const handleFeedAction = (event: FeedEvent, action: FeedAction) => {
   }
   if (action === 'open-card') {
     openCrmCard(event.reportRow)
+  }
+}
+
+// Resync (#4)
+const resyncingIds = ref<Set<number>>(new Set())
+const resyncReport = async (reportId: number) => {
+  resyncingIds.value = new Set([...resyncingIds.value, reportId])
+  try {
+    await apiStore.resyncReport(reportId)
+    await loadAll()
+  } catch (error) {
+    console.error('Ошибка пересинхронизации', error)
+  } finally {
+    const next = new Set(resyncingIds.value)
+    next.delete(reportId)
+    resyncingIds.value = next
   }
 }
 
@@ -701,14 +748,14 @@ onMounted(async () => {
               type="date"
               class="px-3 py-2 rounded-lg border border-gray-200 text-sm"
               @change="loadAll"
-            />
+            >
             <span class="text-gray-500">—</span>
             <input
               v-model="customDateTo"
               type="date"
               class="px-3 py-2 rounded-lg border border-gray-200 text-sm"
               @change="loadAll"
-            />
+            >
           </div>
         </header>
 
@@ -738,9 +785,9 @@ onMounted(async () => {
 
           <!-- Progress bar -->
           <div class="w-full h-3 bg-gray-100 rounded-full overflow-hidden mb-4 flex">
-            <div class="bg-green-500" :style="{ width: progressBar.done + '%' }"></div>
-            <div class="bg-yellow-400" :style="{ width: progressBar.open + '%' }"></div>
-            <div class="bg-red-400" :style="{ width: progressBar.failed + '%' }"></div>
+            <div class="bg-green-500" :style="{ width: progressBar.done + '%' }"/>
+            <div class="bg-yellow-400" :style="{ width: progressBar.open + '%' }"/>
+            <div class="bg-red-400" :style="{ width: progressBar.failed + '%' }"/>
           </div>
 
           <!-- Status chips -->
@@ -754,7 +801,7 @@ onMounted(async () => {
               ]"
               @click="statusFilter = statusFilter === 'done' ? '' : 'done'"
             >
-              <span class="w-2 h-2 rounded-full bg-green-500"></span>
+              <span class="w-2 h-2 rounded-full bg-green-500"/>
               Сдан — {{ doneCount }}
             </button>
             <button
@@ -766,7 +813,7 @@ onMounted(async () => {
               ]"
               @click="statusFilter = statusFilter === 'open' ? '' : 'open'"
             >
-              <span class="w-2 h-2 rounded-full bg-yellow-500"></span>
+              <span class="w-2 h-2 rounded-full bg-yellow-500"/>
               В работе — {{ openCount }}
             </button>
             <button
@@ -778,7 +825,7 @@ onMounted(async () => {
               ]"
               @click="statusFilter = statusFilter === 'failed' ? '' : 'failed'"
             >
-              <span class="w-2 h-2 rounded-full bg-red-500"></span>
+              <span class="w-2 h-2 rounded-full bg-red-500"/>
               Не сдан — {{ failedCount }}
             </button>
             <button
@@ -790,6 +837,52 @@ onMounted(async () => {
             </button>
           </div>
         </section>
+
+        <!-- AZS filter bar (#3) -->
+        <div class="mb-4 flex items-center gap-3 flex-wrap">
+          <div class="flex items-center gap-2 flex-1 min-w-[200px] max-w-xs">
+            <label class="text-sm text-gray-500 whitespace-nowrap">Фильтр по АЗС:</label>
+            <select
+              v-model="azsFilter"
+              class="flex-1 px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm"
+            >
+              <option value="">Все АЗС</option>
+              <option v-for="opt in azsOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
+          </div>
+          <button
+            v-if="azsFilter"
+            class="px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm text-gray-600 hover:bg-gray-50"
+            @click="azsFilter = ''"
+          >
+            Сбросить
+          </button>
+        </div>
+
+        <!-- Mini-KPI for selected AZS (#3) -->
+        <div v-if="azsFilter && azsFilterKpi" class="mb-4 flex flex-wrap gap-3">
+          <div class="flex items-center gap-2 px-4 py-2 rounded-xl bg-white border border-gray-100 shadow-sm text-sm">
+            <span class="text-gray-500">Всего:</span>
+            <span class="font-semibold">{{ azsFilterKpi.total }}</span>
+          </div>
+          <div class="flex items-center gap-2 px-4 py-2 rounded-xl bg-green-50 border border-green-100 text-sm">
+            <span class="w-2 h-2 rounded-full bg-green-500" />
+            <span class="text-green-700">Сдано:</span>
+            <span class="font-semibold text-green-800">{{ azsFilterKpi.done }}</span>
+          </div>
+          <div class="flex items-center gap-2 px-4 py-2 rounded-xl bg-red-50 border border-red-100 text-sm">
+            <span class="w-2 h-2 rounded-full bg-red-500" />
+            <span class="text-red-700">Просрочено:</span>
+            <span class="font-semibold text-red-800">{{ azsFilterKpi.overdue }}</span>
+          </div>
+          <div class="flex items-center gap-2 px-4 py-2 rounded-xl bg-yellow-50 border border-yellow-100 text-sm">
+            <span class="w-2 h-2 rounded-full bg-yellow-500" />
+            <span class="text-yellow-700">В работе:</span>
+            <span class="font-semibold text-yellow-800">{{ azsFilterKpi.inProgress }}</span>
+          </div>
+        </div>
 
         <!-- Two-column layout: feed + right panel -->
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -845,20 +938,32 @@ onMounted(async () => {
                       <p v-if="event.subtitle" class="text-sm text-gray-600 mt-0.5">
                         {{ event.subtitle }}
                       </p>
-                      <div v-if="event.buttons && event.buttons.length > 0" class="mt-2 flex gap-2">
+                      <div class="mt-2 flex flex-wrap gap-2">
+                        <template v-if="event.buttons && event.buttons.length > 0">
+                          <button
+                            v-for="btn in event.buttons"
+                            :key="btn.action"
+                            :disabled="btn.disabled"
+                            :class="[
+                              'px-3 py-1 text-xs rounded-md transition-colors',
+                              btn.action === 'request-again'
+                                ? 'bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50'
+                                : 'text-gray-600 hover:bg-gray-50 disabled:opacity-50'
+                            ]"
+                            @click="handleFeedAction(event, btn.action)"
+                          >
+                            {{ btn.label }}
+                          </button>
+                        </template>
+                        <!-- Resync button (#4): always shown on report-bearing items.
+                             TODO: show «не синхронизировано» B24Badge only when feed carries syncStatus (follow-up). -->
                         <button
-                          v-for="btn in event.buttons"
-                          :key="btn.action"
-                          :disabled="btn.disabled"
-                          :class="[
-                            'px-3 py-1 text-xs rounded-md transition-colors',
-                            btn.action === 'request-again'
-                              ? 'bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50'
-                              : 'text-gray-600 hover:bg-gray-50 disabled:opacity-50'
-                          ]"
-                          @click="handleFeedAction(event, btn.action)"
+                          v-if="event.reportRow.id"
+                          :disabled="resyncingIds.has(event.reportRow.id)"
+                          class="px-3 py-1 text-xs rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                          @click="resyncReport(event.reportRow.id)"
                         >
-                          {{ btn.label }}
+                          {{ resyncingIds.has(event.reportRow.id) ? 'Синхронизация…' : 'Пересинхронизировать' }}
                         </button>
                       </div>
                     </div>
@@ -884,7 +989,7 @@ onMounted(async () => {
               <div class="p-5 space-y-4">
 
                 <div>
-                  <label class="block text-xs text-gray-500 mb-1.5">Времена утренней и дневной рассылки</label>
+                  <label class="block text-xs text-gray-500 mb-1.5">Время рассылки заданий</label>
                   <div class="flex flex-wrap gap-2">
                     <span
                       v-for="(time, idx) in scheduleSettings.dispatchTimes"
@@ -911,29 +1016,33 @@ onMounted(async () => {
                       </button>
                     </div>
                   </div>
+                  <!-- Hint #1 -->
+                  <p class="text-xs text-gray-400 mt-2 leading-relaxed">
+                    Задаётся один раз. Дальше задания уходят автоматически каждый день в это время — каждый день настраивать не нужно.
+                  </p>
                 </div>
 
                 <div>
-                  <label class="block text-xs text-gray-500 mb-1.5">Разброс времени для каждой АЗС</label>
+                  <label class="block text-xs text-gray-500 mb-1.5">Случайный разброс ±, мин</label>
                   <div class="flex items-center gap-2">
                     <input
                       v-model.number="scheduleSettings.dispatchJitterMinutes"
                       type="number"
                       class="w-20 px-3 py-1.5 rounded-md border border-gray-200 text-sm"
-                    />
+                    >
                     <span class="text-sm text-gray-600">мин в обе стороны</span>
                   </div>
                   <p class="text-xs text-gray-400 mt-1">Чтобы все АЗС не получили push одновременно</p>
                 </div>
 
                 <div>
-                  <label class="block text-xs text-gray-500 mb-1.5">Сколько времени даём на сдачу</label>
+                  <label class="block text-xs text-gray-500 mb-1.5">Время на сдачу, мин</label>
                   <div class="flex items-center gap-2">
                     <input
                       v-model.number="scheduleSettings.timeoutMinutes"
                       type="number"
                       class="w-20 px-3 py-1.5 rounded-md border border-gray-200 text-sm"
-                    />
+                    >
                     <span class="text-sm text-gray-600">минут</span>
                   </div>
                 </div>
@@ -966,14 +1075,41 @@ onMounted(async () => {
               </div>
               <div class="p-5 space-y-3">
 
+                <!-- Multi-select АЗС (#2) -->
                 <div>
-                  <label class="block text-xs text-gray-500 mb-1.5">АЗС</label>
-                  <select v-model="manualRequest.azsId" class="w-full px-3 py-2 rounded-md border border-gray-200 text-sm bg-white">
-                    <option value="">Выберите АЗС…</option>
-                    <option v-for="opt in azsOptions" :key="opt.value" :value="opt.value">
-                      {{ opt.label }}
-                    </option>
-                  </select>
+                  <div class="flex items-center justify-between mb-1.5">
+                    <label class="text-xs text-gray-500">АЗС (выберите одну или несколько)</label>
+                    <div class="flex gap-2 text-xs">
+                      <button class="text-blue-600 hover:underline" @click="selectAllAzs">Все</button>
+                      <span class="text-gray-300">|</span>
+                      <button class="text-gray-500 hover:underline" @click="clearAllAzs">Снять</button>
+                    </div>
+                  </div>
+                  <div class="max-h-44 overflow-y-auto border border-gray-200 rounded-md bg-white divide-y divide-gray-100">
+                    <label
+                      v-for="opt in azsOptions"
+                      :key="opt.value"
+                      class="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-gray-50"
+                      :class="{ 'bg-blue-50': manualRequest.azsIds.includes(opt.value) }"
+                    >
+                      <input
+                        type="checkbox"
+                        :value="opt.value"
+                        :checked="manualRequest.azsIds.includes(opt.value)"
+                        class="rounded border-gray-300 text-blue-600"
+                        @change="toggleAzsSelection(opt.value)"
+                      >
+                      <span :class="manualRequest.azsIds.includes(opt.value) ? 'text-blue-800 font-medium' : 'text-gray-700'">
+                        {{ opt.label }}
+                      </span>
+                    </label>
+                    <div v-if="azsOptions.length === 0" class="px-3 py-2 text-xs text-gray-400">
+                      Нет доступных АЗС
+                    </div>
+                  </div>
+                  <p v-if="manualRequest.azsIds.length > 0" class="text-xs text-blue-600 mt-1">
+                    Выбрано: {{ manualRequest.azsIds.length }} АЗС
+                  </p>
                 </div>
 
                 <div>
@@ -1039,10 +1175,11 @@ onMounted(async () => {
                 </div>
 
                 <button
-                  class="w-full px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-medium"
+                  class="w-full px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-medium"
+                  :disabled="manualRequest.azsIds.length === 0"
                   @click="sendManualRequest"
                 >
-                  Отправить задание
+                  {{ manualRequest.azsIds.length > 0 ? `Запросить у ${manualRequest.azsIds.length} АЗС` : 'Выберите АЗС' }}
                 </button>
 
                 <B24Alert
@@ -1104,10 +1241,18 @@ onMounted(async () => {
                       <div class="flex flex-wrap gap-1">
                         <button
                           class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded"
-                          @click="openPhotoFolder(item)"
                           :disabled="!item.diskFolderId"
+                          @click="openPhotoFolder(item)"
                         >
                           Папка
+                        </button>
+                        <!-- Resync button in tech table (#4) -->
+                        <button
+                          class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded disabled:opacity-50"
+                          :disabled="resyncingIds.has(item.id)"
+                          @click="resyncReport(item.id)"
+                        >
+                          {{ resyncingIds.has(item.id) ? '…' : 'Ресинк' }}
                         </button>
                       </div>
                     </td>
