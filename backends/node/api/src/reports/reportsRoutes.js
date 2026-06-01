@@ -162,7 +162,26 @@ const getFieldValue = (item, fieldCode) => {
   if (!item || !fieldCode) {
     return undefined;
   }
-  return item[fieldCode] ?? item[fieldCode.toLowerCase()] ?? item[fieldCode.toUpperCase()];
+  // Bitrix returns UF fields camelCased (ufCrm2_123) when useOriginalUfNames:N,
+  // while settings store the original code (UF_CRM_2_123). Match across both
+  // forms — otherwise admin/azs UF lookups silently miss and resolve to empty.
+  // Mirrors dispatchScheduler.getFieldValue so manual and auto paths agree.
+  const code = String(fieldCode).trim();
+  const aliases = [code, code.toLowerCase(), code.toUpperCase()];
+  const underscoreMatch = code.match(/^UF_CRM_(\d+)_(\d+)$/i);
+  if (underscoreMatch) {
+    aliases.push(`ufCrm${underscoreMatch[1]}_${underscoreMatch[2]}`);
+  }
+  const camelMatch = code.match(/^ufCrm(\d+)_(\d+)$/i);
+  if (camelMatch) {
+    aliases.push(`UF_CRM_${camelMatch[1]}_${camelMatch[2]}`);
+  }
+  for (const alias of aliases) {
+    if (alias && alias in item && item[alias] !== undefined && item[alias] !== null) {
+      return item[alias];
+    }
+  }
+  return undefined;
 };
 
 const extractFirstUserId = (value) => {
@@ -191,8 +210,10 @@ export const resolveManualCandidates = async ({
   payload,
   settings,
   bitrixClient,
-  context = {}
+  context = {},
+  fallbackUserId = 0
 }) => {
+  const normalizedFallbackUserId = Number(fallbackUserId) > 0 ? Math.floor(Number(fallbackUserId)) : 0;
   const details = [];
   const rawCandidates = Array.isArray(payload?.candidates)
     ? payload.candidates
@@ -261,12 +282,18 @@ export const resolveManualCandidates = async ({
     }
 
     if (!Number.isFinite(adminUserId) || adminUserId <= 0) {
-      failedItems.push({
-        ok: false,
-        azsId: String(azsItemId),
-        error: 'В карточке АЗС не указан администратор'
-      });
-      continue;
+      // No admin on the AZS card → fall back to the requesting reviewer so the
+      // report still gets created and someone is accountable, instead of failing.
+      if (normalizedFallbackUserId > 0) {
+        adminUserId = normalizedFallbackUserId;
+      } else {
+        failedItems.push({
+          ok: false,
+          azsId: String(azsItemId),
+          error: 'В карточке АЗС не указан администратор'
+        });
+        continue;
+      }
     }
 
     candidates.push({
@@ -837,7 +864,8 @@ export const createReportsRouter = ({
         payload: req.body || {},
         settings,
         bitrixClient,
-        context: req.bitrixContext || {}
+        context: req.bitrixContext || {},
+        fallbackUserId: extractUserId(req.user)
       });
 
       const result = await dispatchService.dispatchBatch({

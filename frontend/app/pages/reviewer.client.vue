@@ -113,6 +113,21 @@ const manualRequest = reactive({
   scheduleTime: ''
 })
 
+// $fetch (ofetch) puts the backend JSON body on error.data. Prefer the API's
+// human-readable message/details over the generic "[POST] ...: 400" string.
+const extractApiError = (error: unknown, fallback: string): string => {
+  const data = (error as { data?: { message?: string; details?: string[] } })?.data
+  if (data) {
+    if (Array.isArray(data.details) && data.details.length) {
+      return data.details.join('; ')
+    }
+    if (typeof data.message === 'string' && data.message.trim()) {
+      return data.message
+    }
+  }
+  return error instanceof Error ? error.message : fallback
+}
+
 const getDateRange = () => {
   const now = new Date()
   const to2 = (n: number) => String(n).padStart(2, '0')
@@ -504,7 +519,7 @@ const sendManualRequest = async () => {
 
     await loadAll()
   } catch (error) {
-    manualError.value = error instanceof Error ? error.message : 'Ошибка при отправке задания'
+    manualError.value = extractApiError(error, 'Ошибка при отправке задания')
   }
 }
 
