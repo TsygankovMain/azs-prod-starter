@@ -141,3 +141,51 @@ test('normalizeSettings can load incomplete settings while Bitrix sync is requir
     }
   }
 });
+
+test('validateSettings accepts valid report.workWindow', () => {
+  const normalized = validateSettings(mergeSettings({
+    report: {
+      workWindow: { start: '07:00', end: '22:00' }
+    }
+  }));
+  assert.deepEqual(normalized.report.workWindow, { start: '07:00', end: '22:00' });
+});
+
+test('validateSettings rejects workWindow where start >= end (start after end)', () => {
+  assert.throws(
+    () => validateSettings(mergeSettings({
+      report: {
+        workWindow: { start: '22:00', end: '07:00' }
+      }
+    })),
+    /report\.workWindow\.start must be earlier than report\.workWindow\.end/
+  );
+});
+
+test('validateSettings rejects workWindow where start equals end', () => {
+  assert.throws(
+    () => validateSettings(mergeSettings({
+      report: {
+        workWindow: { start: '08:00', end: '08:00' }
+      }
+    })),
+    /report\.workWindow\.start must be earlier than report\.workWindow\.end/
+  );
+});
+
+test('validateSettings rejects workWindow with malformed time string', () => {
+  assert.throws(
+    () => validateSettings(mergeSettings({
+      report: {
+        workWindow: { start: '7', end: '22:00' }
+      }
+    })),
+    /report\.workWindow start and end must match HH:mm/
+  );
+});
+
+test('normalizeSettings uses default workWindow when absent from saved settings', () => {
+  const normalized = normalizeSettings({});
+  assert.deepEqual(normalized.report.workWindow, DEFAULT_SETTINGS.report.workWindow);
+  assert.deepEqual(normalized.report.workWindow, { start: '07:00', end: '22:00' });
+});

@@ -36,7 +36,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
     },
     timeoutMinutes: 60,
     dispatchJitterMinutes: 15,
-    dispatchTimes: []
+    dispatchTimes: [],
+    workWindow: { start: '07:00', end: '22:00' }
   },
   disk: {
     rootFolderId: 0,
@@ -203,6 +204,33 @@ export const validateSettings = (settings, {
         .some((item) => !/^\d{1,2}:\d{2}$/.test(item));
       if (hasInvalidTimes) {
         errors.push('report.dispatchTimes contains invalid values, expected HH:mm');
+      }
+    }
+    if (settings.report.workWindow !== undefined) {
+      const ww = settings.report.workWindow;
+      const timeRe = /^\d{1,2}:\d{2}$/;
+      const parseTime = (s) => {
+        const m = String(s || '').match(/^(\d{1,2}):(\d{2})$/);
+        if (!m) return null;
+        const h = Number(m[1]);
+        const min = Number(m[2]);
+        if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+        return h * 60 + min;
+      };
+      if (!isPlainObject(ww) || typeof ww.start !== 'string' || typeof ww.end !== 'string') {
+        errors.push('report.workWindow must be an object with string start and end');
+      } else if (!timeRe.test(ww.start) || !timeRe.test(ww.end)) {
+        errors.push('report.workWindow start and end must match HH:mm');
+      } else {
+        const startMinutes = parseTime(ww.start);
+        const endMinutes = parseTime(ww.end);
+        if (startMinutes === null) {
+          errors.push('report.workWindow.start is not a valid time');
+        } else if (endMinutes === null) {
+          errors.push('report.workWindow.end is not a valid time');
+        } else if (startMinutes >= endMinutes) {
+          errors.push('report.workWindow.start must be earlier than report.workWindow.end');
+        }
       }
     }
     if (isProductionBitrixSync) {
