@@ -10,7 +10,7 @@ import {
 // computeExecuteAt — pure UTC-based time arithmetic
 // ---------------------------------------------------------------------------
 
-test('computeExecuteAt: base 09:00 + jitter -143 = 06:37 (no window)', () => {
+test('computeExecuteAt: base 09:00 + jitter -143 MSK → 03:37 UTC (no window)', () => {
   const { executeAt } = computeExecuteAt({
     planDate: '2026-06-03',
     baseTime: '0900',
@@ -18,15 +18,15 @@ test('computeExecuteAt: base 09:00 + jitter -143 = 06:37 (no window)', () => {
     workWindow: undefined,
     timezone: 'Europe/Moscow'
   });
-  // base = 2026-06-03T09:00:00.000Z, minus 143 min = 2026-06-03T06:37:00.000Z
-  assert.equal(executeAt.getUTCHours(), 6);
+  // 09:00 MSK = 06:00 UTC; minus 143 min = 03:37 UTC
+  assert.equal(executeAt.getUTCHours(), 3);
   assert.equal(executeAt.getUTCMinutes(), 37);
   assert.equal(executeAt.getUTCFullYear(), 2026);
   assert.equal(executeAt.getUTCMonth(), 5); // June
   assert.equal(executeAt.getUTCDate(), 3);
 });
 
-test('computeExecuteAt: base 09:00 + jitter +200 = 12:20 (no window)', () => {
+test('computeExecuteAt: base 09:00 + jitter +200 MSK → 09:20 UTC (no window)', () => {
   const { executeAt } = computeExecuteAt({
     planDate: '2026-06-03',
     baseTime: '0900',
@@ -34,8 +34,8 @@ test('computeExecuteAt: base 09:00 + jitter +200 = 12:20 (no window)', () => {
     workWindow: undefined,
     timezone: 'Europe/Moscow'
   });
-  // base = 2026-06-03T09:00:00.000Z, plus 200 min = 2026-06-03T12:20:00.000Z
-  assert.equal(executeAt.getUTCHours(), 12);
+  // 09:00 MSK = 06:00 UTC; plus 200 min = 09:20 UTC
+  assert.equal(executeAt.getUTCHours(), 9);
   assert.equal(executeAt.getUTCMinutes(), 20);
 });
 
@@ -43,8 +43,9 @@ test('computeExecuteAt: base 09:00 + jitter +200 = 12:20 (no window)', () => {
 // computeExecuteAt — window clamping
 // ---------------------------------------------------------------------------
 
-test('computeExecuteAt: jitter pushes below window start → clamped to start', () => {
-  // base 09:00 + jitter -240 = 05:00, window start 07:00 → clamp to 07:00
+test('computeExecuteAt: jitter pushes below window start MSK → clamped to window start UTC', () => {
+  // base 09:00 MSK = 06:00 UTC; jitter -240 → 02:00 UTC
+  // window start 07:00 MSK = 04:00 UTC → clamp to 04:00 UTC
   const { executeAt } = computeExecuteAt({
     planDate: '2026-06-03',
     baseTime: '0900',
@@ -52,12 +53,13 @@ test('computeExecuteAt: jitter pushes below window start → clamped to start', 
     workWindow: { start: '07:00', end: '12:00' },
     timezone: 'Europe/Moscow'
   });
-  assert.equal(executeAt.getUTCHours(), 7);
+  assert.equal(executeAt.getUTCHours(), 4);
   assert.equal(executeAt.getUTCMinutes(), 0);
 });
 
-test('computeExecuteAt: jitter pushes above window end → clamped to end', () => {
-  // base 09:00 + jitter +240 = 13:00, window end 12:00 → clamp to 12:00
+test('computeExecuteAt: jitter pushes above window end MSK → clamped to window end UTC', () => {
+  // base 09:00 MSK = 06:00 UTC; jitter +240 → 10:00 UTC
+  // window end 12:00 MSK = 09:00 UTC → clamp to 09:00 UTC
   const { executeAt } = computeExecuteAt({
     planDate: '2026-06-03',
     baseTime: '0900',
@@ -65,12 +67,13 @@ test('computeExecuteAt: jitter pushes above window end → clamped to end', () =
     workWindow: { start: '07:00', end: '12:00' },
     timezone: 'Europe/Moscow'
   });
-  assert.equal(executeAt.getUTCHours(), 12);
+  assert.equal(executeAt.getUTCHours(), 9);
   assert.equal(executeAt.getUTCMinutes(), 0);
 });
 
-test('computeExecuteAt: within window is unchanged', () => {
-  // base 09:00 + jitter +30 = 09:30, inside [07:00, 12:00]
+test('computeExecuteAt: within window MSK is unchanged', () => {
+  // base 09:00 MSK = 06:00 UTC; jitter +30 → 06:30 UTC
+  // window [07:00 MSK=04:00 UTC, 12:00 MSK=09:00 UTC]: 06:30 is inside → no clamp
   const { executeAt } = computeExecuteAt({
     planDate: '2026-06-03',
     baseTime: '0900',
@@ -78,11 +81,12 @@ test('computeExecuteAt: within window is unchanged', () => {
     workWindow: { start: '07:00', end: '12:00' },
     timezone: 'Europe/Moscow'
   });
-  assert.equal(executeAt.getUTCHours(), 9);
+  assert.equal(executeAt.getUTCHours(), 6);
   assert.equal(executeAt.getUTCMinutes(), 30);
 });
 
-test('computeExecuteAt: no workWindow → no clamping even at extremes', () => {
+test('computeExecuteAt: no workWindow → no clamping even at extremes MSK', () => {
+  // base 09:00 MSK = 06:00 UTC; jitter -600 → 06:00 - 600 min = -4h → prev day 20:00 UTC
   const { executeAt } = computeExecuteAt({
     planDate: '2026-06-03',
     baseTime: '0900',
@@ -90,8 +94,7 @@ test('computeExecuteAt: no workWindow → no clamping even at extremes', () => {
     workWindow: undefined,
     timezone: 'Europe/Moscow'
   });
-  // 09:00 - 600 min = -1:00 → prev day 23:00 UTC
-  assert.equal(executeAt.getUTCHours(), 23);
+  assert.equal(executeAt.getUTCHours(), 20);
   assert.equal(executeAt.getUTCDate(), 2);
 });
 
@@ -323,4 +326,57 @@ test('generateDailyPlan: no baseTimes → 0 upserts, empty baseTimes in summary'
   assert.equal(store.calls.length, 0);
   assert.equal(summary.planned, 0);
   assert.deepEqual(summary.baseTimes, []);
+});
+
+// ---------------------------------------------------------------------------
+// FIX C1 — timezone-aware computeExecuteAt
+// ---------------------------------------------------------------------------
+
+test('computeExecuteAt: timezone Europe/Moscow, base 0900, jitter 0 → 06:00 UTC', () => {
+  // 09:00 MSK = 09:00 - 3h offset = 06:00 UTC
+  const { executeAt } = computeExecuteAt({
+    planDate: '2026-06-10',
+    baseTime: '0900',
+    jitterMinutes: 0,
+    workWindow: undefined,
+    timezone: 'Europe/Moscow'
+  });
+  assert.equal(executeAt.toISOString(), '2026-06-10T06:00:00.000Z');
+});
+
+test('computeExecuteAt: no timezone (undefined) → UTC legacy behavior, base 0900 → 09:00 UTC', () => {
+  // When timezone is absent, behavior must be identical to old UTC code
+  const { executeAt } = computeExecuteAt({
+    planDate: '2026-06-10',
+    baseTime: '0900',
+    jitterMinutes: 0,
+    workWindow: undefined,
+    timezone: undefined
+  });
+  assert.equal(executeAt.toISOString(), '2026-06-10T09:00:00.000Z');
+});
+
+test('computeExecuteAt: workWindow clamp in tz — base 0500 MSK, window start 0700 MSK → clamped to 04:00 UTC', () => {
+  // base = 05:00 MSK = 02:00 UTC; window start = 07:00 MSK = 04:00 UTC
+  // 02:00 UTC < 04:00 UTC → clamp to windowStart = 04:00 UTC
+  const { executeAt } = computeExecuteAt({
+    planDate: '2026-06-10',
+    baseTime: '0500',
+    jitterMinutes: 0,
+    workWindow: { start: '07:00', end: '20:00' },
+    timezone: 'Europe/Moscow'
+  });
+  assert.equal(executeAt.toISOString(), '2026-06-10T04:00:00.000Z');
+});
+
+test('computeExecuteAt: jitter applied after tz conversion — base 0900 MSK + jitter -60 → 08:00 MSK = 05:00 UTC', () => {
+  // base = 09:00 MSK = 06:00 UTC; minus 60 min = 05:00 UTC = 08:00 MSK
+  const { executeAt } = computeExecuteAt({
+    planDate: '2026-06-10',
+    baseTime: '0900',
+    jitterMinutes: -60,
+    workWindow: undefined,
+    timezone: 'Europe/Moscow'
+  });
+  assert.equal(executeAt.toISOString(), '2026-06-10T05:00:00.000Z');
 });

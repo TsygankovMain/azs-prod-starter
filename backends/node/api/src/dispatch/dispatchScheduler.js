@@ -445,19 +445,27 @@ export const createDispatchScheduler = ({
         logger.error('dispatchScheduler: ensureSchema failed', { error: error.message });
       }
 
+      // Read settings to determine the correct timezone for "today" and the cron.
+      // Fall back to DEFAULT_TIMEZONE env var (or 'Europe/Moscow') if not set.
+      const planSettings = settingsStore ? await settingsStore.read().catch(() => ({})) : {};
+      const planTz = String(planSettings?.timezone || process.env.DEFAULT_TIMEZONE || 'Europe/Moscow').trim();
+
       generationTask = cron.schedule(planGenerationCron, async () => {
         try {
-          const today = getTimeParts(nowFn(), String(process.env.DEFAULT_TIMEZONE || 'Europe/Moscow')).dateKey;
+          // "today" in the configured settings timezone — so '1 0 * * *' means
+          // 00:01 in the settings tz, and dateKey is also the settings-tz date.
+          const today = getTimeParts(nowFn(), planTz).dateKey;
           await generatePlanForDate(today);
         } catch (error) {
           logger.error('dispatchScheduler: generation cron failed', { error: error.message });
         }
-      });
-      logger.info('dispatchScheduler: plan generation cron started', { planGenerationCron });
+      }, { timezone: planTz });
+      logger.info('dispatchScheduler: plan generation cron started', { planGenerationCron, planTz });
 
-      // Boot bootstrap: generate plan for today immediately (idempotent)
+      // Boot bootstrap: generate plan for today immediately (idempotent).
+      // dateKey uses the settings timezone so it matches what the cron will produce.
       try {
-        const today = getTimeParts(nowFn(), String(process.env.DEFAULT_TIMEZONE || 'Europe/Moscow')).dateKey;
+        const today = getTimeParts(nowFn(), planTz).dateKey;
         await generatePlanForDate(today);
       } catch (error) {
         logger.error('dispatchScheduler: boot plan generation failed', { error: error.message });

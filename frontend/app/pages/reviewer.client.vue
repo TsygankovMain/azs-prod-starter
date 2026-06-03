@@ -609,13 +609,21 @@ const resyncReport = async (reportId: number) => {
   }
 }
 
+// Format execute_at for the plan card using the portal timezone (Europe/Moscow).
+// getHours() would return the browser's local time — wrong on a UTC server or
+// when the user's browser is in a different tz. Intl ensures Moscow wall-clock.
+const PLAN_TIME_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
+  timeZone: 'Europe/Moscow',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23'
+})
+
 const formatPlanTime = (isoString: string): string => {
   try {
-    const date = new Date(isoString)
-    const h = String(date.getHours()).padStart(2, '0')
-    const m = String(date.getMinutes()).padStart(2, '0')
-    return `${h}:${m}`
+    return PLAN_TIME_FORMATTER.format(new Date(isoString))
   } catch {
+    // Non-fatal fallback: slice the ISO string (may be off-tz, but safe)
     return String(isoString || '').slice(11, 16) || '—'
   }
 }

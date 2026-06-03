@@ -3,20 +3,26 @@
  *
  * Pure helper + orchestrator for generating a daily dispatch plan.
  *
- * IMPORTANT — UTC-based time building (consistency with dispatchService):
- * This module builds slot datetimes the SAME way as
- * dispatchService.parseSlotDateTimeUtc:
- *   new Date(`${planDate}T00:00:00.000Z`)  then  setUTCHours(HH, MM, 0, 0)
+ * TIMEZONE SEMANTICS (C1 fix):
+ * `computeExecuteAt` now treats baseTime and workWindow boundaries as wall-clock
+ * times in `settings.timezone` (e.g. 'Europe/Moscow'). For example, baseTime
+ * '0900' with timezone 'Europe/Moscow' (UTC+3, no DST) produces execute_at at
+ * 06:00 UTC — matching the old dispatchScheduler behaviour where 09:00 fires at
+ * 09:00 Moscow time.
  *
- * That means baseTime and workWindow boundaries are treated as UTC clock times,
- * NOT as local times in the configured timezone. This matches dispatchService
- * exactly — when the executor later calls dispatchService.dispatchCandidate with
- * slotDate/slotHHmm = planDate/baseTime, it rebuilds the slot via
- * parseSlotDateTimeUtc using the same arithmetic, so the two values AGREE.
+ * When timezone is undefined/'' the function falls back to treating times as UTC
+ * (legacy behaviour), so all existing tests without a timezone remain passing.
  *
- * If true timezone-aware scheduling is ever needed, BOTH files must be updated
- * together to avoid a mismatch between planned executeAt and the executor's
- * slot key reconstruction.
+ * SLOT KEY SAFETY:
+ * dispatchService.buildSlotKey is `${slotDate}:${normalizeSlot(slotHHmm)}` — pure
+ * string concat, NOT affected by UTC arithmetic. The executor passes
+ * slotDate=plan_date and slotHHmm=base_time, so idempotency is UNAFFECTED by this
+ * change. dispatchService.js is NOT touched.
+ *
+ * DST NOTE:
+ * For fixed-offset zones (Europe/Moscow, UTC+3, no DST) the conversion is exact.
+ * For DST zones there is a ≤1 h ambiguity at the transition instant only —
+ * acceptable for a production dispatch scheduler.
  */
 
 import { pickJitterMinutes } from './dispatchService.js';
@@ -24,23 +30,83 @@ import { pickJitterMinutes } from './dispatchService.js';
 const MINUTES_TO_MS = 60 * 1000;
 
 // ---------------------------------------------------------------------------
-// Local helpers (identical logic to dispatchService internals, kept in sync)
+// Timezone helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the offset (ms) of `timeZone` at the given instant:
+ *   (wall-clock time shown in the tz) - (UTC time)
+ * e.g. Moscow UTC+3 → +10_800_000.
+ *
+ * Uses Intl.DateTimeFormat to read the wall-clock representation, then computes
+ * Date.UTC of those parts and subtracts the real UTC timestamp.
+ *
+ * @param {Date}   date     The instant to evaluate the offset at.
+ * @param {string} timeZone IANA timezone string, e.g. 'Europe/Moscow'.
+ * @returns {number} Offset in milliseconds.
+ */
+const tzOffsetMs = (date, timeZone) => {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+  const p = Object.fromEntries(dtf.formatToParts(date).map((x) => [x.type, x.value]));
+  const asUTC = Date.UTC(
+    Number(p.year), Number(p.month) - 1, Number(p.day),
+    Number(p.hour), Number(p.minute), Number(p.second)
+  );
+  return asUTC - date.getTime();
+};
+
+/**
+ * Build the UTC instant that corresponds to wall-clock HHMM on `planDate` in
+ * `timeZone`.  If `timeZone` is falsy, falls back to UTC interpretation
+ * (legacy behaviour — keeps existing tests passing when timezone is absent).
+ *
+ * Algorithm:
+ *  1. Build the naive UTC midnight of planDate and set HHMM via setUTCHours
+ *     → this is the "UTC guess" (correct answer when zone IS UTC).
+ *  2. Compute the tz offset at that instant via Intl.
+ *  3. Subtract the offset so the resulting instant, when formatted in the tz,
+ *     shows exactly HHMM.
+ *
+ * For fixed-offset zones (Moscow UTC+3) this is exact.  For DST zones there is
+ * a ≤1 h ambiguity at the transition instant — acceptable.
+ *
+ * @param {string}          planDate 'YYYY-MM-DD'
+ * @param {string|number}   hhmm     'HHMM' 4-char (or numeric, e.g. '0900')
+ * @param {string|undefined} timeZone IANA tz or falsy for UTC legacy
+ * @returns {Date}
+ */
+const buildZonedDatetime = (planDate, hhmm, timeZone) => {
+  const h = Number(String(hhmm).slice(0, 2));
+  const m = Number(String(hhmm).slice(2, 4));
+  const utcGuess = new Date(`${planDate}T00:00:00.000Z`);
+  if (Number.isNaN(utcGuess.getTime())) {
+    throw new Error(`buildZonedDatetime: invalid planDate "${planDate}"`);
+  }
+  utcGuess.setUTCHours(h, m, 0, 0);
+  if (!timeZone) return utcGuess; // legacy UTC fallback — no tz conversion
+  const offset = tzOffsetMs(utcGuess, timeZone);
+  return new Date(utcGuess.getTime() - offset);
+};
+
+// ---------------------------------------------------------------------------
+// Local helpers (backward-compat UTC path kept for callers that pass no tz)
 // ---------------------------------------------------------------------------
 
 /**
  * Build a UTC Date for `planDate` at the given `HHMM` string.
  * Mirrors parseSlotDateTimeUtc in dispatchService.js exactly.
+ * Kept for internal reference; buildZonedDatetime replaces it when tz is given.
  */
-const buildUtcDatetime = (planDate, hhmm) => {
-  const h = Number(String(hhmm).slice(0, 2));
-  const m = Number(String(hhmm).slice(2, 4));
-  const d = new Date(`${planDate}T00:00:00.000Z`);
-  if (Number.isNaN(d.getTime())) {
-    throw new Error(`buildUtcDatetime: invalid planDate "${planDate}"`);
-  }
-  d.setUTCHours(h, m, 0, 0);
-  return d;
-};
+const buildUtcDatetime = (planDate, hhmm) => buildZonedDatetime(planDate, hhmm, '');
 
 /** Add integer minutes to a Date, returns a new Date. */
 const addMinutes = (date, minutes) =>
@@ -96,21 +162,24 @@ export const normalizeBaseTimes = (value) => {
  * @param {number} params.jitterMinutes  integer (negative or positive)
  * @param {{ start: string, end: string } | undefined} params.workWindow
  *   Optional. start/end are 'HH:MM', clamping boundaries on the same planDate.
- * @param {string} params.timezone       Ignored for base-time construction
- *   (kept for future tz-aware extension; currently UTC is used for consistency
- *   with dispatchService.parseSlotDateTimeUtc — see module-level comment).
+ *   Boundaries are interpreted in the same timezone as baseTime.
+ * @param {string|undefined} params.timezone
+ *   IANA timezone string (e.g. 'Europe/Moscow').  When present, baseTime and
+ *   workWindow boundaries are treated as wall-clock times in this timezone.
+ *   When absent/falsy, UTC is used (legacy behaviour — existing tests unaffected).
  * @returns {{ executeAt: Date }}
  */
-export const computeExecuteAt = ({ planDate, baseTime, jitterMinutes, workWindow }) => {
-  const base = buildUtcDatetime(planDate, baseTime);
+export const computeExecuteAt = ({ planDate, baseTime, jitterMinutes, workWindow, timezone }) => {
+  const tz = timezone || ''; // empty string → UTC legacy path in buildZonedDatetime
+  const base = buildZonedDatetime(planDate, baseTime, tz);
   let executeAt = addMinutes(base, jitterMinutes);
 
   if (workWindow) {
-    // Parse window boundaries as UTC times on the same planDate
+    // Parse window boundaries in the same tz so the window means wall-clock hours
     const windowStartHhmm = String(workWindow.start || '').replace(':', '');
     const windowEndHhmm = String(workWindow.end || '').replace(':', '');
-    const windowStart = buildUtcDatetime(planDate, windowStartHhmm);
-    const windowEnd = buildUtcDatetime(planDate, windowEndHhmm);
+    const windowStart = buildZonedDatetime(planDate, windowStartHhmm, tz);
+    const windowEnd = buildZonedDatetime(planDate, windowEndHhmm, tz);
 
     if (executeAt < windowStart) {
       executeAt = windowStart;
