@@ -157,11 +157,16 @@ export const createDispatchService = ({
 
     let reportItemId = null;
     try {
-      const hasPrecomputed = candidate.scheduledAt !== undefined && candidate.scheduledAt !== null && candidate.scheduledAt !== '';
+      // Only a Date or a non-empty string counts as pre-computed. Guarding on
+      // typeof avoids falsy-but-valid coercions (e.g. new Date(0)→epoch, new
+      // Date(false)→epoch) silently dispatching to 1970.
+      const precomputedRaw = candidate.scheduledAt;
+      const hasPrecomputed = precomputedRaw instanceof Date
+        || (typeof precomputedRaw === 'string' && precomputedRaw.trim() !== '');
       let jitterMinutes;
       let scheduledAt;
       if (hasPrecomputed) {
-        const parsed = new Date(candidate.scheduledAt);
+        const parsed = new Date(precomputedRaw);
         if (Number.isNaN(parsed.getTime())) {
           throw new Error('candidate.scheduledAt is invalid');
         }
