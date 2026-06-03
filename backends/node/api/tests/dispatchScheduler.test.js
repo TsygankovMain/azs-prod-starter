@@ -6,6 +6,7 @@ test('dispatch scheduler runs only on configured slot and maps slotDate/slotHHmm
   const calls = [];
   const scheduler = createDispatchScheduler({
     enabled: false,
+    planModeEnabled: false, // legacy slot-dispatch path under test
     dispatchService: {
       async dispatchBatch(payload) {
         calls.push(payload);
@@ -49,6 +50,7 @@ test('dispatch scheduler can build auto candidates from AZS crm rows with upperc
   const calls = [];
   const scheduler = createDispatchScheduler({
     enabled: false,
+    planModeEnabled: false, // legacy slot-dispatch path under test
     dispatchService: {
       async dispatchBatch(payload) {
         calls.push(payload);
@@ -137,6 +139,70 @@ test('flag OFF → planStore is never touched even if injected', async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].candidates[0].slotHHmm, '0900');
   // planStore was never touched (would have thrown above)
+});
+
+test('default (env unset) → plan mode is ON; runOnce takes the plan-execute path', async () => {
+  const prev = process.env.DISPATCH_PLAN_MODE_ENABLED;
+  delete process.env.DISPATCH_PLAN_MODE_ENABLED; // simulate prod with no explicit flag
+  try {
+    let listDueCalled = false;
+    const scheduler = createDispatchScheduler({
+      enabled: false,
+      // planModeEnabled intentionally NOT passed → falls back to env default (on)
+      dispatchPlanStore: {
+        async listDue() { listDueCalled = true; return []; },
+        async markDispatched() {},
+        async markFailed() {}
+      },
+      dispatchService: {
+        async dispatchBatch() { throw new Error('old slot path must not run when plan mode default-on'); }
+      },
+      getCandidates: async () => { throw new Error('getCandidates (old path) must not run'); },
+      settingsStore: { async read() { return { report: { dispatchTimes: ['09:00'] }, timezone: 'UTC' }; } },
+      getRuntimeContext: async () => ({ authId: 'tok', domain: 'd', memberId: 'm', userId: 1 }),
+      nowFn: () => new Date('2026-06-03T09:00:00.000Z')
+    });
+
+    const result = await scheduler.runOnce();
+    // Plan path ran: listDue consulted, no due rows → zero executed, old path untouched
+    assert.equal(listDueCalled, true, 'plan executor must run by default');
+    assert.equal(result.due, 0);
+  } finally {
+    if (prev === undefined) delete process.env.DISPATCH_PLAN_MODE_ENABLED;
+    else process.env.DISPATCH_PLAN_MODE_ENABLED = prev;
+  }
+});
+
+test('DISPATCH_PLAN_MODE_ENABLED=false → reverts to legacy slot dispatch', async () => {
+  const prev = process.env.DISPATCH_PLAN_MODE_ENABLED;
+  process.env.DISPATCH_PLAN_MODE_ENABLED = 'false';
+  try {
+    const calls = [];
+    const scheduler = createDispatchScheduler({
+      enabled: false,
+      dispatchPlanStore: {
+        async listDue() { throw new Error('listDue must not run when explicitly disabled'); },
+        async markDispatched() {}, async markFailed() {}
+      },
+      dispatchService: {
+        async dispatchBatch(payload) {
+          calls.push(payload);
+          return { summary: { total: payload.candidates.length, created: payload.candidates.length, duplicates: 0, failed: 0 }, items: [] };
+        }
+      },
+      getCandidates: async () => ([{ azsId: '5', adminUserId: 7 }]),
+      settingsStore: { async read() { return { report: { dispatchTimes: ['09:00'] }, timezone: 'UTC' }; } },
+      getRuntimeContext: async () => ({ authId: 'tok', domain: 'd', memberId: 'm', userId: 1 }),
+      nowFn: () => new Date('2026-06-03T09:00:00.000Z')
+    });
+
+    const result = await scheduler.runOnce();
+    assert.equal(result.summary.created, 1); // legacy path ran
+    assert.equal(calls.length, 1);
+  } finally {
+    if (prev === undefined) delete process.env.DISPATCH_PLAN_MODE_ENABLED;
+    else process.env.DISPATCH_PLAN_MODE_ENABLED = prev;
+  }
 });
 
 test('flag ON → runOnce executes due plans with correct candidate field mapping', async () => {
@@ -412,6 +478,7 @@ test('flag ON → auth guard: no authId → executeDuePlans skips, no listDue ca
 test('dispatch scheduler skips run when current time is not in configured slots', async () => {
   const scheduler = createDispatchScheduler({
     enabled: false,
+    planModeEnabled: false, // legacy slot-dispatch path under test
     dispatchService: {
       async dispatchBatch() {
         throw new Error('should not be called');

@@ -13,7 +13,10 @@ export const createDispatchScheduler = ({
   // Plan-mode deps (all optional, backward-compatible)
   dispatchPlanStore = null,
   generateDailyPlan = null,
-  planModeEnabled = String(process.env.DISPATCH_PLAN_MODE_ENABLED || 'false').toLowerCase() === 'true',
+  // Enabled by default; set DISPATCH_PLAN_MODE_ENABLED=false to fall back to the
+  // legacy "dispatch all at the slot minute" behavior. (`??` so an empty string
+  // still means default-on; only an explicit 'false' disables.)
+  planModeEnabled = String(process.env.DISPATCH_PLAN_MODE_ENABLED ?? 'true').trim().toLowerCase() !== 'false',
   planGenerationCron = process.env.DISPATCH_PLAN_GENERATION_CRON || '1 0 * * *',
   executeBatchLimit = Number(process.env.DISPATCH_EXECUTE_BATCH_LIMIT || 20)
 }) => {

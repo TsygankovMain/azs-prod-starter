@@ -585,8 +585,9 @@ const scheduler = createDispatchScheduler({
   enabled: String(process.env.SCHEDULER_ENABLED || 'false').toLowerCase() === 'true',
   cronExpression: process.env.DISPATCH_CRON || '* * * * *',
   timeoutCronExpression: process.env.TIMEOUT_CRON || '*/5 * * * *',
-  // Randomized plan-then-execute mode (off by default). When DISPATCH_PLAN_MODE_ENABLED=true,
-  // the scheduler generates a daily randomized plan and fires each AZS at its own jittered time.
+  // Randomized plan-then-execute mode (ON by default; DISPATCH_PLAN_MODE_ENABLED=false
+  // reverts to legacy slot-minute dispatch). The scheduler generates a daily
+  // randomized plan and fires each AZS at its own jittered time.
   dispatchPlanStore,
   generateDailyPlan
   // planModeEnabled / planGenerationCron / executeBatchLimit read from env inside the scheduler.
