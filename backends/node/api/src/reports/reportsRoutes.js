@@ -607,6 +607,22 @@ export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, 
 };
 
 
+const normalizePlanDate = (v) => {
+  const raw = String(v || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
+};
+
+const todayInTz = (tz) => {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+    return formatter.format(new Date());
+  } catch {
+    // Fallback to UTC if the tz is invalid
+    const d = new Date();
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  }
+};
+
 export const createReportsRouter = ({
   reportsStore,
   dispatchService,
@@ -614,7 +630,8 @@ export const createReportsRouter = ({
   bitrixClient,
   notificationService,
   authContextStore,
-  crmSyncJobStore
+  crmSyncJobStore,
+  dispatchPlanStore = null
 }) => {
   if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService || !authContextStore || !crmSyncJobStore) {
     throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient, notificationService, authContextStore and crmSyncJobStore are required');
@@ -747,6 +764,35 @@ export const createReportsRouter = ({
         error: 'azs_options_failed',
         message: error.message
       });
+    }
+  });
+
+  router.get('/plan', async (req, res) => {
+    if (!canUseReviewerTools(req)) return res.status(403).json({ error: 'forbidden', message: 'Reviewer access is required' });
+    try {
+      if (!dispatchPlanStore || typeof dispatchPlanStore.listByDate !== 'function') {
+        return res.json({ items: [], planDate: null, enabled: false });
+      }
+      const settings = await settingsStore.read();
+      const tz = String(settings?.timezone || 'Europe/Moscow').trim();
+      const planDate = normalizePlanDate(req.query.date) || todayInTz(tz);
+      const rows = await dispatchPlanStore.listByDate({ planDate });
+      const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
+      const items = [];
+      for (const row of rows) {
+        items.push({
+          azsId: row.azs_id,
+          azsTitle: await resolveAzsTitle(row.azs_id),
+          adminUserId: row.admin_user_id,
+          baseTime: row.base_time,
+          executeAt: row.execute_at,
+          status: row.status,
+          reportItemId: row.report_item_id ?? null
+        });
+      }
+      return res.json({ items, planDate, enabled: true });
+    } catch (error) {
+      return res.status(502).json({ error: 'plan_failed', message: error.message });
     }
   });
 

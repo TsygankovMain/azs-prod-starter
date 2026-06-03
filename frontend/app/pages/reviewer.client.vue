@@ -371,6 +371,8 @@ const loadAll = async () => {
   } finally {
     isLoading.value = false
   }
+  // Non-fatal: load dispatch plan independently so a 502 doesn't break the screen
+  void loadDispatchPlan()
 }
 
 const changePeriod = (newPeriod: typeof period.value) => {
@@ -578,6 +580,19 @@ const handleFeedAction = (event: FeedEvent, action: FeedAction) => {
   }
 }
 
+// Dispatch plan (RD-6)
+type DispatchPlanRow = {
+  azsId: string
+  azsTitle: string
+  adminUserId: number
+  baseTime: string
+  executeAt: string
+  status: string
+  reportItemId: number | null
+}
+const dispatchPlan = ref<DispatchPlanRow[]>([])
+const dispatchPlanEnabled = ref(false)
+
 // Resync (#4)
 const resyncingIds = ref<Set<number>>(new Set())
 const resyncReport = async (reportId: number) => {
@@ -591,6 +606,29 @@ const resyncReport = async (reportId: number) => {
     const next = new Set(resyncingIds.value)
     next.delete(reportId)
     resyncingIds.value = next
+  }
+}
+
+const formatPlanTime = (isoString: string): string => {
+  try {
+    const date = new Date(isoString)
+    const h = String(date.getHours()).padStart(2, '0')
+    const m = String(date.getMinutes()).padStart(2, '0')
+    return `${h}:${m}`
+  } catch {
+    return String(isoString || '').slice(11, 16) || '—'
+  }
+}
+
+const loadDispatchPlan = async () => {
+  try {
+    const response = await apiStore.getDispatchPlan()
+    dispatchPlanEnabled.value = Boolean(response.enabled)
+    dispatchPlan.value = Array.isArray(response.items) ? response.items : []
+  } catch (error) {
+    console.warn('Failed to load dispatch plan', error)
+    dispatchPlanEnabled.value = false
+    dispatchPlan.value = []
   }
 }
 
@@ -1221,6 +1259,57 @@ onMounted(async () => {
 
           </aside>
         </div>
+
+        <!-- Plan section (RD-6) -->
+        <section class="mt-6 bg-white rounded-2xl shadow-sm border border-gray-100">
+          <div class="flex items-center gap-2 border-b border-gray-100 px-5 py-4">
+            <span class="text-lg">🗓</span>
+            <h2 class="text-base font-semibold">План отчётов на сегодня</h2>
+          </div>
+          <div class="p-5">
+            <div v-if="!dispatchPlanEnabled" class="text-sm text-gray-400 py-2">
+              Случайный план рассылки не включён
+            </div>
+            <div v-else-if="dispatchPlan.length === 0" class="text-sm text-gray-400 py-2">
+              Нет запланированных заданий на сегодня
+            </div>
+            <div v-else class="overflow-auto">
+              <table class="min-w-full text-sm">
+                <thead>
+                  <tr class="text-left border-b border-gray-200">
+                    <th class="py-2 pr-4 font-medium text-gray-600">АЗС</th>
+                    <th class="py-2 pr-4 font-medium text-gray-600">Время запроса</th>
+                    <th class="py-2 pr-4 font-medium text-gray-600">Ответственный</th>
+                    <th class="py-2 font-medium text-gray-600">Статус</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="(row, idx) in dispatchPlan"
+                    :key="idx"
+                    class="border-b border-gray-100 last:border-0"
+                  >
+                    <td class="py-2 pr-4">{{ row.azsTitle || row.azsId }}</td>
+                    <td class="py-2 pr-4 tabular-nums">{{ formatPlanTime(row.executeAt) }}</td>
+                    <td class="py-2 pr-4 tabular-nums text-gray-500">{{ row.adminUserId || '—' }}</td>
+                    <td class="py-2">
+                      <B24Badge
+                        :color="row.status === 'dispatched' ? 'air-primary-success' : row.status === 'failed' ? 'air-primary-alert' : 'air-secondary'"
+                      >
+                        {{
+                          row.status === 'planned' ? 'запланирован' :
+                          row.status === 'dispatched' ? 'отправлен' :
+                          row.status === 'failed' ? 'ошибка' :
+                          row.status
+                        }}
+                      </B24Badge>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
 
         <!-- Tech info panel (collapsible) -->
         <details class="mt-8 text-center">

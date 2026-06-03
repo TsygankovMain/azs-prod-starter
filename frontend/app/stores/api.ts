@@ -304,6 +304,23 @@ export const useApiStore = defineStore(
       })
     }
 
+    const getDispatchPlan = async (date?: string): Promise<{
+      items: Array<{
+        azsId: string
+        azsTitle: string
+        adminUserId: number
+        baseTime: string
+        executeAt: string
+        status: string
+        reportItemId: number | null
+      }>
+      planDate: string | null
+      enabled: boolean
+    }> => {
+      const query = date ? { date } : {}
+      return await $api('/api/reports/plan', { query, headers: { Authorization: `Bearer ${tokenJWT.value}` } })
+    }
+
     const postInstall = async (data: JsonObject): Promise<JsonObject> => {
       return await $api('/api/install', {
         method: 'POST',
@@ -394,7 +411,8 @@ export const useApiStore = defineStore(
       refreshBotAvatar,
       getMyRole,
       reinitToken,
-      resyncReport
+      resyncReport,
+      getDispatchPlan
     }
   }
 )
