@@ -32,6 +32,7 @@ type SettingsTree = {
     timeoutMinutes: number
     dispatchJitterMinutes: number
     dispatchTimes: string[]
+    workWindow: { start: string; end: string }
   }
   disk: {
     rootFolderId: number
@@ -198,7 +199,8 @@ function makeEmptySettings(): SettingsTree {
       },
       timeoutMinutes: 60,
       dispatchJitterMinutes: 15,
-      dispatchTimes: []
+      dispatchTimes: [],
+      workWindow: { start: '07:00', end: '22:00' }
     },
     disk: {
       rootFolderId: 0,
@@ -365,7 +367,8 @@ function applySettings(nextSettings: SettingsTree) {
     entityTypeId: nextSettings.report.entityTypeId,
     timeoutMinutes: nextSettings.report.timeoutMinutes,
     dispatchJitterMinutes: nextSettings.report.dispatchJitterMinutes,
-    dispatchTimes: [...nextSettings.report.dispatchTimes]
+    dispatchTimes: [...nextSettings.report.dispatchTimes],
+    workWindow: { ...nextSettings.report.workWindow }
   })
   Object.assign(form.report.fields, nextSettings.report.fields)
   Object.assign(form.report.stages, nextSettings.report.stages)
@@ -409,7 +412,11 @@ function readSettings(): SettingsTree {
       },
       timeoutMinutes: toPositiveInt(form.report.timeoutMinutes, 60, 1),
       dispatchJitterMinutes: toPositiveInt(form.report.dispatchJitterMinutes, 15, 0),
-      dispatchTimes: [...new Set(form.report.dispatchTimes.map((item) => String(item || '').trim()).filter(Boolean))].sort()
+      dispatchTimes: [...new Set(form.report.dispatchTimes.map((item) => String(item || '').trim()).filter(Boolean))].sort(),
+      workWindow: {
+        start: String(form.report.workWindow?.start || '07:00'),
+        end: String(form.report.workWindow?.end || '22:00')
+      }
     },
     disk: {
       rootFolderId: Number(form.disk.rootFolderId || 0),
@@ -1225,6 +1232,34 @@ onUnmounted(() => {
                     </ProseP>
                   </div>
                 </B24FormField>
+                <B24FormField label="Рабочее окно рассылки" class="w-full sm:col-span-2">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Рабочее окно рассылки
+                      <B24Tooltip text="Случайное время запроса отчёта будет ограничено этим окном — раньше начала и позже конца запросы не уйдут.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <div class="flex items-center gap-3">
+                    <label class="text-sm text-(--ui-color-base-70)">с</label>
+                    <input
+                      v-model="form.report.workWindow.start"
+                      type="time"
+                      step="60"
+                      class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                      :disabled="!isAdminReady"
+                    >
+                    <label class="text-sm text-(--ui-color-base-70)">до</label>
+                    <input
+                      v-model="form.report.workWindow.end"
+                      type="time"
+                      step="60"
+                      class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                      :disabled="!isAdminReady"
+                    >
+                  </div>
+                </B24FormField>
               </div>
             </template>
 
@@ -1706,6 +1741,34 @@ onUnmounted(() => {
                   <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
                     Выберите время через тайм-пикер. В эти моменты бот автоматически отправит запрос отчёта.
                   </ProseP>
+                </div>
+              </B24FormField>
+              <B24FormField label="Рабочее окно рассылки" class="w-full sm:col-span-2">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    Рабочее окно рассылки
+                    <B24Tooltip text="Случайное время запроса отчёта будет ограничено этим окном — раньше начала и позже конца запросы не уйдут.">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <div class="flex items-center gap-3">
+                  <label class="text-sm text-(--ui-color-base-70)">с</label>
+                  <input
+                    v-model="form.report.workWindow.start"
+                    type="time"
+                    step="60"
+                    class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                    :disabled="!isAdminReady"
+                  >
+                  <label class="text-sm text-(--ui-color-base-70)">до</label>
+                  <input
+                    v-model="form.report.workWindow.end"
+                    type="time"
+                    step="60"
+                    class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                    :disabled="!isAdminReady"
+                  >
                 </div>
               </B24FormField>
             </div>

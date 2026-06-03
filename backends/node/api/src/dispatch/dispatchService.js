@@ -135,7 +135,6 @@ export const createDispatchService = ({
     const slotHHmm = normalizeSlot(candidate.slotHHmm || `${pad2(nowValue.getUTCHours())}${pad2(nowValue.getUTCMinutes())}`);
     const slotKey = buildSlotKey({ slotDate: plannedDate, slotHHmm });
     const reserveSlotKey = buildReserveSlotKey({ slotKey, trigger });
-    const jitterMinutes = pickJitterMinutes(jitterLimit, rng);
 
     const reserve = await dispatchLogStore.reserve({
       slotKey: reserveSlotKey,
@@ -158,8 +157,26 @@ export const createDispatchService = ({
 
     let reportItemId = null;
     try {
-      const plannedAt = parseSlotDateTimeUtc({ slotDate: plannedDate, slotHHmm });
-      const scheduledAt = addMinutes(plannedAt, jitterMinutes);
+      // Only a Date or a non-empty string counts as pre-computed. Guarding on
+      // typeof avoids falsy-but-valid coercions (e.g. new Date(0)→epoch, new
+      // Date(false)→epoch) silently dispatching to 1970.
+      const precomputedRaw = candidate.scheduledAt;
+      const hasPrecomputed = precomputedRaw instanceof Date
+        || (typeof precomputedRaw === 'string' && precomputedRaw.trim() !== '');
+      let jitterMinutes;
+      let scheduledAt;
+      if (hasPrecomputed) {
+        const parsed = new Date(precomputedRaw);
+        if (Number.isNaN(parsed.getTime())) {
+          throw new Error('candidate.scheduledAt is invalid');
+        }
+        scheduledAt = parsed;
+        jitterMinutes = Number.isFinite(Number(candidate.jitterMinutes)) ? Number(candidate.jitterMinutes) : 0;
+      } else {
+        jitterMinutes = pickJitterMinutes(jitterLimit, rng);
+        const plannedAt = parseSlotDateTimeUtc({ slotDate: plannedDate, slotHHmm });
+        scheduledAt = addMinutes(plannedAt, jitterMinutes);
+      }
       const deadlineAt = addMinutes(scheduledAt, timeoutMinutes);
       const fields = buildReportFields({
         settings,

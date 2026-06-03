@@ -158,6 +158,212 @@ test('manual trigger does not block auto slot for same azs and hhmm', async () =
   assert.equal(createdReports.length, 2);
 });
 
+test('pre-computed scheduledAt is used verbatim, jitter NOT re-applied', async () => {
+  const markDoneCalls = [];
+  const createdReports = [];
+
+  // rng=()=>0 would produce -240 jitter from a 240-minute limit
+  // The candidate carries scheduledAt='2026-05-04T09:37:00.000Z' and jitterMinutes=-143
+  // We must verify the rng is NOT called and the pre-computed values are used as-is.
+  let rngCallCount = 0;
+
+  const store = {
+    async reserve() { return { reserved: true, id: 42 }; },
+    async markDone(args) { markDoneCalls.push(args); },
+    async markFailed() {}
+  };
+
+  const service = createDispatchService({
+    dispatchLogStore: store,
+    settingsStore: {
+      async read() {
+        return {
+          report: {
+            entityTypeId: 163,
+            timeoutMinutes: 30,
+            dispatchJitterMinutes: 240,
+            fields: {},
+            stages: { new: 'DT163_1:NEW' }
+          }
+        };
+      }
+    },
+    bitrixClient: {
+      async createReportItem(payload) {
+        createdReports.push(payload);
+        return { reportItemId: 8001 };
+      }
+    },
+    notificationService: { async notifyDispatch() {} },
+    rng: () => { rngCallCount += 1; return 0; } // would give -240 if called
+  });
+
+  const candidate = {
+    azsId: 'azs-5',
+    adminUserId: 99,
+    slotDate: '2026-05-04',
+    slotHHmm: '1200',
+    scheduledAt: '2026-05-04T09:37:00.000Z',
+    jitterMinutes: -143
+  };
+
+  const settings = {
+    report: {
+      entityTypeId: 163,
+      timeoutMinutes: 30,
+      dispatchJitterMinutes: 240,
+      fields: {},
+      stages: { new: 'DT163_1:NEW' }
+    }
+  };
+
+  const result = await service.dispatchCandidate({ candidate, settings, trigger: 'auto' });
+
+  assert.equal(result.ok, true, 'should succeed');
+  assert.equal(result.duplicate, false);
+
+  // rng must NOT have been called
+  assert.equal(rngCallCount, 0, 'rng must not be called when scheduledAt is pre-computed');
+
+  // begindate must equal the pre-computed scheduledAt exactly
+  assert.equal(createdReports.length, 1);
+  assert.equal(createdReports[0].fields.begindate, '2026-05-04T09:37:00.000Z', 'begindate must be pre-computed scheduledAt');
+
+  // closedate must be scheduledAt + 30 minutes
+  const expectedClosedate = new Date('2026-05-04T09:37:00.000Z').getTime() + 30 * 60 * 1000;
+  assert.equal(new Date(createdReports[0].fields.closedate).getTime(), expectedClosedate, 'closedate must be scheduledAt + timeoutMinutes');
+
+  // markDone must receive jitterMinutes=-143 and scheduledAt=the pre-computed date
+  assert.equal(markDoneCalls.length, 1);
+  assert.equal(markDoneCalls[0].jitterMinutes, -143, 'markDone jitterMinutes must be pre-computed -143');
+  assert.equal(markDoneCalls[0].scheduledAt.toISOString(), '2026-05-04T09:37:00.000Z', 'markDone scheduledAt must be pre-computed date');
+});
+
+test('without pre-computed scheduledAt (legacy path) jitter is still applied from rng', async () => {
+  const markDoneCalls = [];
+  const createdReports = [];
+
+  const store = {
+    async reserve() { return { reserved: true, id: 43 }; },
+    async markDone(args) { markDoneCalls.push(args); },
+    async markFailed() {}
+  };
+
+  const service = createDispatchService({
+    dispatchLogStore: store,
+    settingsStore: {
+      async read() {
+        return {
+          report: {
+            entityTypeId: 163,
+            timeoutMinutes: 60,
+            dispatchJitterMinutes: 0,
+            fields: {},
+            stages: { new: 'DT163_1:NEW' }
+          }
+        };
+      }
+    },
+    bitrixClient: {
+      async createReportItem(payload) {
+        createdReports.push(payload);
+        return { reportItemId: 8002 };
+      }
+    },
+    notificationService: { async notifyDispatch() {} },
+    rng: () => 0.5 // irrelevant because jitterLimit=0, but should be usable
+  });
+
+  // No scheduledAt on the candidate — legacy path
+  const candidate = {
+    azsId: 'azs-6',
+    adminUserId: 88,
+    slotDate: '2026-05-05',
+    slotHHmm: '1000'
+  };
+
+  const settings = {
+    report: {
+      entityTypeId: 163,
+      timeoutMinutes: 60,
+      dispatchJitterMinutes: 0,
+      fields: {},
+      stages: { new: 'DT163_1:NEW' }
+    }
+  };
+
+  const result = await service.dispatchCandidate({ candidate, settings, trigger: 'auto' });
+
+  assert.equal(result.ok, true);
+
+  // With jitterLimit=0, jitter=0, so scheduledAt === plannedAt = 2026-05-05T10:00:00.000Z
+  assert.equal(createdReports.length, 1);
+  assert.equal(createdReports[0].fields.begindate, '2026-05-05T10:00:00.000Z', 'begindate must equal base slot time with no jitter');
+  assert.equal(markDoneCalls[0].jitterMinutes, 0, 'jitterMinutes must be 0 with zero limit');
+  assert.equal(markDoneCalls[0].scheduledAt.toISOString(), '2026-05-05T10:00:00.000Z', 'scheduledAt must equal base slot time');
+});
+
+test('invalid pre-computed scheduledAt causes candidate to fail gracefully', async () => {
+  const markFailedCalls = [];
+  const errorLogs = [];
+
+  const store = {
+    async reserve() { return { reserved: true, id: 44 }; },
+    async markDone() {},
+    async markFailed(args) { markFailedCalls.push(args); }
+  };
+
+  const service = createDispatchService({
+    dispatchLogStore: store,
+    settingsStore: {
+      async read() {
+        return {
+          report: {
+            entityTypeId: 163,
+            timeoutMinutes: 60,
+            dispatchJitterMinutes: 0,
+            fields: {},
+            stages: {}
+          }
+        };
+      }
+    },
+    bitrixClient: {
+      async createReportItem() { return { reportItemId: 9999 }; }
+    },
+    notificationService: { async notifyDispatch() {} },
+    logger: {
+      warn() {},
+      error(msg, meta) { errorLogs.push({ msg, meta }); }
+    }
+  });
+
+  const candidate = {
+    azsId: 'azs-7',
+    adminUserId: 77,
+    slotDate: '2026-05-05',
+    slotHHmm: '0900',
+    scheduledAt: 'not-a-date'
+  };
+
+  const settings = {
+    report: {
+      entityTypeId: 163,
+      timeoutMinutes: 60,
+      dispatchJitterMinutes: 0,
+      fields: {},
+      stages: {}
+    }
+  };
+
+  const result = await service.dispatchCandidate({ candidate, settings, trigger: 'auto' });
+
+  assert.equal(result.ok, false, 'must fail when scheduledAt is invalid');
+  assert.match(result.error, /invalid/i, 'error message must mention "invalid"');
+  assert.equal(markFailedCalls.length, 1, 'markFailed must be called');
+  assert.match(markFailedCalls[0].errorText, /invalid/i, 'markFailed errorText must mention "invalid"');
+});
+
 test('dispatch persists report item id even when notification fails', async () => {
   const store = createStoreFake();
   const warnLogs = [];

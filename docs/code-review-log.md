@@ -12,6 +12,55 @@ Format per entry:
 
 ---
 
+## 2026-06-01 — Feature: рандомизированный план рассылки (plan-then-execute), за фиче-флагом
+
+### Scope
+Ветка `feature/randomized-dispatch`. Новая модель авто-рассылки: в 00:01 (таймзона настроек) генерируется план на день — для каждой включённой АЗС × каждого base-времени своё случайное смещение (jitter ±N), `execute_at` поджимается к рабочему окну; поминутный тик отправляет каждую АЗС в её случайную минуту. АЗС не могут заранее подготовиться. Проверяющий видит read-only «План на сегодня». Всё за `DISPATCH_PLAN_MODE_ENABLED` (default **false**). Исполнено subagent-driven (Sonnet) + per-task ревью + финальное whole-feature ревью (Opus).
+
+### Что построено (RD-1..RD-7 + C1)
+| Часть | Файлы | Коммиты |
+|---|---|---|
+| RD-1 store | `src/reports/dispatchPlanStore.js` (таблица `dispatch_plan`, PG+MySQL, идемпотентный upsert) | a900a0c |
+| RD-2 jitter-seam | `dispatchService.js` — принимает precomputed `scheduledAt`/`jitterMinutes`, не ре-джиттерит | e2267fb |
+| RD-3 генератор | `dispatchPlanGenerator.js` — jitter + clamp к окну | ec385a2 |
+| RD-4 исполнитель | `dispatchScheduler.js` — executeDuePlans + генерация-cron + boot-bootstrap, всё за флагом | 0879624 |
+| RD-5 настройки | `defaultSettings.js` `report.workWindow{start,end}` + валидатор (start<end) + UI | 86359e8 |
+| RD-6 экран | `GET /api/reports/plan` + read-only карта у проверяющего | 8f08c76 |
+| RD-7 wiring | `server.js` — конструирование + инъекция, флаг default off | 4162dee |
+| C1 fix | timezone-aware base-times (см. ниже) | f694853 |
+
+### Финальное whole-feature ревью (Opus) — вердикт SHIP-SAFE (flag off), нашло C1
+- **🔴 C1 (critical, ИСПРАВЛЕНО до энейбла):** генератор строил base-времена как **UTC**, старый путь — по **settings.timezone** (Москва). `09:00` → старый в 09:00 МСК, новый в 12:00 МСК. Включение флага сдвинуло бы всю рассылку на оффсет (3ч). Фикс: `computeExecuteAt` переводит base+окно как wall-clock в `settings.timezone` → корректный UTC-инстант. **Контейнмент доказан:** `dispatchService.js` и старый `runOnce` НЕ тронуты (slot_key — строка, scheduledAt предрасчитан), флаг-off остаётся byte-for-byte инертным.
+- **🟡 I1 (important, НЕ регресс):** на не-UTC MySQL-сервере round-trip `execute_at` (как и существующие `scheduled_at`/`deadline_at` в проде) парсится в TZ соединения. Чинить холистически (`timezone:'Z'` на пул mysql2) при следующем заходе по TZ. PG (TIMESTAMPTZ) не затронут.
+- **🟢 M1:** `GET /plan` при флаге-off отдаёт 502 вместо `enabled:false` (таблицы нет) — UI деградирует мягко («не включён»). Косметика.
+- **🟢 M2/M3:** FIFO-дренаж при backlog >20/мин; смешанная конвенция «сегодня» — оба факта документированы, не блокеры.
+
+### Гарантии безопасности (проверено ревью + тестами)
+- **Flag OFF = прод не меняется:** доказано побайтовым diff старого `runOnce`; таблица `dispatch_plan` НЕ создаётся (нет `ensureSchema` на бутстрапе при флаге off); generation-cron не заводится.
+- **Нет двойного джиттера:** `rngCallCount===0` тест.
+- **Нет двойной отправки:** двойная идемпотентность — `UNIQUE(plan_date,azs_id,base_time)` + `UNIQUE(slot_key,azs_id)` (slot_key по base_time); markDispatched-фейл → следующий тик ловит duplicate, не шлёт повторно.
+- **Изоляция сбоев:** падение генерации/строки логируется, не валит тик; failed-строка покидает due-set (нет вечного ретрая); past-due добираются, capped `EXECUTE_BATCH_LIMIT`.
+
+### Verification
+- Backend **187/187 зелёные**, стабильно. Все существующие dispatch/reports/settings тесты — регресс чист.
+- Каждая задача прошла spec+quality ревью; C1 — независимая проверка (dispatchService untouched, Moscow-конверсия корректна).
+- `node --check` на server.js + изменённых модулях. Фронт lint-clean.
+- **Не выполнено (нужна живая БД/портал):** end-to-end смоук при флаге ON на стейдже.
+
+### Инструкция по включению на проде (когда будешь готов)
+1. Убедиться `SCHEDULER_ENABLED=true` (плановый рассыльщик вообще включён).
+2. В Настройках приложения задать рабочее окно (`report.workWindow`, напр. 07:00–22:00) и base-времена/jitter.
+3. Выставить `DISPATCH_PLAN_MODE_ENABLED=true` → рестарт. На старте создастся таблица `dispatch_plan` и сгенерируется план на остаток дня (идемпотентно).
+4. Открыть экран проверяющего → «План на сегодня» → проверить времена (должны быть в МСК).
+5. Наблюдать логи: `dispatchScheduler: plan generation`, `executeDuePlans`. 
+6. **Откат:** `DISPATCH_PLAN_MODE_ENABLED=false` → рестарт → мгновенно старое поведение.
+
+### Next
+- Перед энейблом на проде — e2e смоук на стейдже.
+- При следующем TZ-заходе: холистический фикс mysql2 pool timezone (I1) + M1 (gate /plan на флаг).
+
+---
+
 ## 2026-05-31 — Bugfix: manual 400 + ответственный = создатель (один корень: camelCase UF)
 
 ### Симптомы (с портала)

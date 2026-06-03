@@ -17,6 +17,8 @@ import createTimeoutWatcher from './src/dispatch/timeoutWatcher.js';
 import { readDispatchCandidates } from './src/dispatch/dispatchCandidatesFileStore.js';
 import createReportsStore from './src/reports/reportsStore.js';
 import createReportsRouter, { buildCrmSyncRunner } from './src/reports/reportsRoutes.js';
+import createDispatchPlanStore from './src/reports/dispatchPlanStore.js';
+import { generateDailyPlan } from './src/dispatch/dispatchPlanGenerator.js';
 import createCrmSyncJobStore from './src/reports/crmSyncJobStore.js';
 import { createCrmSyncWorker } from './src/reports/crmSyncWorker.js';
 import createNotificationService from './src/notifications/notificationService.js';
@@ -157,6 +159,7 @@ const ensureRestAppUriPlacement = async ({
 const dispatchLogStore = createDispatchLogStore({ pool, dbType });
 const reportsStore = createReportsStore({ pool, dbType });
 const crmSyncJobStore = createCrmSyncJobStore({ pool, dbType });
+const dispatchPlanStore = createDispatchPlanStore({ pool, dbType });
 const dbSettingsStore = createDatabaseSettingsStore({ pool, dbType });
 const authContextStore = createAuthContextStore();
 const bitrixClient = createBitrixRestClient({
@@ -323,7 +326,8 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
   bitrixClient,
   notificationService,
   authContextStore,
-  crmSyncJobStore
+  crmSyncJobStore,
+  dispatchPlanStore
 }));
 
 app.post('/api/install', async (req, res) => {
@@ -580,7 +584,13 @@ const scheduler = createDispatchScheduler({
   timeoutWatcher,
   enabled: String(process.env.SCHEDULER_ENABLED || 'false').toLowerCase() === 'true',
   cronExpression: process.env.DISPATCH_CRON || '* * * * *',
-  timeoutCronExpression: process.env.TIMEOUT_CRON || '*/5 * * * *'
+  timeoutCronExpression: process.env.TIMEOUT_CRON || '*/5 * * * *',
+  // Randomized plan-then-execute mode (ON by default; DISPATCH_PLAN_MODE_ENABLED=false
+  // reverts to legacy slot-minute dispatch). The scheduler generates a daily
+  // randomized plan and fires each AZS at its own jittered time.
+  dispatchPlanStore,
+  generateDailyPlan
+  // planModeEnabled / planGenerationCron / executeBatchLimit read from env inside the scheduler.
 });
 
 scheduler.start().catch((error) => {
