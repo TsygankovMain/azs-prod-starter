@@ -9,10 +9,17 @@ export const createDispatchScheduler = ({
   enabled = false,
   cronExpression = '* * * * *',
   timeoutCronExpression = '*/5 * * * *',
-  nowFn = () => new Date()
+  nowFn = () => new Date(),
+  // Plan-mode deps (all optional, backward-compatible)
+  dispatchPlanStore = null,
+  generateDailyPlan = null,
+  planModeEnabled = String(process.env.DISPATCH_PLAN_MODE_ENABLED || 'false').toLowerCase() === 'true',
+  planGenerationCron = process.env.DISPATCH_PLAN_GENERATION_CRON || '1 0 * * *',
+  executeBatchLimit = Number(process.env.DISPATCH_EXECUTE_BATCH_LIMIT || 20)
 }) => {
   let dispatchTask = null;
   let timeoutTask = null;
+  let generationTask = null;
   let lastSlotKey = '';
 
   const parsePositiveInt = (value) => {
@@ -187,7 +194,118 @@ export const createDispatchScheduler = ({
       .filter((item) => item.azsId && item.adminUserId > 0);
   };
 
+  // ---------------------------------------------------------------------------
+  // Plan-mode: generate plan for a date (called once/day via cron + boot)
+  // ---------------------------------------------------------------------------
+  const generatePlanForDate = async (dateKey) => {
+    if (!generateDailyPlan || !dispatchPlanStore) {
+      logger.warn('dispatchScheduler: generatePlanForDate skipped — missing generateDailyPlan or dispatchPlanStore');
+      return;
+    }
+    const settings = settingsStore ? await settingsStore.read() : {};
+    const context = await getRuntimeContext().catch(() => ({}));
+    if (!String(context?.authId || '').trim()) {
+      logger.warn('dispatchScheduler: generatePlanForDate skipped — missing auth context', { dateKey });
+      return;
+    }
+    const candidates = await (async () => {
+      const fileCandidates = await getCandidates();
+      return Array.isArray(fileCandidates) && fileCandidates.length > 0
+        ? fileCandidates
+        : await loadCandidatesFromAzs(settings, context);
+    })();
+
+    const summary = await generateDailyPlan({
+      planDate: dateKey,
+      candidates,
+      settings,
+      planStore: dispatchPlanStore,
+      logger
+    });
+    logger.info('dispatchScheduler: generatePlanForDate done', summary);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Plan-mode: execute due plan rows (called every minute tick when flag ON)
+  // ---------------------------------------------------------------------------
+  const executeDuePlans = async () => {
+    if (!dispatchPlanStore) {
+      logger.warn('dispatchScheduler: executeDuePlans skipped — no dispatchPlanStore');
+      return { due: 0, executed: 0, duplicates: 0, failed: 0 };
+    }
+
+    const context = await getRuntimeContext().catch(() => ({}));
+    if (!String(context?.authId || '').trim()) {
+      logger.warn('dispatchScheduler: executeDuePlans skipped — missing auth context');
+      return { due: 0, executed: 0, duplicates: 0, failed: 0 };
+    }
+
+    const allDue = await dispatchPlanStore.listDue({ now: nowFn() });
+    const due = allDue.length;
+    const toProcess = allDue.slice(0, executeBatchLimit);
+    const deferred = due - toProcess.length;
+
+    if (deferred > 0) {
+      logger.info('dispatchScheduler: executeDuePlans batch limit reached', {
+        due,
+        processing: toProcess.length,
+        deferred
+      });
+    }
+
+    let executed = 0;
+    let duplicates = 0;
+    let failed = 0;
+
+    for (const row of toProcess) {
+      const candidate = {
+        azsId: row.azs_id,
+        adminUserId: row.admin_user_id,
+        slotDate: row.plan_date,
+        slotHHmm: row.base_time,
+        scheduledAt: row.execute_at,
+        jitterMinutes: row.jitter_minutes
+      };
+
+      let result;
+      try {
+        result = await dispatchService.dispatchBatch({
+          candidates: [candidate],
+          trigger: 'auto',
+          context
+        });
+      } catch (err) {
+        await dispatchPlanStore.markFailed({ id: row.id, error: err.message || String(err) });
+        failed += 1;
+        continue;
+      }
+
+      const item = result.items[0];
+      if (item.ok && !item.duplicate) {
+        await dispatchPlanStore.markDispatched({ id: row.id, reportItemId: item.reportItemId || null });
+        executed += 1;
+      } else if (item.duplicate) {
+        await dispatchPlanStore.markDispatched({ id: row.id, reportItemId: null });
+        duplicates += 1;
+      } else {
+        await dispatchPlanStore.markFailed({ id: row.id, error: item.error || 'dispatch failed' });
+        failed += 1;
+      }
+    }
+
+    return { due, executed, duplicates, failed };
+  };
+
+  // ---------------------------------------------------------------------------
+  // runOnce — branches on planModeEnabled flag
+  // ---------------------------------------------------------------------------
   const runOnce = async () => {
+    // Safety switch: when plan mode is ON, execute due plans instead of the old
+    // slot-matching behavior. The old body below is untouched.
+    if (planModeEnabled) {
+      return executeDuePlans();
+    }
+
     const settings = settingsStore ? await settingsStore.read() : {};
     const context = await getRuntimeContext().catch(() => ({}));
     const timezone = String(settings?.timezone || process.env.DEFAULT_TIMEZONE || 'Europe/Moscow').trim();
@@ -298,7 +416,7 @@ export const createDispatchScheduler = ({
     dispatchTask = cron.schedule(cronExpression, async () => {
       try {
         const result = await runOnce();
-        logger.info('dispatchScheduler: run finished', result.summary);
+        logger.info('dispatchScheduler: run finished', result.summary ?? result);
       } catch (error) {
         logger.error('dispatchScheduler: run failed', { error: error.message });
       }
@@ -318,6 +436,33 @@ export const createDispatchScheduler = ({
       });
       logger.info('timeoutScheduler: started', { timeoutCronExpression });
     }
+
+    // Plan-mode extras: schema init + daily generation cron + boot bootstrap
+    if (planModeEnabled && dispatchPlanStore) {
+      try {
+        await dispatchPlanStore.ensureSchema();
+      } catch (error) {
+        logger.error('dispatchScheduler: ensureSchema failed', { error: error.message });
+      }
+
+      generationTask = cron.schedule(planGenerationCron, async () => {
+        try {
+          const today = getTimeParts(nowFn(), String(process.env.DEFAULT_TIMEZONE || 'Europe/Moscow')).dateKey;
+          await generatePlanForDate(today);
+        } catch (error) {
+          logger.error('dispatchScheduler: generation cron failed', { error: error.message });
+        }
+      });
+      logger.info('dispatchScheduler: plan generation cron started', { planGenerationCron });
+
+      // Boot bootstrap: generate plan for today immediately (idempotent)
+      try {
+        const today = getTimeParts(nowFn(), String(process.env.DEFAULT_TIMEZONE || 'Europe/Moscow')).dateKey;
+        await generatePlanForDate(today);
+      } catch (error) {
+        logger.error('dispatchScheduler: boot plan generation failed', { error: error.message });
+      }
+    }
   };
 
   const stop = () => {
@@ -328,6 +473,10 @@ export const createDispatchScheduler = ({
     if (timeoutTask) {
       timeoutTask.stop();
       timeoutTask = null;
+    }
+    if (generationTask) {
+      generationTask.stop();
+      generationTask = null;
     }
   };
 
