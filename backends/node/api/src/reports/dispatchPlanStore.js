@@ -95,7 +95,7 @@ const createMysqlStore = (pool) => ({
         plan_date VARCHAR(16) NOT NULL,
         azs_id VARCHAR(64) NOT NULL,
         admin_user_id BIGINT NOT NULL,
-        base_time VARCHAR(8) NOT NULL,
+        base_time VARCHAR(16) NOT NULL,
         execute_at DATETIME NOT NULL,
         jitter_minutes INT NOT NULL DEFAULT 0,
         status VARCHAR(16) NOT NULL DEFAULT 'planned',
@@ -168,6 +168,10 @@ const createMysqlStore = (pool) => ({
 // Factory
 // ---------------------------------------------------------------------------
 
+// Note on upsertPlanned return value: idempotent on UNIQUE(plan_date,azs_id,
+// base_time). PG returns null when the row already existed (ON CONFLICT DO
+// NOTHING); MySQL always returns the row (INSERT IGNORE + re-select). The
+// generator ignores the return — it only relies on no duplicate being created.
 export const createDispatchPlanStore = ({ pool, dbType } = {}) => {
   if (!pool) {
     throw new Error('pool is required');
