@@ -4,7 +4,8 @@ export const buildReportCrmUpdateFields = ({
   // photos param kept in signature for caller compatibility but no longer used here.
   // Photos are populated async-only via buildReportPhotoFieldValue on done syncs.
   photos = [],
-  diskFolderId = null
+  diskFolderId = null,
+  reasonValue = null // NEW: already-encoded reason string from reasonCatalog.encodeValue()
 }) => {
   const reportSettings = settings?.report || {};
   const fieldsMap = reportSettings.fields || {};
@@ -24,6 +25,11 @@ export const buildReportCrmUpdateFields = ({
 
   if (fieldsMap.folderId && diskFolderId) {
     fields[fieldsMap.folderId] = String(diskFolderId);
+  }
+
+  // NEW: reason UF field — written only when reasonValue is provided and field is configured
+  if (fieldsMap.reason && reasonValue !== undefined && reasonValue !== null) {
+    fields[fieldsMap.reason] = String(reasonValue);
   }
 
   // NOTE: photos field intentionally NOT set here.
@@ -109,6 +115,40 @@ export const updateReportCrmItem = async ({
     entityTypeId,
     id: reportItemId,
     fields,
+    context
+  });
+};
+
+/**
+ * Записать причину в UF-поле карточки отчёта под контекстом оператора.
+ * reasonValue — уже закодированная строка (из reasonCatalog.encodeValue()).
+ * Код поля берётся из settings.report.fields.reason (никакого хардкода).
+ */
+export const updateReasonCrmField = async ({
+  bitrixClient,
+  settings,
+  reportItemId,
+  reasonValue,
+  context = {}
+}) => {
+  const entityTypeId = Number(settings?.report?.entityTypeId || 0);
+  const reasonFieldCode = String(settings?.report?.fields?.reason || '').trim();
+
+  if (!reasonFieldCode) {
+    console.warn('reason_uf_not_configured', {
+      message: 'report.fields.reason не задан — причина не записывается в CRM (нет durability)'
+    });
+    return null;
+  }
+
+  if (!entityTypeId || !Number(reportItemId) || typeof bitrixClient?.updateReportItem !== 'function') {
+    return null;
+  }
+
+  return bitrixClient.updateReportItem({
+    entityTypeId,
+    id: Number(reportItemId),
+    fields: { [reasonFieldCode]: String(reasonValue) },
     context
   });
 };

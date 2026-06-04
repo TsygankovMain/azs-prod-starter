@@ -1,3 +1,5 @@
+import { DEFAULT_REASONS_SEED } from '../reports/reasonCatalog.js';
+
 export class SettingsValidationError extends Error {
   constructor(errors) {
     super(errors.join('; '));
@@ -26,7 +28,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
       azs: '',
       trigger: '',
       folderId: '',
-      photos: ''
+      photos: '',
+      reason: '' // NEW: код строкового UF причины на карточке отчёта
     },
     stages: {
       new: '',
@@ -37,7 +40,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
     timeoutMinutes: 60,
     dispatchJitterMinutes: 15,
     dispatchTimes: [],
-    workWindow: { start: '07:00', end: '22:00' }
+    workWindow: { start: '07:00', end: '22:00' },
+    reasons: DEFAULT_REASONS_SEED.map(r => ({ ...r })), // NEW: seed из единого источника
+    responsibleChatId: '' // NEW: id общего чата ответственных
   },
   disk: {
     rootFolderId: 0,
@@ -239,6 +244,31 @@ export const validateSettings = (settings, {
         errors.push('report.fields.folderId is required when Bitrix sync is enabled');
       }
     }
+
+    // NEW: report.reasons — массив объектов { code: string, label: string }
+    if (settings.report.reasons !== undefined) {
+      if (!Array.isArray(settings.report.reasons)) {
+        errors.push('report.reasons must be an array');
+      } else {
+        const hasInvalidReason = settings.report.reasons.some(
+          r => !r || typeof r.code !== 'string' || !r.code.trim()
+             || typeof r.label !== 'string' || !r.label.trim()
+        );
+        if (hasInvalidReason) {
+          errors.push('report.reasons items must have non-empty string code and label');
+        }
+      }
+    }
+
+    // NEW: report.responsibleChatId — строка или число, опционально
+    if (settings.report.responsibleChatId !== undefined
+        && settings.report.responsibleChatId !== null
+        && settings.report.responsibleChatId !== '') {
+      const chatIdStr = String(settings.report.responsibleChatId || '').trim();
+      if (chatIdStr && !/^\d+$/.test(chatIdStr)) {
+        errors.push('report.responsibleChatId must be a numeric string or empty');
+      }
+    }
   }
 
   if (isPlainObject(settings.disk)) {
@@ -273,7 +303,14 @@ export const validateSettings = (settings, {
       entityTypeId: Number(settings.report.entityTypeId),
       timeoutMinutes: Number(settings.report.timeoutMinutes),
       dispatchJitterMinutes: Number(settings.report.dispatchJitterMinutes),
-      dispatchTimes: normalizeDispatchTimes(settings.report.dispatchTimes)
+      dispatchTimes: normalizeDispatchTimes(settings.report.dispatchTimes),
+      reasons: Array.isArray(settings.report.reasons)
+        ? settings.report.reasons.map(r => ({
+            code: String(r.code || '').trim(),
+            label: String(r.label || '').trim()
+          })).filter(r => r.code && r.label)
+        : [],
+      responsibleChatId: String(settings.report.responsibleChatId || '').trim()
     },
     disk: {
       ...settings.disk,
