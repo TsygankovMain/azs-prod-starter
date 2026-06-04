@@ -67,6 +67,15 @@ const timeoutMessage = ref('')
 const hasReviewerAccess = ref(false)
 const reports = ref<ReportRow[]>([])
 const azsOptions = ref<AzsOption[]>([])
+const azsSearchQuery = ref('')
+const filteredAzsOptions = computed(() => {
+  const q = azsSearchQuery.value.trim().toLowerCase()
+  if (!q) return azsOptions.value
+  return azsOptions.value.filter(o =>
+    o.label.toLowerCase().includes(q) ||
+    o.value.toLowerCase().includes(q)
+  )
+})
 const azsMap = ref<Map<string, string>>(new Map())
 const portalDomain = ref('')
 const reportEntityTypeId = ref(0)
@@ -470,7 +479,9 @@ const saveSchedule = async () => {
 
 // Multi-select helpers (#5)
 const selectAllAzs = () => {
-  manualRequest.azsIds = azsOptions.value.map(o => o.value)
+  const visibleIds = filteredAzsOptions.value.map(o => o.value)
+  const merged = new Set([...manualRequest.azsIds, ...visibleIds])
+  manualRequest.azsIds = [...merged]
 }
 const clearAllAzs = () => {
   manualRequest.azsIds = []
@@ -518,6 +529,7 @@ const sendManualRequest = async () => {
     const count = manualRequest.azsIds.length
     manualSuccess.value = `Задание отправлено для ${count} АЗС`
     manualRequest.azsIds = []
+    azsSearchQuery.value = ''
     manualRequest.mode = 'now'
 
     await loadAll()
@@ -1175,9 +1187,25 @@ onMounted(async () => {
                       <button class="text-gray-500 hover:underline" @click="clearAllAzs">Снять</button>
                     </div>
                   </div>
+                  <!-- Поиск по АЗС -->
+                  <div class="relative mb-1.5">
+                    <input
+                      v-model="azsSearchQuery"
+                      type="text"
+                      placeholder="Поиск АЗС…"
+                      class="w-full rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-700 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                    >
+                    <button
+                      v-if="azsSearchQuery"
+                      class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs"
+                      @click="azsSearchQuery = ''"
+                    >
+                      ✕
+                    </button>
+                  </div>
                   <div class="max-h-44 overflow-y-auto border border-gray-200 rounded-md bg-white divide-y divide-gray-100">
                     <label
-                      v-for="opt in azsOptions"
+                      v-for="opt in filteredAzsOptions"
                       :key="opt.value"
                       class="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-gray-50"
                       :class="{ 'bg-blue-50': manualRequest.azsIds.includes(opt.value) }"
@@ -1196,9 +1224,20 @@ onMounted(async () => {
                     <div v-if="azsOptions.length === 0" class="px-3 py-2 text-xs text-gray-400">
                       Нет доступных АЗС
                     </div>
+                    <div v-else-if="filteredAzsOptions.length === 0" class="px-3 py-2 text-xs text-gray-400">
+                      Ничего не найдено по «{{ azsSearchQuery }}»
+                    </div>
                   </div>
-                  <p v-if="manualRequest.azsIds.length > 0" class="text-xs text-blue-600 mt-1">
-                    Выбрано: {{ manualRequest.azsIds.length }} АЗС
+                  <p class="text-xs mt-1 flex gap-2">
+                    <span v-if="manualRequest.azsIds.length > 0" class="text-blue-600">
+                      Выбрано: {{ manualRequest.azsIds.length }} АЗС
+                    </span>
+                    <span
+                      v-if="azsSearchQuery && filteredAzsOptions.length < azsOptions.length"
+                      class="text-gray-400"
+                    >
+                      (показано {{ filteredAzsOptions.length }} из {{ azsOptions.length }})
+                    </span>
                   </p>
                 </div>
 
