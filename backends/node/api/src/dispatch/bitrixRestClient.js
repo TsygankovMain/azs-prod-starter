@@ -36,7 +36,11 @@ const normalizeContext = (context = {}) => {
     userId: Number(source.userId ?? source.user_id ?? 0) || 0,
     authId: String(source.authId || source.auth_id || '').trim(),
     refreshToken: String(source.refreshToken || source.refresh_token || '').trim(),
-    appSid: String(source.appSid || source.app_sid || '').trim()
+    appSid: String(source.appSid || source.app_sid || '').trim(),
+    // Inbound-webhook contexts authorize via the URL path itself — no `auth`
+    // param, no OAuth refresh. `endpoint` is the full webhook base.
+    isWebhook: Boolean(source.isWebhook),
+    endpoint: String(source.endpoint || '').trim()
   };
 };
 
@@ -78,6 +82,19 @@ export const createBitrixRestClient = ({
 
   const resolveRuntimeContext = (context = {}) => {
     const input = normalizeContext(context);
+
+    // Webhook context: the URL path carries auth. Use its endpoint verbatim,
+    // never attach OAuth credentials, never fall back to OAuth defaults.
+    if (input.isWebhook && input.endpoint) {
+      return {
+        ...input,
+        endpoint: normalizeEndpoint(input.endpoint),
+        authId: '',
+        refreshToken: '',
+        domain: input.domain
+      };
+    }
+
     const domain = input.domain || defaultOauthDomain;
     const runtimeEndpoint = normalizeEndpoint(
       context?.endpoint
@@ -213,7 +230,10 @@ export const createBitrixRestClient = ({
   const callInternalOnce = async (method, params = {}, options = {}) => {
     const runtime = resolveRuntimeContext(options.context);
     ensureConfigured(runtime);
-    const resolvedAuth = String(options.authOverride || runtime.authId || '').trim();
+    // Webhook endpoints authorize via the URL path — never attach `auth`.
+    const resolvedAuth = runtime.isWebhook
+      ? ''
+      : String(options.authOverride || runtime.authId || '').trim();
     const requestPayload = resolvedAuth
       ? { ...params, auth: resolvedAuth }
       : params;
@@ -243,7 +263,12 @@ export const createBitrixRestClient = ({
     try {
       return await callInternalOnce(method, params, options);
     } catch (error) {
-      const canRefresh = !options.authOverride && isRefreshableAuthError(error);
+      // Webhook contexts have no OAuth refresh_token — never attempt a refresh
+      // cycle for them; surface the error directly.
+      const runtimeForRefresh = resolveRuntimeContext(options.context);
+      const canRefresh = !runtimeForRefresh.isWebhook
+        && !options.authOverride
+        && isRefreshableAuthError(error);
       if (!canRefresh) {
         throw error;
       }

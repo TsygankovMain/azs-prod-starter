@@ -511,3 +511,87 @@ test('dispatch scheduler skips run when current time is not in configured slots'
   assert.equal(result.summary.total, 0);
   assert.equal(result.summary.created, 0);
 });
+
+test('resilience: generation works under webhook background context (no admin authId)', async () => {
+  const upserts = [];
+  const mirrorWrites = [];
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: true,
+    dispatchPlanStore: {
+      async listByDate() { return []; },          // no plan yet
+      async listDue() { return []; },
+      async upsertPlanned(x) { upserts.push(x); return x; },
+      async markDispatched() {}, async markFailed() {}
+    },
+    generateDailyPlan: async ({ planDate, candidates, planStore }) => {
+      for (const c of candidates) await planStore.upsertPlanned({ planDate, azsId: c.azsId, adminUserId: c.adminUserId, baseTime: '1200', executeAt: new Date(), jitterMinutes: 0 });
+      return { planDate, planned: candidates.length };
+    },
+    planMirror: { async write(x) { mirrorWrites.push(x); }, async rehydrateIfEmpty() { return 0; } },
+    dispatchService: { async dispatchBatch() { return { summary:{}, items:[{ok:true}] }; } },
+    getCandidates: async () => ([{ azsId: '5', adminUserId: 7 }]),
+    settingsStore: { async read() { return { timezone: 'UTC', report: { dispatchTimes: ['12:00'] } }; } },
+    // NO admin context at all:
+    getRuntimeContext: async () => ({}),
+    // webhook background context (no authId, but isWebhook):
+    getBackgroundContext: async () => ({ isWebhook: true, endpoint: 'https://p.bitrix24.ru/rest/1/c' }),
+    nowFn: () => new Date('2026-06-03T09:00:00.000Z')
+  });
+
+  await scheduler.runOnce();
+  // Plan generated under webhook context despite empty admin context
+  assert.ok(upserts.length >= 1, 'generation ran under webhook context');
+  assert.equal(mirrorWrites.length, 1, 'plan mirrored to Bitrix after generation');
+});
+
+test('resilience: alert sent (once) when no plan and no usable context', async () => {
+  const notifies = [];
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: true,
+    dispatchPlanStore: {
+      async listByDate() { return []; },   // no plan
+      async listDue() { return []; },
+      async markDispatched() {}, async markFailed() {}
+    },
+    generateDailyPlan: async () => ({ planned: 0 }),
+    planMirror: { async write() {}, async rehydrateIfEmpty() { return 0; } },
+    dispatchService: { async dispatchBatch() { return { summary:{}, items:[] }; } },
+    getCandidates: async () => ([]),
+    settingsStore: { async read() { return { timezone: 'UTC' }; } },
+    getRuntimeContext: async () => ({}),          // no admin
+    getBackgroundContext: async () => ({}),        // no webhook either
+    notificationService: { async notifyDispatch(p) { notifies.push(p); } },
+    getReviewerUserIds: async () => [101, 102],
+    nowFn: () => new Date('2026-06-03T09:00:00.000Z')
+  });
+
+  await scheduler.runOnce();
+  await scheduler.runOnce(); // second tick same day — must NOT re-alert
+  assert.equal(notifies.length, 2, 'alert sent to both reviewers exactly once (not 4)');
+  assert.ok(notifies.every((n) => /не сформирован/i.test(n.message)));
+});
+
+test('resilience: rehydrate from mirror counts as plan-exists (no regeneration)', async () => {
+  let generated = false;
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: true,
+    dispatchPlanStore: {
+      async listByDate() { return []; },   // DB empty
+      async listDue() { return []; },
+      async markDispatched() {}, async markFailed() {}
+    },
+    generateDailyPlan: async () => { generated = true; return { planned: 5 }; },
+    planMirror: { async write() {}, async rehydrateIfEmpty() { return 7; } }, // mirror restored 7 rows
+    dispatchService: { async dispatchBatch() { return { summary:{}, items:[] }; } },
+    getCandidates: async () => ([]),
+    settingsStore: { async read() { return { timezone: 'UTC' }; } },
+    getRuntimeContext: async () => ({ authId: 'tok' }),
+    nowFn: () => new Date('2026-06-03T09:00:00.000Z')
+  });
+
+  await scheduler.runOnce();
+  assert.equal(generated, false, 'rehydrate satisfied plan-exists → no regeneration');
+});

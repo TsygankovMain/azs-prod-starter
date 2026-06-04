@@ -19,6 +19,8 @@ import createReportsStore from './src/reports/reportsStore.js';
 import createReportsRouter, { buildCrmSyncRunner } from './src/reports/reportsRoutes.js';
 import createDispatchPlanStore from './src/reports/dispatchPlanStore.js';
 import { generateDailyPlan } from './src/dispatch/dispatchPlanGenerator.js';
+import createDispatchPlanMirror from './src/reports/dispatchPlanMirror.js';
+import { buildWebhookContext } from './src/auth/webhookContext.js';
 import createCrmSyncJobStore from './src/reports/crmSyncJobStore.js';
 import { createCrmSyncWorker } from './src/reports/crmSyncWorker.js';
 import createNotificationService from './src/notifications/notificationService.js';
@@ -192,6 +194,12 @@ const bitrixSettingsStore = createBitrixAppSettingsStore({
   bitrixClient,
   optionKey: process.env.BITRIX_APP_SETTINGS_OPTION_KEY || 'azs_photo_report_settings_v1'
 });
+// Durable plan mirror in Bitrix app.option (survives redeploy that wipes the DB).
+const dispatchPlanMirror = createDispatchPlanMirror({ bitrixClient, planStore: dispatchPlanStore });
+// Inbound-webhook context for background tasks (generation/execution) — works
+// after a redeploy when no admin has opened the app. Empty env → no webhook,
+// scheduler falls back to the admin OAuth context (legacy behavior).
+const webhookBackgroundContext = buildWebhookContext(process.env.BITRIX_WEBHOOK_URL || '');
 const settingsStore = createCompositeSettingsStore({
   bitrixStore: bitrixSettingsStore,
   dbStore: dbSettingsStore,
@@ -327,7 +335,8 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
   notificationService,
   authContextStore,
   crmSyncJobStore,
-  dispatchPlanStore
+  dispatchPlanStore,
+  dispatchPlanMirror
 }));
 
 app.post('/api/install', async (req, res) => {
@@ -589,7 +598,26 @@ const scheduler = createDispatchScheduler({
   // reverts to legacy slot-minute dispatch). The scheduler generates a daily
   // randomized plan and fires each AZS at its own jittered time.
   dispatchPlanStore,
-  generateDailyPlan
+  generateDailyPlan,
+  // Resilience: background context (webhook if configured, else admin fallback),
+  // durable plan mirror in Bitrix, and a reviewer alert when no plan exists.
+  getBackgroundContext: async () => {
+    if (webhookBackgroundContext) {
+      return webhookBackgroundContext;
+    }
+    const entry = await authContextStore.getLastAdminContext();
+    return entry?.context ? { key: entry.key, ...entry.context } : {};
+  },
+  planMirror: dispatchPlanMirror,
+  notificationService,
+  getReviewerUserIds: async () => {
+    try {
+      const settings = await settingsStore.read();
+      return Array.isArray(settings?.access?.reviewerUserIds) ? settings.access.reviewerUserIds : [];
+    } catch {
+      return [];
+    }
+  }
   // planModeEnabled / planGenerationCron / executeBatchLimit read from env inside the scheduler.
 });
 

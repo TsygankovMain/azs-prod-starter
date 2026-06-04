@@ -12,6 +12,48 @@ Format per entry:
 
 ---
 
+## 2026-06-04 — Feature: dispatch resilience (webhook + Bitrix plan mirror + retry/alert)
+
+### Scope
+Ветка `feature/dispatch-resilience`. Чиним корень провала авто-генерации: фоновые задачи (генерация плана, рассылка) были завязаны на admin OAuth-контекст из файла `./data/auth-context.json` — теряется при редеплое, наполняется только при открытии приложения. БД (план) тоже очищается при редеплое (один контейнер на Timeweb). Реализовано по spec `docs/superpowers/specs/2026-06-04-dispatch-resilience-design.md`, написано напрямую (без субагентов, по просьбе), TDD.
+
+### Что сделано
+| Часть | Файлы | Коммит |
+|---|---|---|
+| DR-1 webhook | `src/auth/webhookContext.js` (новый), `bitrixRestClient.js` | c2d0393 |
+| DR-3 mirror | `src/reports/dispatchPlanMirror.js` (новый) | 91e0b0c |
+| DR-2+4 scheduler | `dispatchScheduler.js`, `server.js` | 99e670d |
+| manual mirror+rehydrate | `reportsRoutes.js`, `server.js` | c875009 |
+| env + log | `.env.example`, this | (DR-5) |
+
+### Решения (по spec)
+- **Токен — входящий вебхук.** `BITRIX_WEBHOOK_URL` → `buildWebhookContext` → фоновые вызовы идут на webhook URL **без `auth` в теле и без OAuth-refresh** (у вебхука нет refresh_token, его ошибки не refreshable). `getBackgroundContext`: webhook если задан, иначе fallback на admin-контекст (legacy). Без env → поведение прежнее.
+- **План в Bitrix app.option.** `dispatchPlanMirror.write` пишет план (ключ `azs_dispatch_plan_v1`) при генерации (авто и ручной). `rehydrateIfEmpty` восстанавливает БД из зеркала, если БД пуста после редеплоя (идемпотентно). БД=рабочая копия, Bitrix=сейф.
+- **Ретрай + алерт (вместо буфера «завтра»).** `ensurePlanThenExecute` на каждом тике: если плана на сегодня нет (БД→зеркало) и есть usable-контекст → ретрай генерации; если не вышло → алерт проверяющим в бот (раз в день, `alertSentForDate`).
+
+### Риски и безопасность
+- **Регресс:** всё аддитивно и за наличием `BITRIX_WEBHOOK_URL` / опциональных deps. Без вебхука — `getBackgroundContext` падает на admin-fallback (текущее поведение). Существующие 10 scheduler-тестов (legacy + флаг) зелёные.
+- **Курица-яйцо снято:** чтение app.option в фоне теперь имеет токен (webhook), не зависит от сессии.
+- **Двойная запись (БД+Bitrix)** при генерации — +1 app.option.set в день, best-effort (не валит генерацию при сбое Bitrix).
+
+### Verification
+- Backend **207/207 зелёные, стабильно 3 прогона** (было 193 → +14 новых: webhookContext 4, client webhook 2, mirror 5, scheduler resilience 3).
+- `node --check` на bitrixRestClient/dispatchScheduler/server/reportsRoutes/webhookContext/dispatchPlanMirror.
+- Webhook-режим: тест подтверждает вызов на webhook URL без `auth` + отсутствие OAuth-refresh.
+- Резилиенс: тесты — генерация под webhook без admin authId; алерт раз в день (2 проверяющих → 2 нотификации, не 4); rehydrate засчитывается как plan-exists.
+- **Не выполнено (нужен живой портал):** создать реальный вебхук, прогнать e2e — генерация/рассылка после редеплоя без открытия приложения; восстановление плана из app.option после очистки БД.
+
+### Инструкция включения на проде
+1. В портале Bitrix создать ВХОДЯЩИЙ вебхук (scope: crm, im, imbot, disk, user), скопировать URL.
+2. В прод-`.env`: `BITRIX_WEBHOOK_URL=https://<portal>/rest/<uid>/<code>/`. Рестарт.
+3. После редеплоя: генерация/рассылка/чтение Bitrix работают без открытия приложения; план дублируется в app.option и восстанавливается при пустой БД.
+4. Откат: убрать `BITRIX_WEBHOOK_URL` → admin-fallback (как сейчас). Ручная кнопка остаётся всегда.
+
+### Не закоммичено/не запушено
+По указанию пользователя — пуш только по его команде. Ветка локальная.
+
+---
+
 ## 2026-06-01 — Feature: рандомизированный план рассылки (plan-then-execute), за фиче-флагом
 
 ### Scope

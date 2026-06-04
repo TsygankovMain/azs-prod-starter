@@ -689,7 +689,8 @@ export const createReportsRouter = ({
   notificationService,
   authContextStore,
   crmSyncJobStore,
-  dispatchPlanStore = null
+  dispatchPlanStore = null,
+  dispatchPlanMirror = null
 }) => {
   if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService || !authContextStore || !crmSyncJobStore) {
     throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient, notificationService, authContextStore and crmSyncJobStore are required');
@@ -834,6 +835,14 @@ export const createReportsRouter = ({
       const settings = await settingsStore.read();
       const tz = String(settings?.timezone || 'Europe/Moscow').trim();
       const planDate = normalizePlanDate(req.query.date) || todayInTz(tz);
+      // If the DB was wiped by a redeploy, restore the plan from the Bitrix mirror.
+      if (dispatchPlanMirror && typeof dispatchPlanMirror.rehydrateIfEmpty === 'function') {
+        try {
+          await dispatchPlanMirror.rehydrateIfEmpty({ context: req.bitrixContext || {}, planDate });
+        } catch (rehydrateError) {
+          console.warn('plan_rehydrate_failed', { planDate, message: rehydrateError.message });
+        }
+      }
       const rows = await dispatchPlanStore.listByDate({ planDate });
       const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
       const items = [];
@@ -872,6 +881,17 @@ export const createReportsRouter = ({
       }
       // regenerate=true: deletes status='planned' rows for the date then rebuilds
       const summary = await generateDailyPlan({ planDate, candidates, settings, planStore: dispatchPlanStore, regenerate: true, logger: console });
+
+      // Durable mirror to Bitrix app.option so the manually-built plan survives a
+      // redeploy that wipes the DB. Best-effort — never fail the manual action.
+      if (dispatchPlanMirror && Number(summary?.planned) > 0) {
+        try {
+          const rows = await dispatchPlanStore.listByDate({ planDate });
+          await dispatchPlanMirror.write({ context, planDate, rows });
+        } catch (mirrorError) {
+          console.warn('plan_generate_mirror_failed', { planDate, message: mirrorError.message });
+        }
+      }
       return res.json({ ok: true, planDate, azsCount: candidates.length, planned: summary?.planned ?? null, summary });
     } catch (error) {
       return res.status(502).json({ error: 'plan_generate_failed', message: error.message });

@@ -18,12 +18,39 @@ export const createDispatchScheduler = ({
   // still means default-on; only an explicit 'false' disables.)
   planModeEnabled = String(process.env.DISPATCH_PLAN_MODE_ENABLED ?? 'true').trim().toLowerCase() !== 'false',
   planGenerationCron = process.env.DISPATCH_PLAN_GENERATION_CRON || '1 0 * * *',
-  executeBatchLimit = Number(process.env.DISPATCH_EXECUTE_BATCH_LIMIT || 20)
+  executeBatchLimit = Number(process.env.DISPATCH_EXECUTE_BATCH_LIMIT || 20),
+  // Resilience deps (all optional, backward-compatible):
+  //  - getBackgroundContext: a context for background tasks (generation +
+  //    execution) that does NOT depend on a per-user OAuth session — typically
+  //    an inbound-webhook context. Defaults to getRuntimeContext so behavior is
+  //    unchanged when no webhook is configured.
+  //  - planMirror: durable plan storage in Bitrix app.option (write + rehydrate)
+  //  - notificationService + getReviewerUserIds: for the "plan not generated" alert
+  getBackgroundContext = null,
+  planMirror = null,
+  notificationService = null,
+  getReviewerUserIds = null
 }) => {
   let dispatchTask = null;
   let timeoutTask = null;
   let generationTask = null;
   let lastSlotKey = '';
+  let alertSentForDate = '';
+
+  // Background context for generation/execution: prefer the injected webhook
+  // context, fall back to the per-user runtime context (legacy behavior).
+  const resolveBackgroundContext = async () => {
+    if (typeof getBackgroundContext === 'function') {
+      const ctx = await getBackgroundContext().catch(() => null);
+      if (ctx && (ctx.isWebhook || String(ctx.authId || '').trim())) {
+        return ctx;
+      }
+    }
+    return getRuntimeContext().catch(() => ({}));
+  };
+
+  // A context is usable for background Bitrix calls if it's a webhook OR carries an authId.
+  const hasUsableContext = (ctx) => Boolean(ctx && (ctx.isWebhook || String(ctx.authId || '').trim()));
 
   const parsePositiveInt = (value) => {
     const n = Number(value);
@@ -203,13 +230,13 @@ export const createDispatchScheduler = ({
   const generatePlanForDate = async (dateKey) => {
     if (!generateDailyPlan || !dispatchPlanStore) {
       logger.warn('dispatchScheduler: generatePlanForDate skipped — missing generateDailyPlan or dispatchPlanStore');
-      return;
+      return { ok: false, reason: 'missing_deps' };
     }
     const settings = settingsStore ? await settingsStore.read() : {};
-    const context = await getRuntimeContext().catch(() => ({}));
-    if (!String(context?.authId || '').trim()) {
-      logger.warn('dispatchScheduler: generatePlanForDate skipped — missing auth context', { dateKey });
-      return;
+    const context = await resolveBackgroundContext();
+    if (!hasUsableContext(context)) {
+      logger.warn('dispatchScheduler: generatePlanForDate skipped — missing auth/webhook context', { dateKey });
+      return { ok: false, reason: 'no_context' };
     }
     const candidates = await (async () => {
       const fileCandidates = await getCandidates();
@@ -226,6 +253,60 @@ export const createDispatchScheduler = ({
       logger
     });
     logger.info('dispatchScheduler: generatePlanForDate done', summary);
+
+    // Durable mirror: persist the freshly generated plan to Bitrix app.option so
+    // it survives a redeploy that wipes the DB. Best-effort — never fail the run.
+    if (planMirror && summary && Number(summary.planned) > 0) {
+      try {
+        const rows = await dispatchPlanStore.listByDate({ planDate: dateKey });
+        await planMirror.write({ context, planDate: dateKey, rows });
+        logger.info('dispatchScheduler: plan mirrored to Bitrix', { planDate: dateKey, rows: rows.length });
+      } catch (error) {
+        logger.warn('dispatchScheduler: plan mirror write failed', { planDate: dateKey, message: error.message });
+      }
+    }
+    return { ok: true, planned: Number(summary?.planned || 0) };
+  };
+
+  // Whether a plan already exists for the date (DB first, then Bitrix mirror).
+  const planExistsForDate = async (dateKey, context) => {
+    try {
+      const rows = await dispatchPlanStore.listByDate({ planDate: dateKey });
+      if (Array.isArray(rows) && rows.length > 0) return true;
+    } catch { /* fall through to mirror */ }
+    if (planMirror) {
+      try {
+        const restored = await planMirror.rehydrateIfEmpty({ context, planDate: dateKey });
+        if (restored > 0) return true;
+      } catch { /* ignore */ }
+    }
+    return false;
+  };
+
+  // Send a one-per-day alert to reviewers when no plan exists for today.
+  const alertNoPlan = async (dateKey, context) => {
+    if (alertSentForDate === dateKey) return;
+    if (!notificationService || typeof notificationService.notifyDispatch !== 'function') return;
+    if (typeof getReviewerUserIds !== 'function') return;
+    let userIds = [];
+    try {
+      userIds = await getReviewerUserIds({ context });
+    } catch { userIds = []; }
+    const recipients = [...new Set((userIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+    if (!recipients.length) return;
+    for (const userId of recipients) {
+      try {
+        await notificationService.notifyDispatch({
+          userId,
+          message: 'План рассылки на сегодня не сформирован. Откройте приложение и нажмите «Сформировать график».',
+          context
+        });
+      } catch (error) {
+        logger.warn('dispatchScheduler: alertNoPlan notify failed', { userId, message: error.message });
+      }
+    }
+    alertSentForDate = dateKey;
+    logger.warn('dispatchScheduler: alert sent — no plan for date', { dateKey, recipients: recipients.length });
   };
 
   // ---------------------------------------------------------------------------
@@ -237,9 +318,9 @@ export const createDispatchScheduler = ({
       return { due: 0, executed: 0, duplicates: 0, failed: 0 };
     }
 
-    const context = await getRuntimeContext().catch(() => ({}));
-    if (!String(context?.authId || '').trim()) {
-      logger.warn('dispatchScheduler: executeDuePlans skipped — missing auth context');
+    const context = await resolveBackgroundContext();
+    if (!hasUsableContext(context)) {
+      logger.warn('dispatchScheduler: executeDuePlans skipped — missing auth/webhook context');
       return { due: 0, executed: 0, duplicates: 0, failed: 0 };
     }
 
@@ -302,11 +383,42 @@ export const createDispatchScheduler = ({
   // ---------------------------------------------------------------------------
   // runOnce — branches on planModeEnabled flag
   // ---------------------------------------------------------------------------
+  // Per-tick resilience: make sure today's plan exists (retry generation if it
+  // doesn't — e.g. the 00:01 cron skipped because no context was available yet),
+  // then execute due rows. Alerts reviewers once/day if a plan still can't be built.
+  const ensurePlanThenExecute = async () => {
+    const timezone = String(
+      (settingsStore ? (await settingsStore.read().catch(() => ({}))) : {})?.timezone
+      || process.env.DEFAULT_TIMEZONE || 'Europe/Moscow'
+    ).trim();
+    const today = getTimeParts(nowFn(), timezone).dateKey;
+    const context = await resolveBackgroundContext();
+
+    const exists = await planExistsForDate(today, context);
+    if (!exists) {
+      if (hasUsableContext(context)) {
+        logger.info('dispatchScheduler: no plan for today, retrying generation', { today });
+        const gen = await generatePlanForDate(today).catch((error) => {
+          logger.warn('dispatchScheduler: retry generation failed', { today, message: error.message });
+          return { ok: false };
+        });
+        if (!gen.ok || !gen.planned) {
+          await alertNoPlan(today, context);
+        }
+      } else {
+        // Can't generate without a context — surface it so a human can act.
+        await alertNoPlan(today, context);
+      }
+    }
+
+    return executeDuePlans();
+  };
+
   const runOnce = async () => {
-    // Safety switch: when plan mode is ON, execute due plans instead of the old
-    // slot-matching behavior. The old body below is untouched.
+    // Safety switch: when plan mode is ON, ensure today's plan then execute due
+    // rows instead of the old slot-matching behavior. The old body below is untouched.
     if (planModeEnabled) {
-      return executeDuePlans();
+      return ensurePlanThenExecute();
     }
 
     const settings = settingsStore ? await settingsStore.read() : {};
