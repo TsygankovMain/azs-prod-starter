@@ -268,7 +268,8 @@ const deriveEvents = (): FeedEvent[] => {
         timestamp: report.updatedAt,
         azsId: report.azsId,
         azsTitle,
-        reportRow: report
+        reportRow: report,
+        subtitle: report.errorText ? `Причина: ${report.errorText}` : undefined
       })
     }
   }
