@@ -77,6 +77,12 @@ const appScreens = [
     title: 'Экран Администратора АЗС',
     description: 'Мобильная форма загрузки фото по позициям отчёта.',
     path: '/admin'
+  },
+  {
+    key: 'reports',
+    title: 'Отчёты',
+    description: 'Аналитика по отчётам: сводка, рейтинг, динамика, карточка АЗС и фото-витрина.',
+    path: '/reports'
   }
 ] as const
 
@@ -89,6 +95,9 @@ const visibleScreens = computed(() => appScreens.filter((screen) => {
   }
   if (screen.key === 'admin') {
     return Boolean(currentCapabilities.value.reports)
+  }
+  if (screen.key === 'reports') {
+    return Boolean(currentCapabilities.value.reviewer || currentCapabilities.value.settings || currentCapabilities.value.reports)
   }
   return false
 }))
