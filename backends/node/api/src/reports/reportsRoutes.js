@@ -682,6 +682,37 @@ const loadEnabledAzsCandidates = async ({ settings, bitrixClient, context }) => 
     .filter((item) => item.azsId && Number(item.adminUserId) > 0);
 };
 
+const rehydrateReasonsIfEmpty = async ({ reasonStore, reportsStore, bitrixClient, settings, context }) => {
+  const reasonFieldCode = String(settings?.report?.fields?.reason || '').trim();
+  const entityTypeId = Number(settings?.report?.entityTypeId || 0);
+  if (!reasonFieldCode || !entityTypeId) return;
+
+  const reasons = Array.isArray(settings.report?.reasons) ? settings.report.reasons : [];
+  const { createReasonCatalog } = await import('./reasonCatalog.js');
+  const catalog = createReasonCatalog(reasons);
+
+  const items = await reportsStore.list({ limit: 500 });
+  for (const item of items) {
+    if (!item.reportItemId) continue;
+    try {
+      const crmItem = await bitrixClient.getCrmItem({ entityTypeId, id: item.reportItemId, context });
+      const rawValue = crmItem ? getFieldValue(crmItem, reasonFieldCode) : null;
+      if (!rawValue) continue;
+      const { code, text } = catalog.decodeValue(String(rawValue));
+      await reasonStore.upsert({
+        reportId: item.id,
+        azsId: String(item.azsId || ''),
+        adminUserId: Number(item.adminUserId || 0),
+        reasonCode: code,
+        reasonText: text,
+        source: 'app'
+      });
+    } catch {
+      // best-effort rehydrate, пропускаем ошибки
+    }
+  }
+};
+
 export const createReportsRouter = ({
   reportsStore,
   dispatchService,
@@ -694,6 +725,8 @@ export const createReportsRouter = ({
   dispatchPlanMirror = null,
   analyticsStore = null,
   diskApi = null,
+  reasonStore = null,
+  reasonForwardingService = null,
 }) => {
   if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService || !authContextStore || !crmSyncJobStore) {
     throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient, notificationService, authContextStore and crmSyncJobStore are required');
@@ -944,6 +977,153 @@ export const createReportsRouter = ({
     } catch (error) {
       return res.status(500).json({
         error: 'reports_my_active_failed',
+        message: error.message
+      });
+    }
+  });
+
+  router.get('/reasons', async (req, res) => {
+    if (!canUseReviewerTools(req)) {
+      return res.status(403).json({ error: 'forbidden', message: 'Reviewer access is required' });
+    }
+    if (!reasonStore) {
+      return res.status(503).json({ error: 'reason_store_not_configured' });
+    }
+    try {
+      const settings = await settingsStore.read();
+      // Если кэш пуст — rehydrate из CRM (best-effort)
+      const cacheCount = await reasonStore.countEmpty();
+      if (cacheCount === 0) {
+        await rehydrateReasonsIfEmpty({ reasonStore, reportsStore, bitrixClient, settings, context: req.bitrixContext || {} });
+      }
+      const counts = await reasonStore.countsByCode({
+        dateFrom: normalizeDateFilter(req.query.dateFrom),
+        dateTo: normalizeDateFilter(req.query.dateTo),
+        azsIds: normalizeAzsIds(req.query.azsId)
+      });
+      // Обогатить labels из каталога (из настроек, не хардкод)
+      const reasons = Array.isArray(settings.report?.reasons) ? settings.report.reasons : [];
+      const { createReasonCatalog } = await import('./reasonCatalog.js');
+      const catalog = createReasonCatalog(reasons);
+      const items = counts.map(c => ({
+        code: c.reason_code,
+        label: catalog.codeToLabel(c.reason_code) || c.reason_code,
+        count: Number(c.count)
+      }));
+      const total = items.reduce((sum, i) => sum + i.count, 0);
+      const decorated = items.map(i => ({ ...i, share: total > 0 ? Math.round(i.count / total * 100) : 0 }));
+      return res.json({ items: decorated, total });
+    } catch (error) {
+      return res.status(500).json({ error: 'reasons_failed', message: error.message });
+    }
+  });
+
+  router.post('/:id/reason', async (req, res) => {
+    if (!reasonStore) {
+      return res.status(503).json({ error: 'reason_store_not_configured' });
+    }
+
+    try {
+      const reportId = Number(req.params.id);
+      if (!Number.isFinite(reportId) || reportId <= 0) {
+        return res.status(400).json({ error: 'invalid_report_id', message: 'report id must be a positive number' });
+      }
+
+      const report = await reportsStore.getById(reportId);
+      if (!report) return res.status(404).json({ error: 'report_not_found' });
+
+      // Доступ: владелец отчёта ИЛИ проверяющий
+      const currentUserId = extractUserId(req.user);
+      const isOwner = currentUserId && currentUserId === Number(report.adminUserId);
+      const isReviewer = canUseReviewerTools(req);
+      if (!isOwner && !isReviewer) {
+        return res.status(403).json({ error: 'forbidden_user', message: 'Current user is not report administrator or reviewer' });
+      }
+
+      const settings = await settingsStore.read();
+      // Каталог причин берётся из настроек, не хардкод
+      const reasons = Array.isArray(settings.report?.reasons) ? settings.report.reasons : [];
+      const { createReasonCatalog } = await import('./reasonCatalog.js');
+      const catalog = createReasonCatalog(reasons);
+
+      const reasonCode = String(req.body?.reasonCode || '').trim();
+      const reasonText = String(req.body?.reasonText || '').trim() || null;
+
+      // Валидация: код должен быть в каталоге (из настроек)
+      if (!catalog.isValidCode(reasonCode)) {
+        return res.status(400).json({
+          error: 'invalid_reason_code',
+          message: `reasonCode "${reasonCode}" не входит в список допустимых причин`
+        });
+      }
+      // Для other — reasonText обязателен
+      if (catalog.isOther(reasonCode) && !reasonText) {
+        return res.status(400).json({
+          error: 'reason_text_required',
+          message: 'Для причины "Другое" необходимо указать текст'
+        });
+      }
+
+      // Шаг 1: записать в CRM UF под живым токеном оператора
+      const reasonValue = catalog.encodeValue(reasonCode, reasonText);
+      const { updateReasonCrmField } = await import('./reportCrmSync.js');
+      try {
+        await updateReasonCrmField({
+          bitrixClient,
+          settings,
+          reportItemId: report.reportItemId,
+          reasonValue,
+          context: req.bitrixContext || {}
+        });
+      } catch (crmError) {
+        console.warn('reason_crm_update_failed', {
+          reportId, reportItemId: report.reportItemId,
+          message: crmError.message
+        });
+      }
+
+      // Шаг 2: upsert в локальный кэш
+      await reasonStore.upsert({
+        reportId,
+        azsId: String(report.azsId || ''),
+        adminUserId: Number(report.adminUserId || 0),
+        reasonCode,
+        reasonText,
+        source: 'app'
+      });
+
+      // Шаг 3: best-effort пересылка в общий чат
+      if (reasonForwardingService) {
+        const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
+        const azsTitle = await resolveAzsTitle(report.azsId).catch(() => String(report.azsId || ''));
+
+        const operatorName = String(req.user?.name || req.user?.NAME || `User ${currentUserId || report.adminUserId}` || '');
+
+        const adminEntry = await authContextStore.getLastAdminContext().catch(() => null);
+        const botContext = adminEntry?.context
+          ? { key: adminEntry.key, ...adminEntry.context }
+          : (req.bitrixContext || {});
+
+        reasonForwardingService.forward({
+          settings,
+          azsTitle,
+          operatorName,
+          reasonLabel: catalog.codeToLabel(reasonCode) || reasonCode,
+          reasonText,
+          reportStatus: report.status,
+          deadlineAt: report.deadlineAt,
+          timezone: settings.timezone || 'Europe/Moscow',
+          reportItemId: report.reportItemId,
+          portalDomain: String(req.bitrixContext?.domain || ''),
+          context: botContext
+        }).catch(err => console.warn('reason_forward_async_failed', { reportId, message: err.message }));
+      }
+
+      return res.json({ ok: true, reportId, reasonCode, reasonText });
+    } catch (error) {
+      const statusCode = Number(error?.statusCode || 500);
+      return res.status(statusCode).json({
+        error: error?.code || 'reason_save_failed',
         message: error.message
       });
     }
