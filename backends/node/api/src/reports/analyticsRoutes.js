@@ -1,0 +1,122 @@
+import express from 'express';
+
+const normDate = (v) => { const r = String(v || '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(r) ? r : ''; };
+const normIds = (v) => {
+  const src = Array.isArray(v) ? v : String(v || '').split(/[,;\n]+/g);
+  return [...new Set(src.map(s => String(s || '').trim()).filter(Boolean))];
+};
+const canReview = (req) => (
+  Boolean(req.accessContext?.capabilities?.reviewer) ||
+  Boolean(req.accessContext?.capabilities?.settings)
+);
+
+export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClient, settingsStore, diskApi }) => {
+  if (!analyticsStore) throw new Error('analyticsStore is required');
+  const router = express.Router();
+
+  // GET /analytics/rating?dateFrom=&dateTo=&azsId=
+  router.get('/analytics/rating', async (req, res) => {
+    if (!canReview(req)) return res.status(403).json({ error: 'forbidden' });
+    try {
+      const rows = await analyticsStore.getRating({
+        dateFrom: normDate(req.query.dateFrom),
+        dateTo:   normDate(req.query.dateTo),
+        azsIds:   normIds(req.query.azsId),
+      });
+      const settings = await settingsStore.read();
+      const { createAzsTitleResolver } = await import('./reportsRoutes.js');
+      const resolve = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
+      const items = await Promise.all(rows.map(async r => ({
+        ...r,
+        azsTitle: await resolve(r.azsId),
+        pct: r.total ? Math.round(r.onTime / r.total * 100) : 0,
+      })));
+      return res.json({ items });
+    } catch (err) {
+      return res.status(500).json({ error: 'analytics_rating_failed', message: err.message });
+    }
+  });
+
+  // GET /analytics/trend?dateFrom=&dateTo=&azsId=
+  router.get('/analytics/trend', async (req, res) => {
+    if (!canReview(req)) return res.status(403).json({ error: 'forbidden' });
+    try {
+      const rows = await analyticsStore.getTrend({
+        dateFrom: normDate(req.query.dateFrom),
+        dateTo:   normDate(req.query.dateTo),
+        azsIds:   normIds(req.query.azsId),
+      });
+      return res.json({ items: rows });
+    } catch (err) {
+      return res.status(500).json({ error: 'analytics_trend_failed', message: err.message });
+    }
+  });
+
+  // GET /analytics/day-photos?date=&azsId=
+  router.get('/analytics/day-photos', async (req, res) => {
+    if (!canReview(req)) return res.status(403).json({ error: 'forbidden' });
+    try {
+      const date = normDate(req.query.date) || (() => {
+        const d = new Date(); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+      })();
+      const rows = await analyticsStore.getDayPhotos({
+        date,
+        azsIds: normIds(req.query.azsId),
+      });
+      const settings = await settingsStore.read();
+      const { createAzsTitleResolver } = await import('./reportsRoutes.js');
+      const resolve = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
+      const items = await Promise.all(rows.map(async r => ({
+        ...r,
+        azsTitle: await resolve(r.azsId),
+      })));
+      return res.json({ items, date });
+    } catch (err) {
+      return res.status(500).json({ error: 'analytics_day_photos_failed', message: err.message });
+    }
+  });
+
+  // GET /photos/:reportId/:photoCode/preview
+  // Proxies binary photo data via Bitrix Disk API using disk_object_id.
+  router.get('/photos/:reportId/:photoCode/preview', async (req, res) => {
+    // Access: reviewer or reports (AZS admin).
+    if (!canReview(req) && !Boolean(req.accessContext?.capabilities?.reports)) {
+      return res.status(403).json({ error: 'forbidden' });
+    }
+    try {
+      const reportId = Number(req.params.reportId);
+      if (!Number.isFinite(reportId) || reportId <= 0) {
+        return res.status(400).json({ error: 'invalid_report_id' });
+      }
+      const photoCode = String(req.params.photoCode || '').trim().toLowerCase();
+      if (!photoCode) return res.status(400).json({ error: 'invalid_photo_code' });
+
+      const photos = await reportsStore.listPhotos(reportId);
+      const photo = photos.find(p => String(p.photoCode || '').toLowerCase() === photoCode);
+      if (!photo) return res.status(404).json({ error: 'photo_not_found' });
+      if (!photo.diskObjectId) return res.status(404).json({ error: 'disk_object_id_missing' });
+
+      if (!diskApi || typeof diskApi.downloadFileContent !== 'function') {
+        return res.status(501).json({ error: 'preview_not_supported', message: 'diskApi.downloadFileContent is not available' });
+      }
+
+      const context = req.bitrixContext || {};
+      const { base64, name } = await diskApi.downloadFileContent(photo.diskObjectId, context);
+      const buffer = Buffer.from(String(base64 || ''), 'base64');
+      const ext = String(name || '').toLowerCase().split('.').pop();
+      const contentType = ext === 'png' ? 'image/png'
+        : ext === 'webp' ? 'image/webp'
+        : (ext === 'heic' || ext === 'heif') ? 'image/heic'
+        : 'image/jpeg';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      return res.send(buffer);
+    } catch (err) {
+      return res.status(502).json({ error: 'preview_failed', message: err.message });
+    }
+  });
+
+  return router;
+};
+
+export default createAnalyticsRouter;

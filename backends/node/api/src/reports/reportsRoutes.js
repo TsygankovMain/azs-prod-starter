@@ -4,6 +4,7 @@ import exifr from 'exifr';
 import { ensureRootFolder, isSupportedPhotoUpload, uploadPhoto } from '../disk/diskService.js';
 import { updateReportCrmItem } from './reportCrmSync.js';
 import { generateDailyPlan } from '../dispatch/dispatchPlanGenerator.js';
+import { createAnalyticsRouter } from './analyticsRoutes.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const EXIF_MAX_AGE_MINUTES = Number(process.env.EXIF_MAX_AGE_MINUTES || 720);
@@ -91,7 +92,7 @@ const parseCrmItemId = (value) => {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 };
 
-const createAzsTitleResolver = ({ bitrixClient, settings, context = {} }) => {
+export const createAzsTitleResolver = ({ bitrixClient, settings, context = {} }) => {
   const entityTypeId = Number(settings?.azs?.entityTypeId || 0);
   const cache = new Map();
 
@@ -690,7 +691,9 @@ export const createReportsRouter = ({
   authContextStore,
   crmSyncJobStore,
   dispatchPlanStore = null,
-  dispatchPlanMirror = null
+  dispatchPlanMirror = null,
+  analyticsStore = null,
+  diskApi = null,
 }) => {
   if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService || !authContextStore || !crmSyncJobStore) {
     throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient, notificationService, authContextStore and crmSyncJobStore are required');
@@ -1351,6 +1354,10 @@ export const createReportsRouter = ({
       return res.status(statusCode).json({ error: error?.code || 'report_resync_failed', message: error.message });
     }
   });
+
+  if (analyticsStore) {
+    router.use(createAnalyticsRouter({ analyticsStore, reportsStore, bitrixClient, settingsStore, diskApi }));
+  }
 
   return router;
 };

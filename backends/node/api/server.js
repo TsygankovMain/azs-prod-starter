@@ -17,6 +17,7 @@ import createDispatchScheduler from './src/dispatch/dispatchScheduler.js';
 import createTimeoutWatcher from './src/dispatch/timeoutWatcher.js';
 import { readDispatchCandidates } from './src/dispatch/dispatchCandidatesFileStore.js';
 import createReportsStore from './src/reports/reportsStore.js';
+import { createAnalyticsStore } from './src/reports/analyticsStore.js';
 import createReportsRouter, { buildCrmSyncRunner } from './src/reports/reportsRoutes.js';
 import createDispatchPlanStore from './src/reports/dispatchPlanStore.js';
 import { generateDailyPlan } from './src/dispatch/dispatchPlanGenerator.js';
@@ -161,6 +162,7 @@ const ensureRestAppUriPlacement = async ({
 
 const dispatchLogStore = createDispatchLogStore({ pool, dbType });
 const reportsStore = createReportsStore({ pool, dbType });
+const analyticsStore = createAnalyticsStore({ pool, dbType });
 const crmSyncJobStore = createCrmSyncJobStore({ pool, dbType });
 const dispatchPlanStore = createDispatchPlanStore({ pool, dbType });
 const dbSettingsStore = createDatabaseSettingsStore({ pool, dbType });
@@ -337,7 +339,9 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
   authContextStore,
   crmSyncJobStore,
   dispatchPlanStore,
-  dispatchPlanMirror
+  dispatchPlanMirror,
+  analyticsStore,
+  diskApi: bitrixClient.diskApi,
 }));
 
 app.post('/api/install', async (req, res) => {
