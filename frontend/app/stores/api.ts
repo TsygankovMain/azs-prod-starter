@@ -30,6 +30,18 @@ type ReportsSummary = {
   byStatus: Record<string, number>
 }
 
+type RatingRow = {
+  azsId: string; azsTitle?: string | null; total: number
+  onTime: number; late: number; avgMinutes: number | null; pct: number
+}
+
+type TrendRow = { date: string; total: number; done: number; expired: number; open: number }
+
+type DayPhotoEntry = {
+  reportId: number; azsId: string; azsTitle?: string | null; doneAt: string | null
+  photos: Array<{ photoCode: string; diskObjectId: number | null; diskFolderId: number | null; exifAt: string | null; uploadedAt: string | null }>
+}
+
 type AppCapabilities = {
   settings: boolean
   reviewer: boolean
@@ -355,6 +367,23 @@ export const useApiStore = defineStore(
       })
     }
 
+    const getReportsRating = async (filters: { dateFrom?: string; dateTo?: string; azsId?: string } = {}): Promise<{ items: RatingRow[] }> =>
+      await $api('/api/reports/analytics/rating', { query: filters, headers: { Authorization: `Bearer ${tokenJWT.value}` } })
+
+    const getReportsTrend = async (filters: { dateFrom?: string; dateTo?: string; azsId?: string } = {}): Promise<{ items: TrendRow[] }> =>
+      await $api('/api/reports/analytics/trend', { query: filters, headers: { Authorization: `Bearer ${tokenJWT.value}` } })
+
+    const getDayPhotos = async (filters: { date?: string; azsId?: string } = {}): Promise<{ items: DayPhotoEntry[]; date: string }> =>
+      await $api('/api/reports/analytics/day-photos', { query: filters, headers: { Authorization: `Bearer ${tokenJWT.value}` } })
+
+    const getPhotoPreviewObjectUrl = async (reportId: number, photoCode: string): Promise<string> => {
+      const blob = await $fetch(`${apiUrl}/api/reports/photos/${reportId}/${encodeURIComponent(photoCode)}/preview`, {
+        headers: { Authorization: `Bearer ${tokenJWT.value}` },
+        responseType: 'blob'
+      }) as Blob
+      return URL.createObjectURL(blob)
+    }
+
     const init = async (b24: B24Frame) => {
       $b24 = b24
       await reinitToken()
@@ -417,7 +446,11 @@ export const useApiStore = defineStore(
       reinitToken,
       resyncReport,
       getDispatchPlan,
-      generateDispatchPlan
+      generateDispatchPlan,
+      getReportsRating,
+      getReportsTrend,
+      getDayPhotos,
+      getPhotoPreviewObjectUrl
     }
   }
 )
