@@ -217,12 +217,16 @@ export const createDispatchService = ({
             const reserveItemId = reportItemId || reserve.id;
             if (appCode && reserveItemId) {
               const deepLink = buildRestAppUriLink({ appCode, reportId: reserveItemId });
-              if (deepLink) {
-                dispatchKeyboard = [[{
-                  TEXT: 'Открыть отчёт',
-                  LINK: deepLink
-                }]];
-              }
+              const reasonPath = `/reason/${reserveItemId}`;
+              const reasonParams = new URLSearchParams();
+              reasonParams.set('params[reportId]', String(reserveItemId));
+              reasonParams.set('params[path]', reasonPath);
+              const reasonDeepLink = `/marketplace/view/${encodeURIComponent(appCode)}/?${reasonParams.toString()}`;
+
+              const buttons = [];
+              if (deepLink) buttons.push({ TEXT: 'Открыть отчёт', LINK: deepLink });
+              if (reasonDeepLink) buttons.push({ TEXT: '⏰ Не успеваю — указать причину', LINK: reasonDeepLink });
+              if (buttons.length) dispatchKeyboard = [buttons];
             }
           } catch {
             // Defensive: skip keyboard if link building fails
