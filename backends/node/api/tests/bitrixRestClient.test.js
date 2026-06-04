@@ -453,3 +453,49 @@ test('bitrix client does not retry non-retryable ACCESS_DENIED errors', async ()
     global.fetch = originalFetch;
   }
 });
+
+test('webhook context: call goes to webhook URL with NO auth in body', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    return createJsonResponse({ result: { status: 'L' } });
+  };
+  try {
+    const client = createBitrixRestClient({ endpoint: '', authId: '', logger: { info() {}, error() {} } });
+    const result = await client.callMethod('app.info', {}, {
+      isWebhook: true,
+      endpoint: 'https://p.bitrix24.ru/rest/498/whcode'
+    });
+    assert.equal(result.status, 'L');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'https://p.bitrix24.ru/rest/498/whcode/app.info.json');
+    const body = JSON.parse(String(calls[0].options.body || '{}'));
+    assert.equal('auth' in body, false, 'webhook calls must not include an auth param');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('webhook context: a refreshable-looking error is NOT OAuth-refreshed (no refresh attempt)', async () => {
+  const originalFetch = global.fetch;
+  let oauthCalls = 0;
+  let methodCalls = 0;
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/oauth/token/')) { oauthCalls += 1; return createJsonResponse({ access_token: 'x', refresh_token: 'y' }); }
+    if (u.includes('/app.info.json')) { methodCalls += 1; return createJsonResponse({ error: 'expired_token', error_description: 'x' }, 401); }
+    throw new Error(`unexpected ${u}`);
+  };
+  try {
+    const client = createBitrixRestClient({ endpoint: '', authId: '', clientId: 'c', clientSecret: 's', logger: { info() {}, error() {} } });
+    await assert.rejects(() => client.callMethod('app.info', {}, {
+      isWebhook: true,
+      endpoint: 'https://p.bitrix24.ru/rest/498/whcode'
+    }), /expired_token/);
+    assert.equal(oauthCalls, 0, 'webhook must never trigger OAuth refresh');
+    assert.equal(methodCalls, 1, 'method called once, no retry');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
