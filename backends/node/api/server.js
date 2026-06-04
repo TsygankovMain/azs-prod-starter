@@ -335,7 +335,8 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
   notificationService,
   authContextStore,
   crmSyncJobStore,
-  dispatchPlanStore
+  dispatchPlanStore,
+  dispatchPlanMirror
 }));
 
 app.post('/api/install', async (req, res) => {
