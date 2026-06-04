@@ -99,12 +99,11 @@ export const createTimeoutWatcher = ({
             const existing = await reasonStore.getByReport(report.id);
             if (!existing) {
               const appCode = String(process.env.BITRIX_APP_CODE || '').trim();
-              const reportId = report.reportItemId || report.id;
               let reasonLink = null;
-              if (appCode && reportId) {
-                const reasonPath = `/reason/${reportId}`;
+              if (process.env.ENABLE_REPORT_DEEP_LINK === 'true' && appCode && report.id) {
+                const reasonPath = `/reason/${report.id}`;
                 const reasonParams = new URLSearchParams();
-                reasonParams.set('params[reportId]', String(reportId));
+                reasonParams.set('params[reportId]', String(report.id));
                 reasonParams.set('params[path]', reasonPath);
                 reasonLink = `/marketplace/view/${encodeURIComponent(appCode)}/?${reasonParams.toString()}`;
               }

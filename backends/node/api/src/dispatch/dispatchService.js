@@ -217,9 +217,9 @@ export const createDispatchService = ({
             const reserveItemId = reportItemId || reserve.id;
             if (appCode && reserveItemId) {
               const deepLink = buildRestAppUriLink({ appCode, reportId: reserveItemId });
-              const reasonPath = `/reason/${reserveItemId}`;
+              const reasonPath = `/reason/${reserve.id}`;
               const reasonParams = new URLSearchParams();
-              reasonParams.set('params[reportId]', String(reserveItemId));
+              reasonParams.set('params[reportId]', String(reserve.id));
               reasonParams.set('params[path]', reasonPath);
               const reasonDeepLink = `/marketplace/view/${encodeURIComponent(appCode)}/?${reasonParams.toString()}`;
 

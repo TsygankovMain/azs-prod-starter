@@ -171,6 +171,26 @@ const parsePlacementOptions = ($frame: B24Frame): Record<string, unknown> => {
   return {}
 }
 
+const resolveContextPath = ($frame: B24Frame): string => {
+  const SAFE_PATH_RE = /^\/(admin|reason)\/\d+$/
+  const candidates: unknown[] = [
+    route.query.path,
+    route.query['params[path]'],
+  ]
+  const placementOptions = parsePlacementOptions($frame)
+  candidates.push(
+    placementOptions.path,
+    placementOptions['params[path]'],
+  )
+  for (const raw of candidates) {
+    const s = String(raw || '').trim()
+    if (SAFE_PATH_RE.test(s)) {
+      return s
+    }
+  }
+  return ''
+}
+
 const resolveContextReportId = ($frame: B24Frame): number => {
   const direct = parsePositiveInt(route.query.reportId)
   if (direct > 0) {
@@ -288,6 +308,12 @@ onMounted(async () => {
     initStepIndex.value = 2
 
     // Step 2: navigate to appropriate screen
+    const contextPath = resolveContextPath($b24)
+    if (contextPath) {
+      await navigateTo(contextPath)
+      return
+    }
+
     if (contextReportId > 0) {
       await navigateTo(`/admin/${contextReportId}`)
       return
