@@ -15,6 +15,7 @@ const route = useRoute()
 let $b24: null | B24Frame = null
 
 const isInit = ref(false)
+const isAzsAdminWaiting = ref(false)
 const isLoading = ref(false)
 const healthStatus = ref<'unknown' | 'ok' | 'error'>('unknown')
 const healthText = ref('Проверка API...')
@@ -105,6 +106,21 @@ const openAdminReport = async () => {
     return
   }
   homeNotice.value = 'Нет активного отчёта для загрузки. Дождитесь уведомления бота или создайте отчёт вручную из раздела Проверка.'
+}
+
+const recheckAdminReport = async () => {
+  homeNotice.value = ''
+  isAzsAdminWaiting.value = false
+  isLoading.value = true
+  initStepIndex.value = 2
+  try {
+    const redirected = await openMyActiveReportIfAny()
+    if (!redirected) {
+      isAzsAdminWaiting.value = true
+    }
+  } finally {
+    isLoading.value = false
+  }
 }
 
 const openScreen = async (screen: { key: string, path: string }) => {
@@ -273,6 +289,10 @@ onMounted(async () => {
       if (redirectedToActive) {
         return
       }
+      // Нет активного отчёта — показываем экран ожидания вместо меню
+      initStepIndex.value = 3
+      isAzsAdminWaiting.value = true
+      return
     }
     initStepIndex.value = 3
     isInit.value = true
@@ -380,9 +400,42 @@ onMounted(async () => {
       </template>
     </B24Card>
 
+    <!-- Экран ожидания для azs_admin: нет активного отчёта -->
+    <B24Card v-if="isAzsAdminWaiting">
+      <template #header>
+        <div class="flex flex-row items-center justify-between gap-3">
+          <div>
+            <ProseH2>Фото-отчёты АЗС</ProseH2>
+            <ProseP>Ожидание задания</ProseP>
+          </div>
+          <B24Badge :color="healthStatus === 'ok' ? 'air-primary-success' : (healthStatus === 'error' ? 'air-primary-alert' : 'air-secondary')">
+            {{ healthText }}
+          </B24Badge>
+        </div>
+      </template>
+      <B24Alert
+        color="air-secondary"
+        title="Нет активного отчёта"
+        description="На данный момент для вас нет активного задания на загрузку фото. Дождитесь уведомления от бота или обратитесь к проверяющему."
+      />
+      <template #footer>
+        <div class="flex flex-row items-center justify-between w-full gap-3">
+          <ProseP class="text-[12px] text-gray-500">
+            Пользователь: {{ userStore.id || 'unknown' }} | Роль: {{ currentRole }}
+          </ProseP>
+          <B24Button
+            color="air-secondary"
+            label="Проверить снова"
+            loading-auto
+            @click="recheckAdminReport"
+          />
+        </div>
+      </template>
+    </B24Card>
+
     <!-- Not initialised and not loading — something went wrong early -->
     <B24Alert
-      v-if="!isInit && !isLoading"
+      v-if="!isInit && !isAzsAdminWaiting && !isLoading"
       color="air-primary-alert"
       title="Инициализация не завершена"
       description="Проверьте запуск через Bitrix24 iframe и доступность backend."

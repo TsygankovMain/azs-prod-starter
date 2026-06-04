@@ -61,6 +61,7 @@ const cameraBusy = ref(false)
 const cameraVideoEl = ref<HTMLVideoElement | null>(null)
 const cameraStream = ref<MediaStream | null>(null)
 const isSubmitting = ref(false)
+const hasSettingsAccess = ref(false)
 const submitError = ref('')
 
 const photoSlots = reactive<SlotState[]>([])
@@ -706,6 +707,12 @@ onMounted(async () => {
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
     await $b24.parent.setTitle(PAGE_TITLE)
+    try {
+      const roleResponse = await apiStore.getMyRole()
+      hasSettingsAccess.value = Boolean(roleResponse?.capabilities?.settings)
+    } catch {
+      // Ошибка получения роли — кнопка остаётся скрытой (безопасный дефолт)
+    }
     await loadReport()
     await nextTick()
     await ensureCameraForActiveSlot()
@@ -765,6 +772,7 @@ const showAllSlots = ref(false)
               @click="leaveReport"
             />
             <B24Button
+              v-if="hasSettingsAccess"
               color="air-primary"
               variant="outline"
               size="xs"
