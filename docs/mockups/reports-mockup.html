@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Порядок на АЗС — Отчёты (мокап)</title>
+<style>
+  :root{
+    --bg:#eef1f4; --card:#ffffff; --ink:#0f2742; --muted:#6b7a8d; --line:#e3e8ee;
+    --pri:#2a6bd4; --pri-soft:#eaf1fc;
+    --done:#1fa363; --done-soft:#e6f5ee;
+    --exp:#e0533b; --exp-soft:#fbe9e5;
+    --prog:#e0a020; --prog-soft:#fcf3e0;
+    --new:#7a8aa0; --new-soft:#eef1f5;
+    --fail:#5b6675; --fail-soft:#e9ebef;
+    --shadow:0 1px 2px rgba(16,40,70,.06),0 6px 20px rgba(16,40,70,.06);
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    background:var(--bg); color:var(--ink); font-size:14px; line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--pri);text-decoration:none}
+
+  /* top bar */
+  .topbar{
+    height:54px; background:#13315c; color:#fff; display:flex; align-items:center;
+    padding:0 18px; gap:12px; position:sticky; top:0; z-index:30;
+  }
+  .topbar .brand{font-weight:700;letter-spacing:.2px;display:flex;align-items:center;gap:9px}
+  .topbar .brand .dot{width:10px;height:10px;border-radius:3px;background:#3bd07a;box-shadow:0 0 0 3px rgba(59,208,122,.25)}
+  .topbar .sub{color:#9fb6d6;font-weight:500;font-size:12.5px}
+  .topbar .spacer{flex:1}
+  .demo-badge{background:#f0b429;color:#3a2c00;font-weight:700;font-size:11px;padding:4px 9px;border-radius:20px;letter-spacing:.3px}
+  .topbar .when{color:#cdd9ea;font-size:12.5px}
+
+  /* layout */
+  .layout{display:flex;min-height:calc(100vh - 54px)}
+  .nav{
+    width:248px; background:#fff; border-right:1px solid var(--line); padding:14px 10px;
+    position:sticky; top:54px; height:calc(100vh - 54px); overflow:auto; flex-shrink:0;
+  }
+  .nav .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);padding:8px 12px 6px}
+  .nav button{
+    width:100%; text-align:left; border:0; background:transparent; cursor:pointer;
+    display:flex; gap:11px; align-items:center; padding:11px 12px; border-radius:10px;
+    color:#33485f; font-size:13.5px; font-weight:600; margin-bottom:2px;
+  }
+  .nav button .ico{width:20px;height:20px;flex-shrink:0;color:#90a0b3}
+  .nav button:hover{background:#f2f5f9}
+  .nav button.active{background:var(--pri-soft);color:var(--pri)}
+  .nav button.active .ico{color:var(--pri)}
+  .nav button .n{display:block}
+  .nav button .d{display:block;font-weight:500;font-size:11.5px;color:var(--muted);margin-top:1px}
+  .nav button.active .d{color:#5f86c4}
+
+  .main{flex:1;padding:22px 26px;max-width:1180px;margin:0 auto;width:100%}
+  .page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap}
+  .page-head h1{font-size:21px;margin:0 0 3px}
+  .page-head p{margin:0;color:var(--muted);font-size:13px}
+  .src{font-size:11.5px;color:#8294a6;background:#fff;border:1px solid var(--line);padding:3px 9px;border-radius:20px}
+
+  /* filter bar */
+  .filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
+  .seg{display:inline-flex;background:#fff;border:1px solid var(--line);border-radius:10px;padding:3px;box-shadow:var(--shadow)}
+  .seg button{border:0;background:transparent;padding:7px 13px;border-radius:8px;font-weight:600;font-size:12.5px;color:#5a6b7e;cursor:pointer}
+  .seg button.active{background:var(--pri);color:#fff}
+  .dd{position:relative}
+  .dd>.btn{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-weight:600;font-size:12.5px;color:#33485f;cursor:pointer;box-shadow:var(--shadow)}
+  .dd .menu{position:absolute;top:44px;left:0;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 36px rgba(16,40,70,.16);padding:8px;min-width:240px;z-index:20;display:none;max-height:300px;overflow:auto}
+  .dd.open .menu{display:block}
+  .dd .menu label{display:flex;gap:9px;align-items:center;padding:7px 9px;border-radius:8px;cursor:pointer;font-weight:500}
+  .dd .menu label:hover{background:#f2f5f9}
+  .dd .menu .mini{margin-left:auto;color:var(--muted);font-size:12px}
+
+  /* cards & grid */
+  .grid{display:grid;gap:14px}
+  .kpis{grid-template-columns:repeat(5,1fr)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+  .kpi{padding:15px 16px}
+  .kpi .t{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+  .kpi .v{font-size:30px;font-weight:800;margin-top:6px;letter-spacing:-.5px}
+  .kpi .s{font-size:12px;color:var(--muted);margin-top:2px}
+  .kpi.brd{border-left:4px solid var(--line)}
+  .kpi.k-done{border-left-color:var(--done)} .kpi.k-done .v{color:var(--done)}
+  .kpi.k-exp{border-left-color:var(--exp)} .kpi.k-exp .v{color:var(--exp)}
+  .kpi.k-prog{border-left-color:var(--prog)} .kpi.k-prog .v{color:var(--prog)}
+  .kpi.k-fail{border-left-color:var(--fail)} .kpi.k-fail .v{color:var(--fail)}
+  .kpi.k-pri{border-left-color:var(--pri)} .kpi.k-pri .v{color:var(--pri)}
+
+  .row2{display:grid;grid-template-columns:320px 1fr;gap:14px;align-items:stretch}
+  .panel{padding:16px 18px}
+  .panel h3{margin:0 0 14px;font-size:14.5px}
+  .panel .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:#566678}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+
+  /* ring */
+  .ring-wrap{display:flex;align-items:center;gap:18px}
+  .ring{position:relative;width:128px;height:128px;flex-shrink:0}
+  .ring .lbl{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .ring .lbl b{font-size:30px;font-weight:800;letter-spacing:-1px}
+  .ring .lbl span{font-size:11.5px;color:var(--muted)}
+
+  /* table */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  thead th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);font-weight:700;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap;cursor:default}
+  thead th.sortable{cursor:pointer;user-select:none}
+  thead th.sortable:hover{color:var(--pri)}
+  tbody td{padding:11px 12px;border-bottom:1px solid #f0f3f6;vertical-align:middle}
+  tbody tr:last-child td{border-bottom:0}
+  tbody tr:hover{background:#fafbfd}
+  .azs-cell b{display:block}
+  .azs-cell span{color:var(--muted);font-size:12px}
+  .mono{font-variant-numeric:tabular-nums}
+  .right{text-align:right}
+  .center{text-align:center}
+
+  .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;padding:4px 10px;border-radius:20px;white-space:nowrap}
+  .badge::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.9}
+  .b-done{color:var(--done);background:var(--done-soft)}
+  .b-exp{color:var(--exp);background:var(--exp-soft)}
+  .b-prog{color:var(--prog);background:var(--prog-soft)}
+  .b-new{color:var(--new);background:var(--new-soft)}
+  .b-fail{color:var(--fail);background:var(--fail-soft)}
+
+  .pct-bar{display:flex;align-items:center;gap:9px;min-width:130px}
+  .pct-bar .track{flex:1;height:8px;border-radius:6px;background:#eef2f6;overflow:hidden}
+  .pct-bar .fill{height:100%;border-radius:6px}
+  .pct-bar b{font-variant-numeric:tabular-nums;min-width:38px;text-align:right}
+
+  .photos-row{display:flex;gap:5px}
+  .pdot{width:13px;height:13px;border-radius:4px;background:#dce3ea}
+  .pdot.on{background:var(--done)}
+
+  /* charts */
+  svg{display:block;overflow:visible}
+  .chart-card{padding:16px 18px}
+  .callout{margin-top:14px;background:var(--done-soft);border:1px solid #bfe6d2;border-radius:12px;padding:12px 14px;color:#14784e;font-size:13px;display:flex;gap:10px;align-items:flex-start}
+  .callout b{color:#0c5e3c}
+
+  /* photo tiles */
+  .photo-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+  .tile{position:relative;border-radius:11px;aspect-ratio:4/3;overflow:hidden;border:1px solid rgba(0,0,0,.06);display:flex;align-items:flex-end;color:#fff}
+  .tile .cap{position:relative;z-index:2;padding:9px 10px;width:100%;background:linear-gradient(180deg,transparent,rgba(0,0,0,.45));font-size:12px;font-weight:600}
+  .tile .time{position:absolute;top:8px;right:8px;z-index:2;background:rgba(0,0,0,.45);backdrop-filter:blur(2px);font-size:10.5px;padding:2px 7px;border-radius:20px;font-weight:700;letter-spacing:.2px}
+  .tile .lens{position:absolute;top:8px;left:8px;z-index:2;width:18px;height:18px;opacity:.85}
+
+  /* drilldown */
+  .mini-kpis{grid-template-columns:repeat(4,1fr)}
+  .mini{padding:13px 14px}
+  .mini .t{font-size:11.5px;color:var(--muted);font-weight:600}
+  .mini .v{font-size:23px;font-weight:800;margin-top:3px}
+  .timeline{position:relative;padding-left:6px}
+  .tl-item{display:grid;grid-template-columns:88px 1fr;gap:14px;padding:13px 0;border-bottom:1px solid #f0f3f6}
+  .tl-item:last-child{border-bottom:0}
+  .tl-date{font-weight:700;font-size:13px}
+  .tl-date span{display:block;color:var(--muted);font-weight:500;font-size:11.5px}
+  .tl-track{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px}
+  .chip{background:#f1f4f8;border-radius:8px;padding:4px 9px;font-weight:600;color:#46586c}
+  .chip.ok{background:var(--done-soft);color:var(--done)}
+  .chip.bad{background:var(--exp-soft);color:var(--exp)}
+  .arrow{color:#b6c1cd}
+
+  .wall-block{padding:14px 16px;margin-bottom:14px}
+  .wall-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:11px;flex-wrap:wrap;gap:8px}
+  .wall-head .who{color:var(--muted);font-size:12.5px}
+  .wall-head b{font-size:14px}
+
+  .chips-filter{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:16px}
+  .chips-filter button{border:1px solid var(--line);background:#fff;border-radius:20px;padding:6px 13px;font-size:12.5px;font-weight:600;color:#46586c;cursor:pointer}
+  .chips-filter button.active{background:var(--pri);color:#fff;border-color:var(--pri)}
+
+  .hide{display:none!important}
+  .note{color:var(--muted);font-size:12px;margin-top:10px}
+
+  /* responsive */
+  @media(max-width:900px){
+    .nav{position:fixed;bottom:0;top:auto;left:0;right:0;width:100%;height:auto;display:flex;gap:4px;overflow-x:auto;border-top:1px solid var(--line);border-right:0;padding:8px;z-index:40}
+    .nav .lbl{display:none}
+    .nav button{flex-direction:column;align-items:center;gap:4px;min-width:74px;padding:8px 6px;font-size:11px;text-align:center}
+    .nav button .d{display:none}
+    .layout{display:block}
+    .main{padding:16px 14px 92px}
+    .kpis{grid-template-columns:repeat(2,1fr)}
+    .row2{grid-template-columns:1fr}
+    .mini-kpis{grid-template-columns:repeat(2,1fr)}
+    .photo-grid{grid-template-columns:repeat(2,1fr)}
+    .tl-item{grid-template-columns:1fr}
+    .hide-sm{display:none}
+  }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="brand"><span class="dot"></span>Порядок на АЗС</span>
+    <span class="sub hide-sm">· Отчёты</span>
+    <span class="spacer"></span>
+    <span class="demo-badge">ДЕМО-ДАННЫЕ</span>
+    <span class="when hide-sm" id="topDate">Сегодня</span>
+  </div>
+
+  <div class="layout">
+    <nav class="nav" id="nav">
+      <div class="lbl">Отчёты</div>
+      <!-- buttons injected -->
+    </nav>
+
+    <main class="main">
+      <!-- R1: Daily summary -->
+      <section data-report="r1">
+        <div class="page-head">
+          <div><h1>Сводка за день</h1><p>Операционный статус прохождения отчётов по всем АЗС</p></div>
+          <span class="src">источник: dispatch_log · getSummary + list</span>
+        </div>
+        <div class="filters">
+          <div class="seg" data-seg="period1">
+            <button data-v="today" class="active">Сегодня</button>
+            <button data-v="yest">Вчера</button>
+            <button data-v="7">7 дней</button>
+          </div>
+          <div class="dd" id="azsFilter1">
+            <button class="btn" type="button">▾ АЗС: <span class="cnt">все</span></button>
+            <div class="menu"></div>
+          </div>
+        </div>
+
+        <div class="grid kpis" id="r1kpis" style="margin-bottom:14px"></div>
+
+        <div class="row2" style="margin-bottom:14px">
+          <div class="card panel">
+            <h3>Выполнение</h3>
+            <div class="ring-wrap">
+              <div class="ring" id="r1ring"></div>
+              <div>
+                <div style="font-size:12px;color:var(--muted)">Сдано вовремя</div>
+                <div id="r1ringNote" style="font-weight:700;font-size:15px;margin-top:2px"></div>
+                <div class="legend" style="flex-direction:column;gap:6px;margin-top:12px">
+                  <span><i style="background:var(--done)"></i>Сдано</span>
+                  <span><i style="background:var(--prog)"></i>В работе</span>
+                  <span><i style="background:var(--exp)"></i>Просрочено</span>
+                  <span><i style="background:var(--new)"></i>Ожидает</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card panel">
+            <h3>Распределение по статусам</h3>
+            <div id="r1stack"></div>
+            <div class="legend" id="r1stackLeg"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <table id="r1table">
+            <thead><tr>
+              <th>АЗС</th><th>Управляющий</th><th>Уведомление</th><th>Дедлайн</th>
+              <th>Сдано</th><th class="center">Фото</th><th>Статус</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- R2: Ranking -->
+      <section data-report="r2" class="hide">
+        <div class="page-head">
+          <div><h1>Рейтинг дисциплины АЗС</h1><p>Кто стабильно держит порядок, а кому нужна поддержка</p></div>
+          <span class="src">источник: агрегация dispatch_log по АЗС</span>
+        </div>
+        <div class="filters">
+          <div class="seg" data-seg="period2">
+            <button data-v="7">7 дней</button>
+            <button data-v="30" class="active">30 дней</button>
+            <button data-v="90">90 дней</button>
+          </div>
+          <span class="note" style="margin:0">Клик по заголовку столбца — сортировка</span>
+        </div>
+        <div class="card">
+          <table id="r2table">
+            <thead><tr>
+              <th>#</th><th>АЗС</th><th class="hide-sm">Управляющий</th>
+              <th class="sortable right" data-k="total">Всего</th>
+              <th class="sortable right" data-k="onTime">Вовремя</th>
+              <th class="sortable right" data-k="late">Просрочено</th>
+              <th class="sortable" data-k="pct">% вовремя</th>
+              <th class="sortable right hide-sm" data-k="avg">Ср. время</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="note">«Ср. время» — среднее от уведомления (scheduled_at) до сдачи (updated_at) по сданным отчётам.</p>
+      </section>
+
+      <!-- R3: Trend -->
+      <section data-report="r3" class="hide">
+        <div class="page-head">
+          <div><h1>Динамика дисциплины</h1><p>Как меняется доля отчётов, сданных вовремя</p></div>
+          <span class="src">источник: getSummary по дням</span>
+        </div>
+        <div class="filters">
+          <div class="seg" data-seg="period3">
+            <button data-v="7">7 дней</button>
+            <button data-v="30" class="active">30 дней</button>
+            <button data-v="90">90 дней</button>
+          </div>
+        </div>
+        <div class="card chart-card">
+          <h3 style="margin-bottom:4px">Доля сданных вовремя, %</h3>
+          <div id="r3line"></div>
+          <div class="callout" id="r3callout"></div>
+        </div>
+        <div class="card chart-card" style="margin-top:14px">
+          <h3>Сдано и просрочено по дням</h3>
+          <div id="r3bars"></div>
+          <div class="legend"><span><i style="background:var(--done)"></i>Сдано</span><span><i style="background:var(--exp)"></i>Просрочено</span></div>
+        </div>
+      </section>
+
+      <!-- R4: AZS drilldown -->
+      <section data-report="r4" class="hide">
+        <div class="page-head">
+          <div><h1>Карточка АЗС</h1><p>Полный таймлайн прохождения и фото-доказательства</p></div>
+          <span class="src">источник: dispatch_log + report_photo + dispatch_plan</span>
+        </div>
+        <div class="filters">
+          <div class="dd" id="azsPick">
+            <button class="btn" type="button">▾ <span class="cur">АЗС</span></button>
+            <div class="menu"></div>
+          </div>
+          <span class="note" style="margin:0">за 30 дней</span>
+        </div>
+        <div class="grid mini-kpis" id="r4kpis" style="margin-bottom:14px"></div>
+        <div class="card panel" style="margin-bottom:14px">
+          <h3>Последний отчёт · <span id="r4lastDate"></span></h3>
+          <div class="photo-grid" id="r4photos"></div>
+          <p class="note">Время в углу плитки — момент съёмки (<b>exif_at</b>). Фото делается только живой камерой, поэтому это доказательство «снято на месте», а не загружено из галереи.</p>
+        </div>
+        <div class="card panel">
+          <h3>История прохождений</h3>
+          <div class="timeline" id="r4timeline"></div>
+        </div>
+      </section>
+
+      <!-- R5: Photo wall -->
+      <section data-report="r5" class="hide">
+        <div class="page-head">
+          <div><h1>Фото-витрина дня</h1><p>Все сданные сегодня фото в одном экране — видно порядок «как есть»</p></div>
+          <span class="src">источник: report_photo + Bitrix Disk</span>
+        </div>
+        <div class="chips-filter" id="r5chips"></div>
+        <div id="r5wall"></div>
+      </section>
+    </main>
+  </div>
+
+<script>
+/* ---------- icons ---------- */
+const IC = {
+  r1:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>',
+  r2:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
+  r3:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17l5-6 4 4 7-9"/><path d="M21 6v5h-5"/></svg>',
+  r4:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="9" r="3"/><path d="M12 2a7 7 0 0 0-7 7c0 4 7 13 7 13s7-9 7-13a7 7 0 0 0-7-7z"/></svg>',
+  r5:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="M3 17l5-4 4 3 3-2 6 4"/></svg>',
+  lens:'<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="13" r="3.2"/><path d="M5 8h3l1.5-2h5L16 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/></svg>'
+};
+const NAVS = [
+  {id:'r1',n:'Сводка за день',d:'операционка'},
+  {id:'r2',n:'Рейтинг АЗС',d:'дисциплина'},
+  {id:'r3',n:'Динамика',d:'тренд по дням'},
+  {id:'r4',n:'Карточка АЗС',d:'таймлайн + фото'},
+  {id:'r5',n:'Фото-витрина',d:'фото за день'},
+];
+
+/* ---------- demo data ---------- */
+const AZS = [
+  {id:'12', name:'АЗС №12 · Тверь-Север',   mgr:'Горячева Е.'},
+  {id:'7',  name:'АЗС №7 · Кашира, М4',     mgr:'Читайкина С.'},
+  {id:'21', name:'АЗС №21 · Подольск',      mgr:'Харина К.'},
+  {id:'3',  name:'АЗС №3 · Серпухов',       mgr:'Иванов П.'},
+  {id:'15', name:'АЗС №15 · Домодедово',    mgr:'Петрова О.'},
+  {id:'9',  name:'АЗС №9 · Клин',           mgr:'Сидорова Н.'},
+  {id:'18', name:'АЗС №18 · Зеленоград',    mgr:'Кузнецов А.'},
+  {id:'5',  name:'АЗС №5 · Истра',          mgr:'Морозова Л.'},
+];
+const azsById = Object.fromEntries(AZS.map(a=>[a.id,a]));
+const SLOTS = [
+  {code:'hall',  label:'Торговый зал',   grad:'linear-gradient(135deg,#6a8caf,#34506b)'},
+  {code:'wc',    label:'Санузел',        grad:'linear-gradient(135deg,#56b3a6,#2c7a6f)'},
+  {code:'cash',  label:'Кассовая зона',  grad:'linear-gradient(135deg,#c9a24b,#8a6d22)'},
+  {code:'trk',   label:'ТРК (колонки)',  grad:'linear-gradient(135deg,#c2705b,#8a3f2e)'},
+  {code:'area',  label:'Территория',     grad:'linear-gradient(135deg,#7d9b5a,#4c6a31)'},
+];
+const STATUS = {
+  done:{label:'Сдано',b:'b-done',c:'var(--done)'},
+  expired:{label:'Просрочено',b:'b-exp',c:'var(--exp)'},
+  in_progress:{label:'В работе',b:'b-prog',c:'var(--prog)'},
+  new:{label:'Ожидает',b:'b-new',c:'var(--new)'},
+  failed:{label:'Ошибка',b:'b-fail',c:'var(--fail)'},
+};
+
+// R1 — today's rows
+const R1_TODAY = [
+  {id:'12', notif:'08:47', deadline:'09:47', done:'09:12', status:'done',        photos:5},
+  {id:'7',  notif:'09:05', deadline:'10:05', done:'09:58', status:'done',        photos:5},
+  {id:'21', notif:'10:22', deadline:'11:22', done:'10:39', status:'done',        photos:5},
+  {id:'3',  notif:'11:10', deadline:'12:10', done:'11:33', status:'done',        photos:5},
+  {id:'15', notif:'12:40', deadline:'13:40', done:null,    status:'in_progress', photos:2},
+  {id:'9',  notif:'13:15', deadline:'14:15', done:'13:52', status:'done',        photos:5},
+  {id:'18', notif:'14:05', deadline:'15:05', done:null,    status:'expired',     photos:0},
+  {id:'5',  notif:'15:20', deadline:'16:20', done:null,    status:'new',         photos:0},
+];
+// alt datasets for period toggle (yesterday / 7d aggregate as "today-like" rows would differ; we just scale summary)
+const R1_SETS = {
+  today:{rows:R1_TODAY, title:'Сводка за день', note:'Сегодня, 04.06.2026 · день не завершён'},
+  yest: {rows:R1_TODAY.map(r=>({...r,status:r.id==='18'?'done':r.status,done:r.done||'17:'+(10+(+r.id%40)),photos:5})), title:'Сводка за вчера', note:'Вчера, 03.06.2026'},
+  '7':  {rows:R1_TODAY, title:'Сводка за 7 дней', note:'29.05 – 04.06.2026 · 56 слотов', scale:7},
+};
+
+// R2 — per-AZS aggregates for 30d (base). 7/90 derived by scale.
+const R2_30 = {
+  '12':{total:30,onTime:28,late:2, avg:23},
+  '7' :{total:30,onTime:21,late:9, avg:37},
+  '21':{total:30,onTime:29,late:1, avg:19},
+  '3' :{total:30,onTime:27,late:3, avg:26},
+  '15':{total:30,onTime:25,late:5, avg:31},
+  '9' :{total:30,onTime:30,late:0, avg:17},
+  '18':{total:30,onTime:19,late:11,avg:41},
+  '5' :{total:30,onTime:26,late:4, avg:28},
+};
+
+// R3 — 90-day trend, deterministic rising series
+function rng(seed){let s=seed>>>0;return()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296;}}
+const R3 = (()=>{
+  const r=rng(20260604); const days=90, pct=[],done=[],late=[],labels=[];
+  for(let i=0;i<days;i++){
+    const base=58+i*0.42;                       // 58 → ~96
+    const noise=(r()-0.5)*7;
+    let p=Math.max(45,Math.min(99,Math.round(base+noise)));
+    const total=7+Math.round(r()*1.4);          // 7–8 АЗС
+    const lt=Math.max(0,Math.round(total*(1-p/100)));
+    const dn=total-lt;
+    pct.push(p); done.push(dn); late.push(lt);
+    labels.push(i);
+  }
+  return {pct,done,late,labels,days};
+})();
+
+// R4 — per-AZS history (generated) + last report photos
+function histFor(id){
+  const r=rng(700+(+id)); const out=[]; const today=new Date(2026,5,4);
+  for(let i=0;i<8;i++){
+    const d=new Date(today); d.setDate(d.getDate()-i);
+    const late = r()< (id==='7'?0.30:(id==='18'?0.36:0.12));
+    const nH=8+Math.floor(r()*8), nM=Math.floor(r()*60);
+    const notif=`${String(nH).padStart(2,'0')}:${String(nM).padStart(2,'0')}`;
+    const dur = late? 58+Math.floor(r()*25) : 14+Math.floor(r()*22);
+    const dm=(nH*60+nM+dur);
+    const done = late && r()<0.5 ? null : `${String(Math.floor(dm/60)).padStart(2,'0')}:${String(dm%60).padStart(2,'0')}`;
+    out.push({
+      date:`${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}`,
+      dow:['вс','пн','вт','ср','чт','пт','сб'][d.getDay()],
+      notif, done, late, status: done?(late?'done':'done'):'expired', dur
+    });
+  }
+  return out;
+}
+
+/* ---------- helpers ---------- */
+const $=(s,r=document)=>r.querySelector(s);
+const $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const el=(h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstElementChild;};
+const pctColor=(p)=>p>=90?'var(--done)':p>=75?'var(--prog)':'var(--exp)';
+const fmtMin=(m)=>`${m} мин`;
+
+/* ---------- nav ---------- */
+const nav=$('#nav');
+NAVS.forEach((it,i)=>{
+  const b=el(`<button data-go="${it.id}" class="${i===0?'active':''}">${IC[it.id]}<span><span class="n">${it.n}</span><span class="d">${it.d}</span></span></button>`);
+  b.addEventListener('click',()=>showReport(it.id));
+  nav.appendChild(b);
+});
+function showReport(id){
+  $$('section[data-report]').forEach(s=>s.classList.toggle('hide',s.dataset.report!==id));
+  $$('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.go===id));
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+/* ---------- R1 ---------- */
+function summaryOf(rows){
+  const s={total:rows.length,done:0,expired:0,in_progress:0,new:0,failed:0};
+  rows.forEach(r=>{s[r.status]=(s[r.status]||0)+1;});
+  s.open=s.in_progress+s.new; return s;
+}
+function renderR1(){
+  const setKey=$('[data-seg="period1"] .active').dataset.v;
+  const set=R1_SETS[setKey]; let rows=set.rows;
+  const sel=r1Filter; if(sel.size) rows=rows.filter(r=>sel.has(r.id));
+  $('section[data-report="r1"] h1').textContent=set.title;
+  $('#topDate').textContent=set.note.split('·')[0].trim();
+
+  const sc=set.scale||1;
+  const s=summaryOf(rows);
+  const mul=(n)=>n*sc;
+  const kpi=[
+    {t:'Запланировано',v:mul(s.total),s:'слотов',cls:'k-pri'},
+    {t:'Сдано',v:mul(s.done),s:'отчётов',cls:'k-done'},
+    {t:'Просрочено',v:mul(s.expired),s:'не сдано в срок',cls:'k-exp'},
+    {t:'В работе',v:mul(s.open),s:'открыто сейчас',cls:'k-prog'},
+    {t:'Ошибки',v:mul(s.failed),s:'сбой отправки',cls:'k-fail'},
+  ];
+  $('#r1kpis').innerHTML=kpi.map(k=>`<div class="card kpi brd ${k.cls}"><div class="t">${k.t}</div><div class="v">${k.v}</div><div class="s">${k.s}</div></div>`).join('');
+
+  // ring
+  const pct=s.total?Math.round(s.done/s.total*100):0;
+  $('#r1ring').innerHTML=ringSvg(pct,'var(--done)');
+  $('#r1ringNote').textContent=`${s.done} из ${s.total} АЗС`;
+
+  // stacked bar
+  $('#r1stack').innerHTML=stackSvg([
+    {n:s.done,c:'var(--done)'},{n:s.in_progress,c:'var(--prog)'},
+    {n:s.expired,c:'var(--exp)'},{n:s.new,c:'var(--new)'},
+  ],s.total);
+  $('#r1stackLeg').innerHTML=[['Сдано',s.done,'var(--done)'],['В работе',s.in_progress,'var(--prog)'],['Просрочено',s.expired,'var(--exp)'],['Ожидает',s.new,'var(--new)']]
+    .map(([l,n,c])=>`<span><i style="background:${c}"></i>${l} — <b>${n}</b></span>`).join('');
+
+  // table
+  const tb=$('#r1table tbody'); tb.innerHTML='';
+  rows.forEach(r=>{
+    const a=azsById[r.id]; const st=STATUS[r.status];
+    tb.appendChild(el(`<tr>
+      <td class="azs-cell"><b>${a.name}</b><span>ID ${a.id}</span></td>
+      <td>${a.mgr}</td>
+      <td class="mono">${r.notif}</td>
+      <td class="mono">${r.deadline}</td>
+      <td class="mono">${r.done?r.done:'—'}</td>
+      <td class="center"><div class="photos-row" style="justify-content:center">${pdots(r.photos)}</div></td>
+      <td><span class="badge ${st.b}">${st.label}</span></td>
+    </tr>`));
+  });
+}
+function pdots(n){let h='';for(let i=0;i<5;i++)h+=`<span class="pdot ${i<n?'on':''}"></span>`;return h;}
+
+/* ---------- R2 ---------- */
+let r2sort={k:'pct',dir:-1};
+function renderR2(){
+  const per=$('[data-seg="period2"] .active').dataset.v;
+  const scale=per==='7'?(7/30):per==='90'?3:1;
+  const rows=AZS.map(a=>{
+    const base=R2_30[a.id];
+    const total=Math.round(base.total*scale);
+    const onTime=Math.round(base.onTime*scale);
+    const late=total-onTime;
+    return {id:a.id,name:a.name,mgr:a.mgr,total,onTime,late,avg:base.avg,pct:Math.round(onTime/total*100)};
+  });
+  rows.sort((x,y)=>(x[r2sort.k]-y[r2sort.k])*r2sort.dir || y.pct-x.pct);
+  const tb=$('#r2table tbody'); tb.innerHTML='';
+  rows.forEach((r,i)=>{
+    tb.appendChild(el(`<tr>
+      <td class="mono" style="color:var(--muted)">${i+1}</td>
+      <td class="azs-cell"><b>${r.name}</b><span class="hide-sm">ID ${r.id}</span></td>
+      <td class="hide-sm">${r.mgr}</td>
+      <td class="right mono">${r.total}</td>
+      <td class="right mono" style="color:var(--done)">${r.onTime}</td>
+      <td class="right mono" style="color:${r.late?'var(--exp)':'var(--muted)'}">${r.late}</td>
+      <td><div class="pct-bar"><div class="track"><div class="fill" style="width:${r.pct}%;background:${pctColor(r.pct)}"></div></div><b style="color:${pctColor(r.pct)}">${r.pct}%</b></div></td>
+      <td class="right mono hide-sm">${fmtMin(r.avg)}</td>
+    </tr>`));
+  });
+}
+
+/* ---------- R3 ---------- */
+function renderR3(){
+  const per=+$('[data-seg="period3"] .active').dataset.v;
+  const n=per; const off=R3.days-n;
+  const pct=R3.pct.slice(off), done=R3.done.slice(off), late=R3.late.slice(off);
+  $('#r3line').innerHTML=lineSvg(pct);
+  const first=pct[0], last=pct[pct.length-1], delta=last-first;
+  $('#r3callout').innerHTML=`<span style="font-size:18px;line-height:1">📈</span><div>Дисциплина ${delta>=0?'выросла':'снизилась'} с <b>${first}%</b> до <b>${last}%</b> за ${n} дней${delta>=0?' обкатки':''}. ${delta>=0?'Это прямой аргумент в пользу «дайте системе время» — порядок входит в привычку.':''}</div>`;
+  $('#r3bars').innerHTML=groupBars(done,late);
+}
+
+/* ---------- R4 ---------- */
+let r4id='7';
+function renderR4(){
+  const a=azsById[r4id]; $('#azsPick .cur').textContent=a.name;
+  const agg=R2_30[r4id]; const pct=Math.round(agg.onTime/agg.total*100);
+  $('#r4kpis').innerHTML=[
+    {t:'% вовремя (30д)',v:pct+'%',c:pctColor(pct)},
+    {t:'Среднее время',v:fmtMin(agg.avg),c:'var(--ink)'},
+    {t:'Просрочек',v:agg.late,c:agg.late?'var(--exp)':'var(--done)'},
+    {t:'Сдач всего',v:agg.onTime+ '/' +agg.total,c:'var(--ink)'},
+  ].map(k=>`<div class="card mini"><div class="t">${k.t}</div><div class="v" style="color:${k.c}">${k.v}</div></div>`).join('');
+
+  const hist=histFor(r4id);
+  const lastDone=hist.find(h=>h.done)||hist[0];
+  $('#r4lastDate').textContent=`${lastDone.date} · уведомление ${lastDone.notif}, сдано ${lastDone.done||'—'}`;
+  // photos with exif a bit before done
+  const baseM = lastDone.done? toMin(lastDone.done) : toMin(lastDone.notif)+20;
+  $('#r4photos').innerHTML=SLOTS.map((sl,i)=>{
+    const t=baseM-(SLOTS.length-1-i)*2; // staggered 2-min apart, all before submit
+    return tileHtml(sl, fromMin(t));
+  }).join('');
+
+  const tl=$('#r4timeline'); tl.innerHTML='';
+  hist.forEach(h=>{
+    const ok=!!h.done && !h.late;
+    const track = h.done
+      ? `<span class="chip">уведомление ${h.notif}</span><span class="arrow">→</span><span class="chip ${ok?'ok':''}">сдано ${h.done}</span><span class="arrow">·</span><span class="chip">${fmtMin(h.dur)}</span><span class="chip">5 фото</span>${h.late?'<span class="badge b-exp" style="margin-left:auto">с задержкой</span>':'<span class="badge b-done" style="margin-left:auto">вовремя</span>'}`
+      : `<span class="chip">уведомление ${h.notif}</span><span class="arrow">→</span><span class="chip bad">не сдано</span><span class="badge b-exp" style="margin-left:auto">просрочено</span>`;
+    tl.appendChild(el(`<div class="tl-item"><div class="tl-date">${h.date}<span>${h.dow}</span></div><div class="tl-track">${track}</div></div>`));
+  });
+}
+const toMin=(s)=>{const[a,b]=s.split(':').map(Number);return a*60+b;};
+const fromMin=(m)=>`${String(Math.floor(m/60)).padStart(2,'0')}:${String(((m%60)+60)%60).padStart(2,'0')}`;
+function tileHtml(sl,time){
+  return `<div class="tile" style="background:${sl.grad}">
+    <div class="lens">${IC.lens}</div>
+    <div class="time">📷 ${time}</div>
+    <div class="cap">${sl.label}</div></div>`;
+}
+
+/* ---------- R5 ---------- */
+let r5sel=new Set();
+function renderR5(){
+  // build chips once
+  const chips=$('#r5chips');
+  if(!chips.dataset.built){
+    chips.innerHTML=`<button class="active" data-all>Все АЗС</button>`+AZS.map(a=>`<button data-id="${a.id}">${a.name.split('·')[0].trim()}</button>`).join('');
+    chips.dataset.built='1';
+    chips.addEventListener('click',e=>{
+      const b=e.target.closest('button'); if(!b)return;
+      if(b.hasAttribute('data-all')){r5sel.clear();}
+      else{const id=b.dataset.id; r5sel.has(id)?r5sel.delete(id):r5sel.add(id); if(r5sel.size===0){}}
+      $$('#r5chips button').forEach(x=>{
+        if(x.hasAttribute('data-all'))x.classList.toggle('active',r5sel.size===0);
+        else x.classList.toggle('active',r5sel.has(x.dataset.id));
+      });
+      paintWall();
+    });
+  }
+  paintWall();
+}
+function paintWall(){
+  const doneToday=R1_TODAY.filter(r=>r.status==='done');
+  const list=doneToday.filter(r=>r5sel.size===0||r5sel.has(r.id));
+  const wall=$('#r5wall'); wall.innerHTML='';
+  if(!list.length){wall.innerHTML='<div class="card panel" style="text-align:center;color:var(--muted)">Нет сданных фото под фильтр</div>';return;}
+  list.forEach(r=>{
+    const a=azsById[r.id]; const baseM=toMin(r.done);
+    const tiles=SLOTS.map((sl,i)=>tileHtml(sl,fromMin(baseM-(SLOTS.length-1-i)*2))).join('');
+    wall.appendChild(el(`<div class="card wall-block">
+      <div class="wall-head"><b>${a.name}</b><span class="who">${a.mgr} · сдано в ${r.done} · 5 фото</span></div>
+      <div class="photo-grid">${tiles}</div>
+    </div>`));
+  });
+}
+
+/* ---------- svg builders ---------- */
+function ringSvg(pct,color){
+  const R=54,C=2*Math.PI*R, off=C*(1-pct/100);
+  return `<svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="${R}" fill="none" stroke="#eef2f6" stroke-width="14"/>
+    <circle cx="64" cy="64" r="${R}" fill="none" stroke="${color}" stroke-width="14" stroke-linecap="round"
+      stroke-dasharray="${C}" stroke-dashoffset="${off}" transform="rotate(-90 64 64)"/></svg>
+    <div class="lbl"><b>${pct}%</b><span>вовремя</span></div>`;
+}
+function stackSvg(parts,total){
+  const W=560,H=34; let x=0; let r='';
+  parts.forEach(p=>{const w=total?p.n/total*W:0; if(w>0){r+=`<rect x="${x}" y="0" width="${Math.max(0,w-2)}" height="${H}" rx="6" fill="${p.c}"><title>${p.n}</title></rect>`;} x+=w;});
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">${r||`<rect width="${W}" height="${H}" rx="6" fill="#eef2f6"/>`}</svg>`;
+}
+function lineSvg(data){
+  const W=820,H=200,pad=28,minV=40,maxV=100;
+  const x=i=>pad+i*(W-pad*2)/(data.length-1);
+  const y=v=>H-pad-(v-minV)/(maxV-minV)*(H-pad*2);
+  let line='',area=`M ${x(0)} ${y(data[0])}`;
+  data.forEach((v,i)=>{line+=`${i?'L':'M'} ${x(i).toFixed(1)} ${y(v).toFixed(1)} `; if(i)area+=`L ${x(i).toFixed(1)} ${y(v).toFixed(1)} `;});
+  area+=`L ${x(data.length-1)} ${H-pad} L ${x(0)} ${H-pad} Z`;
+  let grid='';
+  [50,60,70,80,90,100].forEach(g=>{grid+=`<line x1="${pad}" x2="${W-pad}" y1="${y(g)}" y2="${y(g)}" stroke="#eef2f6"/><text x="2" y="${y(g)+4}" font-size="10" fill="#9aa7b5">${g}</text>`;});
+  let dots='';data.forEach((v,i)=>{ if(data.length<=31||i%3===0||i===data.length-1) dots+=`<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="3" fill="#fff" stroke="var(--pri)" stroke-width="2"><title>день ${i+1}: ${v}%</title></circle>`;});
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%"><defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--pri)" stop-opacity=".22"/><stop offset="1" stop-color="var(--pri)" stop-opacity="0"/></linearGradient></defs>
+    ${grid}<path d="${area}" fill="url(#g1)"/><path d="${line}" fill="none" stroke="var(--pri)" stroke-width="2.5" stroke-linejoin="round"/>${dots}</svg>`;
+}
+function groupBars(done,late){
+  const n=done.length,W=820,H=170,pad=22,gap=n>40?1:3;
+  const bw=(W-pad*2)/n;
+  const max=Math.max(...done.map((d,i)=>d+late[i]),1);
+  const y=v=>H-pad-v/max*(H-pad*2);
+  let bars='';
+  for(let i=0;i<n;i++){
+    const cx=pad+i*bw; const w=bw-gap;
+    const dH=(H-pad)-y(done[i]); const lH=(H-pad)-y(late[i]);
+    bars+=`<rect x="${cx.toFixed(1)}" y="${(y(done[i])-lH).toFixed(1)}" width="${w.toFixed(1)}" height="${dH.toFixed(1)}" fill="var(--done)" rx="2"><title>день ${i+1}: сдано ${done[i]}</title></rect>`;
+    bars+=`<rect x="${cx.toFixed(1)}" y="${y(late[i]).toFixed(1)}" width="${w.toFixed(1)}" height="${lH.toFixed(1)}" fill="var(--exp)" rx="2"><title>день ${i+1}: просрочено ${late[i]}</title></rect>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%">${bars}<line x1="${pad}" x2="${W-pad}" y1="${H-pad}" y2="${H-pad}" stroke="#e3e8ee"/></svg>`;
+}
+
+/* ---------- filters / dropdowns ---------- */
+let r1Filter=new Set();
+function buildAzsMenu(ddSel,onChange){
+  const dd=$(ddSel); const menu=$('.menu',dd);
+  menu.innerHTML=AZS.map(a=>`<label><input type="checkbox" value="${a.id}"> ${a.name} <span class="mini">ID ${a.id}</span></label>`).join('');
+  $('.btn',dd).addEventListener('click',()=>dd.classList.toggle('open'));
+  menu.addEventListener('change',()=>{
+    const set=new Set($$('input:checked',menu).map(i=>i.value));
+    onChange(set);
+  });
+  document.addEventListener('click',e=>{if(!dd.contains(e.target))dd.classList.remove('open');});
+}
+buildAzsMenu('#azsFilter1',(set)=>{r1Filter=set; $('#azsFilter1 .cnt').textContent=set.size?`${set.size} выбр.`:'все'; renderR1();});
+
+// R4 picker (single)
+(function(){
+  const dd=$('#azsPick'); const menu=$('.menu',dd);
+  menu.innerHTML=AZS.map(a=>`<label data-id="${a.id}">${a.name} <span class="mini">ID ${a.id}</span></label>`).join('');
+  $('.btn',dd).addEventListener('click',()=>dd.classList.toggle('open'));
+  menu.addEventListener('click',e=>{const l=e.target.closest('label');if(!l)return;r4id=l.dataset.id;dd.classList.remove('open');renderR4();});
+  document.addEventListener('click',e=>{if(!dd.contains(e.target))dd.classList.remove('open');});
+})();
+
+/* segmented controls */
+$$('.seg').forEach(seg=>{
+  seg.addEventListener('click',e=>{
+    const b=e.target.closest('button'); if(!b)return;
+    $$('button',seg).forEach(x=>x.classList.toggle('active',x===b));
+    const which=seg.dataset.seg;
+    if(which==='period1')renderR1();
+    if(which==='period2')renderR2();
+    if(which==='period3')renderR3();
+  });
+});
+
+/* sortable headers R2 */
+$$('#r2table thead th.sortable').forEach(th=>{
+  th.addEventListener('click',()=>{
+    const k=th.dataset.k;
+    r2sort = r2sort.k===k ? {k,dir:-r2sort.dir} : {k,dir:k==='late'||k==='avg'?1:-1};
+    renderR2();
+  });
+});
+
+/* ---------- init ---------- */
+renderR1(); renderR2(); renderR3(); renderR4(); renderR5();
+</script>
+</body>
+</html>
