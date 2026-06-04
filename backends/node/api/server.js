@@ -17,6 +17,7 @@ import createDispatchScheduler from './src/dispatch/dispatchScheduler.js';
 import createTimeoutWatcher from './src/dispatch/timeoutWatcher.js';
 import { readDispatchCandidates } from './src/dispatch/dispatchCandidatesFileStore.js';
 import createReportsStore from './src/reports/reportsStore.js';
+import { createAnalyticsStore } from './src/reports/analyticsStore.js';
 import createReportsRouter, { buildCrmSyncRunner } from './src/reports/reportsRoutes.js';
 import createDispatchPlanStore from './src/reports/dispatchPlanStore.js';
 import { generateDailyPlan } from './src/dispatch/dispatchPlanGenerator.js';
@@ -29,6 +30,8 @@ import createBotRegistryService from './src/notifications/botRegistryService.js'
 import { createAuthContextStore } from './src/auth/authContextStore.js';
 import { createTokenRefreshScheduler } from './src/auth/tokenRefreshScheduler.js';
 import { resolveAccessContext } from './src/access/roleResolver.js';
+import createReasonStore from './src/reports/reasonStore.js';
+import createReasonForwardingService from './src/notifications/reasonForwardingService.js';
 
 const app = express();
 app.use(cors());
@@ -161,9 +164,11 @@ const ensureRestAppUriPlacement = async ({
 
 const dispatchLogStore = createDispatchLogStore({ pool, dbType });
 const reportsStore = createReportsStore({ pool, dbType });
+const analyticsStore = createAnalyticsStore({ pool, dbType });
 const crmSyncJobStore = createCrmSyncJobStore({ pool, dbType });
 const dispatchPlanStore = createDispatchPlanStore({ pool, dbType });
 const dbSettingsStore = createDatabaseSettingsStore({ pool, dbType });
+const reasonStore = createReasonStore({ pool, dbType });
 const authContextStore = createAuthContextStore();
 const bitrixClient = createBitrixRestClient({
   onTokenRefreshed: async (context) => {
@@ -191,6 +196,7 @@ const bitrixClient = createBitrixRestClient({
     });
   }
 });
+const reasonForwardingService = createReasonForwardingService({ bitrixClient });
 const bitrixSettingsStore = createBitrixAppSettingsStore({
   bitrixClient,
   optionKey: process.env.BITRIX_APP_SETTINGS_OPTION_KEY || 'azs_photo_report_settings_v1'
@@ -231,7 +237,8 @@ const timeoutWatcher = createTimeoutWatcher({
   reportsStore,
   bitrixClient,
   settingsStore,
-  notificationService
+  notificationService,
+  reasonStore
 });
 const dispatchService = createDispatchService({
   dispatchLogStore,
@@ -337,7 +344,11 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
   authContextStore,
   crmSyncJobStore,
   dispatchPlanStore,
-  dispatchPlanMirror
+  dispatchPlanMirror,
+  analyticsStore,
+  diskApi: bitrixClient.diskApi,
+  reasonStore,
+  reasonForwardingService,
 }));
 
 app.post('/api/install', async (req, res) => {
@@ -571,6 +582,10 @@ reportsStore.ensurePhotoSchema()
 crmSyncJobStore.ensureSchema()
   .then(() => console.log('crm_sync_jobs schema is ready'))
   .catch((error) => console.error('Failed to prepare crm_sync_jobs schema', error));
+
+reasonStore.ensureSchema()
+  .then(() => console.log('report_reason schema is ready'))
+  .catch((error) => console.error('Failed to prepare report_reason schema', error));
 
 const scheduler = createDispatchScheduler({
   dispatchService,

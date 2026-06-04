@@ -1,0 +1,211 @@
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+
+type ReasonItem = { code: string; label: string }
+
+const PAGE_TITLE = 'Причина просрочки'
+useHead({ title: PAGE_TITLE })
+
+const { initApp, b24Helper, destroyB24Helper, processErrorGlobal } = useAppInit('ReasonPage')
+const { $initializeB24Frame } = useNuxtApp()
+const apiStore = useApiStore()
+const route = useRoute()
+
+// reportId берётся из URL — НЕ хардкодим
+const reportId = computed(() => Number(route.params.reportId))
+
+type ReportData = {
+  id: number
+  azsTitle?: string
+  status: string
+  deadlineAt?: string | null
+}
+
+const isLoading = ref(false)
+const isSaving = ref(false)
+const isSubmitted = ref(false)
+const loadError = ref('')
+const saveError = ref('')
+const report = ref<ReportData | null>(null)
+// Список причин из настроек (не хардкод)
+const reasons = ref<ReasonItem[]>([])
+const selectedCode = ref('')
+const otherText = ref('')
+
+// Вычислить: выбрано ли «Другое» — требует текст
+const isOtherSelected = computed(() =>
+  selectedCode.value === 'other'
+)
+
+const canSubmit = computed(() =>
+  Boolean(selectedCode.value)
+  && (!isOtherSelected.value || otherText.value.trim().length > 0)
+  && !isSaving.value
+  && !isSubmitted.value
+)
+
+async function loadData() {
+  isLoading.value = true
+  loadError.value = ''
+  try {
+    const [reportResponse, settingsResponse] = await Promise.all([
+      apiStore.getReportById(reportId.value),
+      apiStore.getSettings()
+    ])
+    report.value = {
+      id: reportResponse.item.id,
+      azsTitle: (reportResponse.item as { azsTitle?: string }).azsTitle ?? `АЗС ${reportResponse.item.azsId}`,
+      status: reportResponse.item.status,
+      deadlineAt: reportResponse.item.deadlineAt
+    }
+    // Список причин из настроек — никакого хардкода
+    const rawSettings = settingsResponse.settings as Record<string, unknown>
+    const reportSettings = rawSettings?.report as Record<string, unknown> | undefined
+    reasons.value = Array.isArray(reportSettings?.reasons)
+      ? (reportSettings.reasons as ReasonItem[]).filter(r => r?.code && r?.label)
+      : []
+  } catch (error) {
+    loadError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    isLoading.value = false
+  }
+}
+
+async function submitReason() {
+  if (!canSubmit.value) return
+  isSaving.value = true
+  saveError.value = ''
+  try {
+    await apiStore.submitReason(reportId.value, {
+      reasonCode: selectedCode.value,
+      reasonText: isOtherSelected.value ? otherText.value.trim() : null
+    })
+    isSubmitted.value = true
+  } catch (error) {
+    const errData = (error as { data?: { message?: string } })?.data
+    const status = (error as { response?: { status?: number } })?.response?.status
+    if (status === 403) {
+      saveError.value = 'Нет доступа: вы не являетесь исполнителем или проверяющим этого отчёта.'
+    } else {
+      saveError.value = errData?.message || (error instanceof Error ? error.message : 'Не удалось сохранить причину')
+    }
+  } finally {
+    isSaving.value = false
+  }
+}
+
+onMounted(async () => {
+  try {
+    isLoading.value = true
+    const $b24 = await $initializeB24Frame()
+    await initApp($b24, [], () => {})
+    await $b24.parent.setTitle(PAGE_TITLE)
+    await loadData()
+  } catch (error) {
+    processErrorGlobal(error)
+  } finally {
+    isLoading.value = false
+  }
+})
+
+onUnmounted(() => {
+  if (b24Helper.value) destroyB24Helper()
+})
+</script>
+
+<template>
+  <div class="mx-auto flex w-full max-w-[600px] flex-col gap-4 p-4 pb-16">
+
+    <!-- Заголовок -->
+    <div>
+      <ProseH2 class="mb-1">Причина просрочки</ProseH2>
+      <ProseP v-if="report" class="mb-0 text-sm text-(--ui-color-base-70)">
+        АЗС: {{ report.azsTitle }}
+      </ProseP>
+    </div>
+
+    <!-- Ошибка загрузки -->
+    <B24Alert
+      v-if="loadError"
+      color="air-primary-alert"
+      title="Не удалось загрузить данные"
+      :description="loadError"
+    />
+
+    <!-- Загрузка -->
+    <div v-if="isLoading" class="text-center py-8 text-gray-400">Загрузка…</div>
+
+    <!-- Успешно отправлено -->
+    <B24Alert
+      v-else-if="isSubmitted"
+      color="air-primary-success"
+      title="Причина сохранена"
+      description="Спасибо, причина записана. Можно закрыть страницу."
+    />
+
+    <!-- Форма выбора причины -->
+    <template v-else-if="!isLoading && reasons.length > 0">
+      <div class="space-y-3">
+        <ProseP class="mb-0 text-sm font-medium">Выберите причину:</ProseP>
+
+        <!-- Кнопки-пресеты из настроек (не хардкод) -->
+        <div class="flex flex-wrap gap-2">
+          <button
+            v-for="reason in reasons"
+            :key="reason.code"
+            type="button"
+            class="rounded-lg border px-3 py-2 text-sm transition-colors"
+            :class="selectedCode === reason.code
+              ? 'border-(--ui-color-primary) bg-(--ui-color-primary) text-white'
+              : 'border-(--ui-color-base-30) bg-(--ui-color-base-0) hover:bg-(--ui-color-base-10)'"
+            @click="selectedCode = reason.code"
+          >
+            {{ reason.label }}
+          </button>
+        </div>
+
+        <!-- Поле для «Другое» — показывается только если выбран other, обязательно для отправки -->
+        <div v-if="isOtherSelected" class="space-y-1">
+          <label class="block text-sm font-medium">Опишите причину <span class="text-(--ui-color-primary-alert)">*</span></label>
+          <B24Textarea
+            v-model="otherText"
+            class="w-full"
+            placeholder="Укажите причину..."
+            :rows="3"
+          />
+          <ProseP v-if="!otherText.trim()" class="mb-0 text-xs text-(--ui-color-primary-alert)">
+            Для причины «Другое» необходимо заполнить текст
+          </ProseP>
+        </div>
+      </div>
+
+      <!-- Ошибка сохранения -->
+      <B24Alert
+        v-if="saveError"
+        color="air-primary-alert"
+        title="Ошибка"
+        :description="saveError"
+      />
+
+      <!-- Кнопка отправки -->
+      <B24Button
+        color="air-tertiary"
+        label="Сохранить причину"
+        :disabled="!canSubmit"
+        :loading="isSaving"
+        loading-auto
+        class="w-full"
+        @click="submitReason"
+      />
+    </template>
+
+    <!-- Нет настроенных причин -->
+    <B24Alert
+      v-else-if="!isLoading && !loadError && reasons.length === 0"
+      color="air-secondary"
+      title="Список причин не настроен"
+      description="Администратор не настроил список причин. Обратитесь к системному администратору."
+    />
+
+  </div>
+</template>

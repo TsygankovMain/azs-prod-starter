@@ -364,6 +364,96 @@ test('invalid pre-computed scheduledAt causes candidate to fail gracefully', asy
   assert.match(markFailedCalls[0].errorText, /invalid/i, 'markFailed errorText must mention "invalid"');
 });
 
+test('dispatchCandidate: клавиатура содержит кнопку причины при ENABLE_REPORT_DEEP_LINK=true', async () => {
+  const prevEnableFlag = process.env.ENABLE_REPORT_DEEP_LINK;
+  const prevAppCode = process.env.BITRIX_APP_CODE;
+
+  process.env.ENABLE_REPORT_DEEP_LINK = 'true';
+  process.env.BITRIX_APP_CODE = 'test.app';
+
+  try {
+    const notifyCalls = [];
+
+    const service = createDispatchService({
+      dispatchLogStore: {
+        async reserve() { return { reserved: true, id: 42 }; },
+        async markDone() {},
+        async markFailed() {}
+      },
+      settingsStore: {
+        async read() {
+          return {
+            report: {
+              entityTypeId: 163,
+              timeoutMinutes: 60,
+              dispatchJitterMinutes: 0,
+              fields: {
+                azs: 'UF_AZS',
+                admin: 'UF_ADMIN',
+                slotTime: 'UF_SLOT',
+                scheduledAt: 'UF_SCHEDULED',
+                deadlineAt: 'UF_DEADLINE',
+                trigger: 'UF_TRIGGER'
+              },
+              stages: { new: 'DT163_1:NEW' }
+            }
+          };
+        }
+      },
+      bitrixClient: {
+        async createReportItem() { return { reportItemId: 7777 }; }
+      },
+      notificationService: {
+        async notifyDispatch(payload) { notifyCalls.push(payload); }
+      },
+      nowFn: () => new Date('2026-04-28T00:00:00.000Z'),
+      rng: () => 0.5
+    });
+
+    const settings = {
+      report: {
+        entityTypeId: 163,
+        timeoutMinutes: 60,
+        dispatchJitterMinutes: 0,
+        fields: {
+          azs: 'UF_AZS',
+          admin: 'UF_ADMIN',
+          slotTime: 'UF_SLOT',
+          scheduledAt: 'UF_SCHEDULED',
+          deadlineAt: 'UF_DEADLINE',
+          trigger: 'UF_TRIGGER'
+        },
+        stages: { new: 'DT163_1:NEW' }
+      }
+    };
+
+    const candidate = {
+      azsId: 'azs-10',
+      adminUserId: 42,
+      slotDate: '2026-04-28',
+      slotHHmm: '1000'
+    };
+
+    await service.dispatchCandidate({ candidate, settings, trigger: 'auto' });
+
+    assert.equal(notifyCalls.length, 1, 'notifyDispatch должен быть вызван');
+    const keyboard = notifyCalls[0].keyboard;
+    assert.ok(Array.isArray(keyboard) && keyboard.length > 0, 'keyboard должна быть непустым массивом');
+
+    const allButtons = keyboard.flat();
+    const reasonButton = allButtons.find(b => b?.TEXT?.includes('Не успеваю') || b?.LINK?.includes('reason'));
+    assert.ok(reasonButton, 'клавиатура должна содержать кнопку с reason-ссылкой');
+    assert.ok(typeof reasonButton.LINK === 'string' && reasonButton.LINK.includes('test.app'), 'LINK кнопки должен содержать appCode');
+  } finally {
+    // Восстановить env чтобы не загрязнять другие тесты
+    if (prevEnableFlag === undefined) delete process.env.ENABLE_REPORT_DEEP_LINK;
+    else process.env.ENABLE_REPORT_DEEP_LINK = prevEnableFlag;
+
+    if (prevAppCode === undefined) delete process.env.BITRIX_APP_CODE;
+    else process.env.BITRIX_APP_CODE = prevAppCode;
+  }
+});
+
 test('dispatch persists report item id even when notification fails', async () => {
   const store = createStoreFake();
   const warnLogs = [];

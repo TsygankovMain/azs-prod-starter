@@ -23,6 +23,7 @@ export const createTimeoutWatcher = ({
   bitrixClient,
   notificationService,
   settingsStore = null,
+  reasonStore = null,
   reviewerUserId = Number(process.env.REPORT_REVIEWER_USER_ID || 0),
   nowFn = () => new Date(),
   logger = console
@@ -91,6 +92,40 @@ export const createTimeoutWatcher = ({
           context
         });
         expired += 1;
+
+        // Добор причины при просрочке (best-effort, не ронять цикл)
+        if (reasonStore) {
+          try {
+            const existing = await reasonStore.getByReport(report.id);
+            if (!existing) {
+              const appCode = String(process.env.BITRIX_APP_CODE || '').trim();
+              let reasonLink = null;
+              if (process.env.ENABLE_REPORT_DEEP_LINK === 'true' && appCode && report.id) {
+                const reasonPath = `/reason/${report.id}`;
+                const reasonParams = new URLSearchParams();
+                reasonParams.set('params[reportId]', String(report.id));
+                reasonParams.set('params[path]', reasonPath);
+                reasonLink = `/marketplace/view/${encodeURIComponent(appCode)}/?${reasonParams.toString()}`;
+              }
+              const reasonKeyboard = reasonLink
+                ? [[{ TEXT: '⏰ Указать причину', LINK: reasonLink }]]
+                : null;
+              const azsTitle = await resolveAzsTitle(report.azsId);
+              await notificationService.notify({
+                userId: Number(report.adminUserId),
+                message: `Отчёт по АЗС ${azsTitle} просрочен. Пожалуйста, укажите причину.`,
+                keyboard: reasonKeyboard,
+                context,
+                fallbackToNotify: true
+              });
+            }
+          } catch (doborError) {
+            logger.warn('reason_dobor_failed', {
+              reportId: report.id,
+              message: doborError.message
+            });
+          }
+        }
 
         if (reviewerUserId > 0) {
           const azsTitle = await resolveAzsTitle(report.azsId);

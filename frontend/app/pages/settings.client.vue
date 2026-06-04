@@ -2,6 +2,11 @@
 import type { B24Frame } from '@bitrix24/b24jssdk'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 
+type ReasonItem = {
+  code: string
+  label: string
+}
+
 type SettingsTree = {
   azs: {
     entityTypeId: number
@@ -22,6 +27,7 @@ type SettingsTree = {
       trigger: string
       folderId: string
       photos: string
+      reason: string
     }
     stages: {
       new: string
@@ -33,6 +39,8 @@ type SettingsTree = {
     dispatchJitterMinutes: number
     dispatchTimes: string[]
     workWindow: { start: string; end: string }
+    reasons: ReasonItem[]
+    responsibleChatId: string
   }
   disk: {
     rootFolderId: number
@@ -63,6 +71,7 @@ type FieldMapKey =
   | 'trigger'
   | 'folderId'
   | 'photos'
+  | 'reason'
 
 type SmartProcessOption = {
   label: string
@@ -130,7 +139,7 @@ const roleCapabilities = ref<AppCapabilities>({
 })
 
 // ─── Section navigation state ────────────────────────────────────────────────
-type SectionId = 'azs' | 'photo-type' | 'report' | 'stages' | 'disk' | 'access' | 'manage'
+type SectionId = 'azs' | 'photo-type' | 'report' | 'reasons' | 'stages' | 'disk' | 'access' | 'manage'
 const activeSection = ref<SectionId>('azs')
 const mobileOpenSection = ref<SectionId | ''>('azs')
 
@@ -166,7 +175,8 @@ const reportFieldRequirements: FieldRequirement[] = [
   { key: 'azs', label: 'АЗС', type: 'Привязка к СП АЗС или строка', createType: 'crm', createPostfix: 'AZS' },
   { key: 'trigger', label: 'Тип запуска', type: 'Строка auto/manual', createType: 'string', createPostfix: 'TRIGGER' },
   { key: 'folderId', label: 'Папка Диска', type: 'Строка', createType: 'string', createPostfix: 'FOLDER_ID' },
-  { key: 'photos', label: 'Загруженные фото', type: 'Файл, множественное', multiple: true, createType: 'file', createPostfix: 'PHOTOS' }
+  { key: 'photos', label: 'Загруженные фото', type: 'Файл, множественное', multiple: true, createType: 'file', createPostfix: 'PHOTOS' },
+  { key: 'reason', label: 'Причина просрочки', type: 'Строка (UF причины)', createType: 'string', createPostfix: 'REASON' }
 ]
 
 function makeEmptySettings(): SettingsTree {
@@ -189,7 +199,8 @@ function makeEmptySettings(): SettingsTree {
         azs: '',
         trigger: '',
         folderId: '',
-        photos: ''
+        photos: '',
+        reason: ''
       },
       stages: {
         new: '',
@@ -200,7 +211,9 @@ function makeEmptySettings(): SettingsTree {
       timeoutMinutes: 60,
       dispatchJitterMinutes: 15,
       dispatchTimes: [],
-      workWindow: { start: '07:00', end: '22:00' }
+      workWindow: { start: '07:00', end: '22:00' },
+      reasons: [],
+      responsibleChatId: ''
     },
     disk: {
       rootFolderId: 0,
@@ -340,6 +353,11 @@ function normalizeSettings(
   normalized.report.dispatchTimes = Array.isArray(normalized.report.dispatchTimes)
     ? normalized.report.dispatchTimes.map((item) => String(item || '').trim()).filter(Boolean)
     : []
+  normalized.report.reasons = Array.isArray(normalized.report.reasons)
+    ? normalized.report.reasons.map(r => ({ code: String(r?.code || ''), label: String(r?.label || '') }))
+        .filter(r => r.code.trim() && r.label.trim())
+    : []
+  normalized.report.responsibleChatId = String(normalized.report.responsibleChatId || '').trim()
   normalized.disk.rootFolderId = toPositiveInt(normalized.disk.rootFolderId, 0, 0)
   normalized.disk.folderNameTemplate = String(normalized.disk.folderNameTemplate || '').trim() || '{yyyy-mm}/{dd}/{azs}_{azs_name}'
   normalized.access = {
@@ -372,6 +390,12 @@ function applySettings(nextSettings: SettingsTree) {
   })
   Object.assign(form.report.fields, nextSettings.report.fields)
   Object.assign(form.report.stages, nextSettings.report.stages)
+  // NEW: reasons (копия массива)
+  form.report.reasons = Array.isArray(nextSettings.report?.reasons)
+    ? nextSettings.report.reasons.map(r => ({ code: r.code, label: r.label }))
+    : []
+  // NEW: responsibleChatId
+  form.report.responsibleChatId = String(nextSettings.report?.responsibleChatId || '')
 
   Object.assign(form.disk, nextSettings.disk)
   form.timezone = nextSettings.timezone
@@ -402,8 +426,11 @@ function readSettings(): SettingsTree {
         azs: form.report.fields.azs,
         trigger: form.report.fields.trigger,
         folderId: form.report.fields.folderId,
-        photos: form.report.fields.photos
+        photos: form.report.fields.photos,
+        reason: form.report.fields.reason
       },
+      reasons: form.report.reasons.map(r => ({ code: String(r.code || '').trim(), label: String(r.label || '').trim() })).filter(r => r.code && r.label),
+      responsibleChatId: String(form.report.responsibleChatId || '').trim(),
       stages: {
         new: form.report.stages.new,
         inProgress: form.report.stages.inProgress,
@@ -490,6 +517,11 @@ const sectionComplete = computed(() => ({
     && form.report.fields.azs
     && form.report.fields.folderId
   ),
+  reasons: Boolean(
+    form.report.fields.reason
+    && form.report.reasons.length > 0
+    && form.report.responsibleChatId
+  ),
   stages: Boolean(
     form.report.stages.new
     && form.report.stages.inProgress
@@ -511,6 +543,7 @@ const navSections = computed(() => [
   { id: 'azs' as SectionId, label: 'АЗС', complete: sectionComplete.value.azs },
   { id: 'photo-type' as SectionId, label: 'Типы фото', complete: sectionComplete.value.photoType },
   { id: 'report' as SectionId, label: 'Отчёт', complete: sectionComplete.value.report },
+  { id: 'reasons' as SectionId, label: 'Причины просрочек', complete: sectionComplete.value.reasons },
   { id: 'stages' as SectionId, label: 'Сроки и этапы', complete: sectionComplete.value.stages },
   { id: 'disk' as SectionId, label: 'Диск и часовой пояс', complete: sectionComplete.value.disk },
   { id: 'access' as SectionId, label: 'Роли доступа', complete: sectionComplete.value.access },
@@ -834,6 +867,29 @@ async function refreshBotAvatar() {
   }
 }
 
+// ─── Редактор каталога причин ─────────────────────────────────────────────────
+const DEFAULT_REASONS_SEED = [
+  { code: 'fuel_truck', label: 'Приёмка топлива / бензовоз' },
+  { code: 'delivery', label: 'Приёмка товара' },
+  { code: 'queue', label: 'Очередь / много гостей' },
+  { code: 'wc_busy', label: 'Санузел занят' },
+  { code: 'staff', label: 'Нехватка персонала' },
+  { code: 'other', label: 'Другое (требует текст)' }
+]
+
+function addReasonItem() {
+  if (!Array.isArray(form.report.reasons)) form.report.reasons = []
+  form.report.reasons.push({ code: '', label: '' })
+}
+
+function removeReasonItem(index: number) {
+  form.report.reasons.splice(index, 1)
+}
+
+function seedDefaultReasons() {
+  form.report.reasons = DEFAULT_REASONS_SEED.map(r => ({ ...r }))
+}
+
 function addDispatchTimeSlot() {
   if (!Array.isArray(form.report.dispatchTimes)) {
     form.report.dispatchTimes = []
@@ -1118,6 +1174,117 @@ onUnmounted(() => {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            </template>
+
+            <!-- Причины просрочек section slot -->
+            <template #reasons-body>
+              <div class="space-y-4 p-4">
+                <!-- Поле UF причины -->
+                <B24FormField label="UF-поле причины на отчёте">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      UF-поле причины на отчёте
+                      <B24Tooltip text="Строковое пользовательское поле на карточке отчёта для хранения причины просрочки. Создайте поле через кнопку или выберите существующее.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <div class="flex gap-2">
+                    <B24Select
+                      :items="[{ label: 'Не сопоставлено', value: '' }, ...fieldSelectItems('report')]"
+                      :model-value="form.report.fields.reason"
+                      :disabled="!isAdminReady || !form.report.entityTypeId"
+                      placeholder="Не сопоставлено"
+                      class="flex-1"
+                      @update:model-value="(v) => { form.report.fields.reason = String(v ?? '') }"
+                    />
+                    <B24Button
+                      size="sm"
+                      color="air-secondary"
+                      label="Создать"
+                      :disabled="!isAdminReady || !form.report.entityTypeId || Boolean(creatingFieldKey)"
+                      loading-auto
+                      @click="createMappedField('report', { key: 'reason', label: 'Причина просрочки', type: 'Строка (UF причины)', createType: 'string', createPostfix: 'REASON' })"
+                    />
+                  </div>
+                </B24FormField>
+
+                <!-- ID чата ответственных -->
+                <B24FormField label="ID общего чата ответственных">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      ID общего чата ответственных
+                      <B24Tooltip text="Числовой ID чата Битрикс24, в который бот будет пересылать причину. Пусто — пересылка отключена, причина всё равно записывается.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <B24Input
+                    v-model="form.report.responsibleChatId"
+                    class="w-full"
+                    placeholder="12345"
+                    :disabled="!isAdminReady"
+                  />
+                </B24FormField>
+
+                <!-- Список причин (редактор) -->
+                <B24FormField label="Список причин">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Список причин
+                      <B24Tooltip text="Каждая причина — код (латиница, уникальный) и подпись (отображается оператору). Код 'other' — причина со свободным текстом.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <div class="space-y-2">
+                    <div
+                      v-for="(reason, idx) in form.report.reasons"
+                      :key="`reason-m-${idx}`"
+                      class="flex items-center gap-2"
+                    >
+                      <B24Input
+                        v-model="form.report.reasons[idx].code"
+                        class="w-28"
+                        placeholder="код"
+                        :disabled="!isAdminReady"
+                      />
+                      <B24Input
+                        v-model="form.report.reasons[idx].label"
+                        class="flex-1"
+                        placeholder="Подпись"
+                        :disabled="!isAdminReady"
+                      />
+                      <B24Button
+                        size="xs"
+                        color="air-primary-alert"
+                        label="Удалить"
+                        :disabled="!isAdminReady"
+                        @click="removeReasonItem(idx)"
+                      />
+                    </div>
+                    <div class="flex gap-2">
+                      <B24Button
+                        size="xs"
+                        color="air-secondary"
+                        label="Добавить"
+                        :disabled="!isAdminReady"
+                        @click="addReasonItem"
+                      />
+                      <B24Button
+                        size="xs"
+                        color="air-tertiary"
+                        label="Seed по умолчанию"
+                        :disabled="!isAdminReady || form.report.reasons.length > 0"
+                        @click="seedDefaultReasons"
+                      />
+                    </div>
+                    <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
+                      Кнопка «Seed по умолчанию» заполняет стандартный набор. Список редактируется свободно — никакого хардкода в бизнес-логике нет.
+                    </ProseP>
+                  </div>
+                </B24FormField>
               </div>
             </template>
 
@@ -1605,6 +1772,141 @@ onUnmounted(() => {
                   </tbody>
                 </table>
               </div>
+            </div>
+          </B24Card>
+
+          <!-- Причины просрочек -->
+          <B24Card
+            id="section-reasons"
+            variant="outline"
+            :b24ui="{ body: 'p-4 sm:p-5', header: 'p-4 sm:p-5' }"
+          >
+            <template #header>
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="mb-1 flex items-center gap-2">
+                    <ProseH3 class="mb-0">Причины просрочек</ProseH3>
+                    <B24Badge
+                      rounded
+                      size="sm"
+                      :color="sectionComplete.reasons ? 'air-primary-success' : 'air-secondary'"
+                      inverted
+                      :label="sectionComplete.reasons ? 'готово' : 'заполнить'"
+                    />
+                  </div>
+                  <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                    UF-поле причины на карточке отчёта, список причин и чат ответственных. Список редактируется здесь — нет хардкода.
+                  </ProseP>
+                </div>
+              </div>
+            </template>
+
+            <div class="space-y-4">
+              <!-- Поле UF причины -->
+              <B24FormField label="UF-поле причины на отчёте">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    UF-поле причины на отчёте
+                    <B24Tooltip text="Строковое пользовательское поле на карточке отчёта для хранения причины просрочки. Создайте поле через кнопку или выберите существующее.">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <div class="flex gap-2">
+                  <B24Select
+                    :items="[{ label: 'Не сопоставлено', value: '' }, ...fieldSelectItems('report')]"
+                    :model-value="form.report.fields.reason"
+                    :disabled="!isAdminReady || !form.report.entityTypeId"
+                    placeholder="Не сопоставлено"
+                    class="flex-1"
+                    @update:model-value="(v) => { form.report.fields.reason = String(v ?? '') }"
+                  />
+                  <B24Button
+                    size="sm"
+                    color="air-secondary"
+                    label="Создать"
+                    :disabled="!isAdminReady || !form.report.entityTypeId || Boolean(creatingFieldKey)"
+                    loading-auto
+                    @click="createMappedField('report', { key: 'reason', label: 'Причина просрочки', type: 'Строка (UF причины)', createType: 'string', createPostfix: 'REASON' })"
+                  />
+                </div>
+              </B24FormField>
+
+              <!-- ID чата ответственных -->
+              <B24FormField label="ID общего чата ответственных">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    ID общего чата ответственных
+                    <B24Tooltip text="Числовой ID чата Битрикс24, в который бот будет пересылать причину. Пусто — пересылка отключена, причина всё равно записывается.">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <B24Input
+                  v-model="form.report.responsibleChatId"
+                  class="w-full"
+                  placeholder="12345"
+                  :disabled="!isAdminReady"
+                />
+              </B24FormField>
+
+              <!-- Список причин (редактор) -->
+              <B24FormField label="Список причин">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    Список причин
+                    <B24Tooltip text="Каждая причина — код (латиница, уникальный) и подпись (отображается оператору). Код 'other' — причина со свободным текстом.">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <div class="space-y-2">
+                  <div
+                    v-for="(reason, idx) in form.report.reasons"
+                    :key="`reason-d-${idx}`"
+                    class="flex items-center gap-2"
+                  >
+                    <B24Input
+                      v-model="form.report.reasons[idx].code"
+                      class="w-32"
+                      placeholder="код"
+                      :disabled="!isAdminReady"
+                    />
+                    <B24Input
+                      v-model="form.report.reasons[idx].label"
+                      class="flex-1"
+                      placeholder="Подпись"
+                      :disabled="!isAdminReady"
+                    />
+                    <B24Button
+                      size="xs"
+                      color="air-primary-alert"
+                      label="Удалить"
+                      :disabled="!isAdminReady"
+                      @click="removeReasonItem(idx)"
+                    />
+                  </div>
+                  <div class="flex gap-2">
+                    <B24Button
+                      size="xs"
+                      color="air-secondary"
+                      label="Добавить"
+                      :disabled="!isAdminReady"
+                      @click="addReasonItem"
+                    />
+                    <B24Button
+                      size="xs"
+                      color="air-tertiary"
+                      label="Seed по умолчанию"
+                      :disabled="!isAdminReady || form.report.reasons.length > 0"
+                      @click="seedDefaultReasons"
+                    />
+                  </div>
+                  <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
+                    Кнопка «Seed по умолчанию» заполняет стандартный набор. Список редактируется свободно — никакого хардкода в бизнес-логике нет.
+                  </ProseP>
+                </div>
+              </B24FormField>
             </div>
           </B24Card>
 
