@@ -42,6 +42,13 @@ type DayPhotoEntry = {
   photos: Array<{ photoCode: string; diskObjectId: number | null; diskFolderId: number | null; exifAt: string | null; uploadedAt: string | null }>
 }
 
+type ReasonItem = {
+  code: string
+  label: string
+  count?: number
+  share?: number
+}
+
 type AppCapabilities = {
   settings: boolean
   reviewer: boolean
@@ -376,6 +383,28 @@ export const useApiStore = defineStore(
     const getDayPhotos = async (filters: { date?: string; azsId?: string } = {}): Promise<{ items: DayPhotoEntry[]; date: string }> =>
       await $api('/api/reports/analytics/day-photos', { query: filters, headers: { Authorization: `Bearer ${tokenJWT.value}` } })
 
+    const submitReason = async (reportId: number, payload: {
+      reasonCode: string
+      reasonText?: string | null
+    }): Promise<{ ok: boolean; reportId: number; reasonCode: string; reasonText: string | null }> => {
+      return await $api(`/api/reports/${reportId}/reason`, {
+        method: 'POST',
+        body: payload,
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const getReasonCounts = async (filters: {
+      dateFrom?: string
+      dateTo?: string
+      azsId?: string
+    } = {}): Promise<{ items: ReasonItem[]; total: number }> => {
+      return await $api('/api/reports/reasons', {
+        query: filters,
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
     const getPhotoPreviewObjectUrl = async (reportId: number, photoCode: string): Promise<string> => {
       const blob = await $fetch(`${apiUrl}/api/reports/photos/${reportId}/${encodeURIComponent(photoCode)}/preview`, {
         headers: { Authorization: `Bearer ${tokenJWT.value}` },
@@ -450,7 +479,9 @@ export const useApiStore = defineStore(
       getReportsRating,
       getReportsTrend,
       getDayPhotos,
-      getPhotoPreviewObjectUrl
+      getPhotoPreviewObjectUrl,
+      submitReason,
+      getReasonCounts
     }
   }
 )
