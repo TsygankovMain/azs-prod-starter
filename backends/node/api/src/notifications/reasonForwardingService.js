@@ -52,7 +52,7 @@ export const createReasonForwardingService = ({
       return null;
     }
 
-    const runtimeBotId = Number(botId || 0);
+    const runtimeBotId = Number(botId || process.env.BITRIX_BOT_ID || 0);
     if (!runtimeBotId) {
       logger.warn('reason_forwarding_skipped_no_bot_id', { chatId, reportItemId });
       return null;

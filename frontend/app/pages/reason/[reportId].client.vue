@@ -133,9 +133,7 @@ onUnmounted(() => {
     />
 
     <!-- Загрузка -->
-    <div v-if="isLoading" class="flex justify-center py-8">
-      <B24Spinner />
-    </div>
+    <div v-if="isLoading" class="text-center py-8 text-gray-400">Загрузка…</div>
 
     <!-- Успешно отправлено -->
     <B24Alert

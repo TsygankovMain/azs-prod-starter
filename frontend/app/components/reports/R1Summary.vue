@@ -142,7 +142,7 @@ watch(period, load)
         <h3 class="font-semibold text-[14.5px] mb-3.5">Распределение по статусам</h3>
         <SvgStackBar :parts="[
           { n: summary.done,    color: '#1fa363' },
-          { n: summary.open,    color: '#e0a020' },
+          { n: summary.open - (summary.byStatus?.new ?? 0), color: '#e0a020' },
           { n: summary.expired, color: '#e0533b' },
           { n: summary.byStatus?.new ?? 0, color: '#9aa7b5' },
         ]" :total="summary.total" />

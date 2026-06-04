@@ -207,14 +207,18 @@ test('POST /:id/reason: 200 ok при валидных данных, CRM + кэ�
   }
 
   const upsertCalls = [];
-  const crmUpdateCalls = [];
+  // Spy для дурабельной CRM-записи причины: updateReasonCrmField → bitrixClient.updateReportItem
+  const updateReportItemCalls = [];
 
+  // settings содержит entityTypeId, fields.reason, чтобы updateReasonCrmField прошёл все гварды
+  // reportItemId=55 в reportsStore, чтобы Number(reportItemId)>0
   const router = createReportsRouter({
     reportsStore: makeReportsStore({ adminUserId: 100, reportItemId: 55 }),
     settingsStore: makeSettingsStore(),
     bitrixClient: {
-      async updateCrmItem(payload) { crmUpdateCalls.push(payload); return { ok: true }; },
-      async getCrmItem() { return null; }
+      async updateCrmItem() { return { ok: true }; },
+      async getCrmItem() { return null; },
+      async updateReportItem(payload) { updateReportItemCalls.push(payload); return { ok: true }; }
     },
     dispatchService: makeDispatchService(),
     notificationService: { async notifyReportExpired() {} },
@@ -248,7 +252,16 @@ test('POST /:id/reason: 200 ok при валидных данных, CRM + кэ�
   assert.equal(upsertCalls[0].reportId, 1, 'upsert должен получить reportId=1');
   assert.equal(upsertCalls[0].reasonCode, 'queue', 'upsert должен получить reasonCode=queue');
 
-  assert.ok(crmUpdateCalls.length >= 1 || true, 'CRM update вызван (или обёрнут в try/catch)');
+  // Реальная дурабельная запись: updateReasonCrmField вызывает bitrixClient.updateReportItem
+  assert.equal(updateReportItemCalls.length, 1, 'updateReportItem должен быть вызван ровно один раз');
+  assert.equal(updateReportItemCalls[0].entityTypeId, 10, 'entityTypeId должен быть 10');
+  assert.equal(updateReportItemCalls[0].id, 55, 'id должен быть reportItemId=55');
+  // encodeValue для пресета (не other) = label из настроек
+  assert.equal(
+    updateReportItemCalls[0].fields?.['UF_CRM_10_REASON'],
+    'Очередь / много гостей',
+    'поле UF_CRM_10_REASON должно содержать label пресета queue'
+  );
 });
 
 test('POST /:id/reason: 200 даже если пересылка упала (best-effort)', async () => {
