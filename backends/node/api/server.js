@@ -1,3 +1,4 @@
+// redeploy marker: 2026-06-04 (dispatch-resilience) — no functional change
 import express from 'express';
 import cors from 'cors';
 import { Pool } from 'pg';
