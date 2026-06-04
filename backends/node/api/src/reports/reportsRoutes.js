@@ -3,6 +3,7 @@ import multer from 'multer';
 import exifr from 'exifr';
 import { ensureRootFolder, isSupportedPhotoUpload, uploadPhoto } from '../disk/diskService.js';
 import { updateReportCrmItem } from './reportCrmSync.js';
+import { generateDailyPlan } from '../dispatch/dispatchPlanGenerator.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const EXIF_MAX_AGE_MINUTES = Number(process.env.EXIF_MAX_AGE_MINUTES || 720);
@@ -623,6 +624,63 @@ const todayInTz = (tz) => {
   }
 };
 
+/**
+ * Load enabled AZS candidates using reportsRoutes' own camelCase-aware helpers.
+ * Mirrors dispatchScheduler.loadCandidatesFromAzs but avoids importing that
+ * closure — uses getFieldValue / extractFirstUserId / parseCrmItemId already in
+ * this file's scope.
+ */
+const loadEnabledAzsCandidates = async ({ settings, bitrixClient, context }) => {
+  const entityTypeId = Number(settings?.azs?.entityTypeId || 0);
+  const adminField = String(settings?.azs?.fields?.admin || '').trim();
+  const enabledField = String(settings?.azs?.fields?.enabled || '').trim();
+
+  if (!entityTypeId || !adminField || typeof bitrixClient?.listCrmItems !== 'function') {
+    return [];
+  }
+
+  const isDisabledValue = (value) => {
+    if (Array.isArray(value)) return value.some(isDisabledValue);
+    if (value && typeof value === 'object') {
+      return isDisabledValue(value.value ?? value.VALUE ?? value.id ?? value.ID);
+    }
+    const raw = String(value ?? '').trim().toLowerCase();
+    return raw === 'n' || raw === '0' || raw === 'false' || raw === 'нет';
+  };
+
+  // Build deduped select list covering camelCase and original-case aliases
+  const selectSet = new Set(['id', 'ID']);
+  for (const alias of [adminField, adminField.toLowerCase(), adminField.toUpperCase()]) {
+    if (alias) selectSet.add(alias);
+  }
+  if (enabledField) {
+    for (const alias of [enabledField, enabledField.toLowerCase(), enabledField.toUpperCase()]) {
+      if (alias) selectSet.add(alias);
+    }
+  }
+  const select = [...selectSet];
+
+  const rows = await bitrixClient.listCrmItems({
+    entityTypeId,
+    select,
+    limit: 1000,
+    useOriginalUfNames: 'N',
+    context
+  });
+
+  return rows
+    .filter((row) => {
+      if (!enabledField) return true;
+      const val = getFieldValue(row, enabledField);
+      return val !== undefined && val !== null && val !== '' && val !== 0 && val !== false && !isDisabledValue(val);
+    })
+    .map((row) => ({
+      azsId: String(parseCrmItemId(row?.id ?? row?.ID)),
+      adminUserId: extractFirstUserId(getFieldValue(row, adminField))
+    }))
+    .filter((item) => item.azsId && Number(item.adminUserId) > 0);
+};
+
 export const createReportsRouter = ({
   reportsStore,
   dispatchService,
@@ -793,6 +851,30 @@ export const createReportsRouter = ({
       return res.json({ items, planDate, enabled: true });
     } catch (error) {
       return res.status(502).json({ error: 'plan_failed', message: error.message });
+    }
+  });
+
+  router.post('/plan/generate', async (req, res) => {
+    if (!canUseReviewerTools(req)) return res.status(403).json({ error: 'forbidden', message: 'Reviewer access is required' });
+    try {
+      if (!dispatchPlanStore || typeof dispatchPlanStore.upsertPlanned !== 'function') {
+        return res.status(503).json({ error: 'plan_mode_unavailable', message: 'Случайный план рассылки недоступен (хранилище не инициализировано)' });
+      }
+      // Ensure table exists even on a fresh prod that never ran plan-mode via scheduler
+      await dispatchPlanStore.ensureSchema();
+      const settings = await settingsStore.read();
+      const tz = String(settings?.timezone || 'Europe/Moscow').trim();
+      const planDate = normalizePlanDate(req.body?.date) || todayInTz(tz);
+      const context = req.bitrixContext || {};
+      const candidates = await loadEnabledAzsCandidates({ settings, bitrixClient, context });
+      if (!candidates.length) {
+        return res.status(422).json({ error: 'no_candidates', message: 'Нет включённых АЗС с назначенным администратором. Проверьте смарт-процесс АЗС и поле «Администратор».' });
+      }
+      // regenerate=true: deletes status='planned' rows for the date then rebuilds
+      const summary = await generateDailyPlan({ planDate, candidates, settings, planStore: dispatchPlanStore, regenerate: true, logger: console });
+      return res.json({ ok: true, planDate, azsCount: candidates.length, planned: summary?.planned ?? null, summary });
+    } catch (error) {
+      return res.status(502).json({ error: 'plan_generate_failed', message: error.message });
     }
   });
 

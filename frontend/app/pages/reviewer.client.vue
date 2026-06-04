@@ -640,6 +640,25 @@ const loadDispatchPlan = async () => {
   }
 }
 
+const planGenerating = ref(false)
+const planGenerateMessage = ref('')
+const planGenerateError = ref('')
+
+const handleGeneratePlan = async () => {
+  planGenerating.value = true
+  planGenerateMessage.value = ''
+  planGenerateError.value = ''
+  try {
+    const result = await apiStore.generateDispatchPlan()
+    planGenerateMessage.value = `График сформирован: ${result.azsCount} АЗС`
+    await loadDispatchPlan()
+  } catch (error) {
+    planGenerateError.value = extractApiError(error, 'Ошибка при формировании графика')
+  } finally {
+    planGenerating.value = false
+  }
+}
+
 const runTimeout = async () => {
   timeoutMessage.value = ''
   try {
@@ -1275,6 +1294,17 @@ onMounted(async () => {
             <h2 class="text-base font-semibold">План отчётов на сегодня</h2>
           </div>
           <div class="p-5">
+            <div class="flex items-center gap-3 mb-4">
+              <button
+                class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-sm disabled:opacity-50"
+                :disabled="planGenerating"
+                @click="handleGeneratePlan"
+              >
+                {{ planGenerating ? 'Формирование…' : 'Сформировать график' }}
+              </button>
+              <span v-if="planGenerateMessage" class="text-sm text-green-700 font-medium">{{ planGenerateMessage }}</span>
+              <span v-if="planGenerateError" class="text-sm text-red-600">{{ planGenerateError }}</span>
+            </div>
             <div v-if="!dispatchPlanEnabled" class="text-sm text-gray-400 py-2">
               Случайный план рассылки не включён
             </div>

@@ -321,6 +321,10 @@ export const useApiStore = defineStore(
       return await $api('/api/reports/plan', { query, headers: { Authorization: `Bearer ${tokenJWT.value}` } })
     }
 
+    const generateDispatchPlan = async (date?: string): Promise<{ ok: boolean; planDate: string; azsCount: number; planned: number | null }> => {
+      return await $api('/api/reports/plan/generate', { method: 'POST', body: date ? { date } : {}, headers: { Authorization: `Bearer ${tokenJWT.value}` } })
+    }
+
     const postInstall = async (data: JsonObject): Promise<JsonObject> => {
       return await $api('/api/install', {
         method: 'POST',
@@ -412,7 +416,8 @@ export const useApiStore = defineStore(
       getMyRole,
       reinitToken,
       resyncReport,
-      getDispatchPlan
+      getDispatchPlan,
+      generateDispatchPlan
     }
   }
 )
