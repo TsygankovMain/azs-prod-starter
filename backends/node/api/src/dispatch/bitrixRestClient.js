@@ -44,9 +44,21 @@ const normalizeContext = (context = {}) => {
   };
 };
 
-const RETRYABLE_TRANSIENT_ERROR_PATTERN = /(OPERATION_TIME_LIMIT|QUERY_LIMIT_EXCEEDED|HTTP 429|HTTP 504|too many requests|gateway timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|network error|timeout)/i;
+import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from '../shared/transientErrors.js';
+
 const RETRY_BACKOFF_MS = [800, 1600, 3200];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Configurable HTTP timeout for all Bitrix REST / OAuth fetch calls.
+// Set BITRIX_HTTP_TIMEOUT_MS to override the default of 30 seconds.
+const HTTP_TIMEOUT_MS = (() => {
+  const parsed = Number(process.env.BITRIX_HTTP_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
+})();
+
+function fetchWithTimeout(url, options = {}) {
+  return fetch(url, { ...options, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+}
 
 export const createBitrixRestClient = ({
   endpoint = process.env.BITRIX_REST_ENDPOINT || '',
@@ -179,7 +191,7 @@ export const createBitrixRestClient = ({
         throw new Error('CLIENT_ID and CLIENT_SECRET are required for OAuth token refresh');
       }
 
-      const response = await fetch(resolveOauthUrl(runtime), {
+      const response = await fetchWithTimeout(resolveOauthUrl(runtime), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded'
@@ -238,7 +250,7 @@ export const createBitrixRestClient = ({
       ? { ...params, auth: resolvedAuth }
       : params;
 
-    const response = await fetch(`${runtime.endpoint}/${method}.json`, {
+    const response = await fetchWithTimeout(`${runtime.endpoint}/${method}.json`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -248,7 +260,13 @@ export const createBitrixRestClient = ({
 
     if (!response.ok) {
       const errorBody = await response.text().catch(() => '');
-      throw new Error(`Bitrix REST ${method} failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`);
+      const err = new Error(`Bitrix REST ${method} failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`);
+      const retryAfterHeader = response.headers?.get('retry-after');
+      const retryAfterSeconds = Number(retryAfterHeader);
+      if (retryAfterHeader !== null && retryAfterHeader !== undefined && Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
+        err.retryAfterMs = retryAfterSeconds * 1000;
+      }
+      throw err;
     }
 
     const responsePayload = await response.json();
@@ -302,12 +320,16 @@ export const createBitrixRestClient = ({
         if (!isRetryableTransientError(error) || retryIndex >= runtimeRetryBackoffMs.length) {
           throw error;
         }
-        const waitMs = runtimeRetryBackoffMs[retryIndex] + Math.floor(Math.random() * 250);
+        // Respect Retry-After from a 503 response when present; fall back to
+        // the configured exponential backoff schedule otherwise.
+        const defaultBackoff = runtimeRetryBackoffMs[retryIndex] + Math.floor(Math.random() * 250);
+        const waitMs = error.retryAfterMs ?? defaultBackoff;
         if (typeof logger?.info === 'function') {
           logger.info('bitrix_rest_retry', {
             method,
             retry: retryIndex + 1,
             waitMs,
+            retryAfter: error.retryAfterMs != null,
             message: String(error?.message || error || '')
           });
         }
@@ -336,7 +358,7 @@ export const createBitrixRestClient = ({
       : params;
 
     try {
-      const response = await fetch(`${runtime.endpoint}/${method}.json`, {
+      const response = await fetchWithTimeout(`${runtime.endpoint}/${method}.json`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -346,7 +368,13 @@ export const createBitrixRestClient = ({
 
       if (!response.ok) {
         const errorBody = await response.text().catch(() => '');
-        throw new Error(`Bitrix REST ${method} failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`);
+        const err = new Error(`Bitrix REST ${method} failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`);
+        const retryAfterHeader = response.headers?.get('retry-after');
+        const retryAfterSeconds = Number(retryAfterHeader);
+        if (retryAfterSeconds > 0) {
+          err.retryAfterMs = retryAfterSeconds * 1000;
+        }
+        throw err;
       }
 
       const responsePayload = await response.json();
@@ -618,7 +646,7 @@ export const createBitrixRestClient = ({
         const info = await call('disk.file.get', { id }, context);
         const url = String(info?.DOWNLOAD_URL || info?.downloadUrl || info?.download_url || '').trim();
         if (!url) throw new Error('disk.file.get response has no DOWNLOAD_URL');
-        const resp = await fetch(url);
+        const resp = await fetchWithTimeout(url);
         if (!resp.ok) throw new Error(`Disk download failed HTTP ${resp.status}`);
         const buf = Buffer.from(await resp.arrayBuffer());
         return { base64: buf.toString('base64'), name: String(info?.NAME || info?.name || `file_${id}`) };

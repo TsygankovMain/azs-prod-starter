@@ -33,6 +33,7 @@ import { resolveAccessContext } from './src/access/roleResolver.js';
 import createReasonStore from './src/reports/reasonStore.js';
 import createReasonForwardingService from './src/notifications/reasonForwardingService.js';
 import { validateRequiredEnv } from './utils/validateEnv.js';
+import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from './src/shared/transientErrors.js';
 
 try {
   validateRequiredEnv();
@@ -672,7 +673,7 @@ const crmSyncWorker = createCrmSyncWorker({
   runSync: buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore }),
   backoffMs: [800, 1600, 3200],
   pollIntervalMs: Number(process.env.CRM_SYNC_POLL_MS || 1000),
-  isRetryable: (error) => /(OPERATION_TIME_LIMIT|QUERY_LIMIT_EXCEEDED|HTTP 429|HTTP 504|too many requests|gateway timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|network error|timeout)/i.test(String(error?.message || error || ''))
+  isRetryable: (error) => RETRYABLE_TRANSIENT_ERROR_PATTERN.test(String(error?.message || error || ''))
 });
 if (String(process.env.CRM_SYNC_WORKER_ENABLED || 'true').toLowerCase() === 'true') {
   // Crash recovery first: re-queue any 'running' jobs orphaned by a previous

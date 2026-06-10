@@ -595,3 +595,90 @@ test('resilience: rehydrate from mirror counts as plan-exists (no regeneration)'
   await scheduler.runOnce();
   assert.equal(generated, false, 'rehydrate satisfied plan-exists → no regeneration');
 });
+
+// ---------------------------------------------------------------------------
+// Overlap guard tests (S1-03)
+// ---------------------------------------------------------------------------
+
+test('dispatch.tick_skipped_overlap: second runOnce while first is running returns {skipped:true}', async () => {
+  let resolveFirst;
+  let runOnceCallCount = 0;
+  const firstRunOnceHang = new Promise((resolve) => { resolveFirst = resolve; });
+
+  const warnMessages = [];
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: true,
+    dispatchPlanStore: {
+      async listByDate() { return []; },
+      async listDue() {
+        runOnceCallCount += 1;
+        if (runOnceCallCount === 1) {
+          await firstRunOnceHang; // hang the first tick
+        }
+        return [];
+      },
+      async markDispatched() {}, async markFailed() {}
+    },
+    dispatchService: { async dispatchBatch() { return { summary:{}, items:[] }; } },
+    getCandidates: async () => [],
+    settingsStore: { async read() { return { timezone: 'UTC' }; } },
+    getRuntimeContext: async () => ({ authId: 'tok', domain: 'd', memberId: 'm', userId: 1 }),
+    nowFn: () => new Date('2026-06-10T09:00:00.000Z'),
+    logger: {
+      info() {},
+      warn(...args) { warnMessages.push(args.join ? args.join(' ') : String(args[0])); },
+      error() {}
+    }
+  });
+
+  // Start first tick — it will hang inside listDue
+  const firstTickPromise = scheduler.runOnce();
+
+  // Yield to allow the first tick to enter its running state
+  await new Promise((r) => setImmediate(r));
+
+  // Second tick while first is running → must be skipped
+  const secondResult = await scheduler.runOnce();
+
+  assert.deepEqual(secondResult, { skipped: true }, 'overlap tick must return {skipped:true}');
+
+  // Check that the overlap was warned
+  const overlapWarn = warnMessages.some((m) => /tick_skipped_overlap|overlap/i.test(m));
+  assert.equal(overlapWarn, true, 'overlap skip must produce a warn log with tick_skipped_overlap marker');
+
+  // Let first tick finish
+  resolveFirst();
+  await firstTickPromise;
+
+  // runOnce was called only once (listDue called once for the actually-running tick)
+  assert.equal(runOnceCallCount, 1, 'listDue must be called only once while first tick runs');
+});
+
+test('dispatch.tick_skipped_overlap: guard released after first tick; third tick runs normally', async () => {
+  let listDueCallCount = 0;
+
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: true,
+    dispatchPlanStore: {
+      async listByDate() { return []; },
+      async listDue() { listDueCallCount += 1; return []; },
+      async markDispatched() {}, async markFailed() {}
+    },
+    dispatchService: { async dispatchBatch() { return { summary:{}, items:[] }; } },
+    getCandidates: async () => [],
+    settingsStore: { async read() { return { timezone: 'UTC' }; } },
+    getRuntimeContext: async () => ({ authId: 'tok', domain: 'd', memberId: 'm', userId: 1 }),
+    nowFn: () => new Date('2026-06-10T09:00:00.000Z'),
+    logger: { info() {}, warn() {}, error() {} }
+  });
+
+  // First tick runs and completes
+  await scheduler.runOnce();
+  assert.equal(listDueCallCount, 1);
+
+  // Second (sequential) tick after guard is released — must also run
+  await scheduler.runOnce();
+  assert.equal(listDueCallCount, 2, 'after guard released, subsequent sequential tick must run normally');
+});
