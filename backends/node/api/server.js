@@ -32,6 +32,21 @@ import { createTokenRefreshScheduler } from './src/auth/tokenRefreshScheduler.js
 import { resolveAccessContext } from './src/access/roleResolver.js';
 import createReasonStore from './src/reports/reasonStore.js';
 import createReasonForwardingService from './src/notifications/reasonForwardingService.js';
+import { validateRequiredEnv } from './utils/validateEnv.js';
+
+try {
+  validateRequiredEnv();
+} catch (error) {
+  console.error('[fatal]', error.message);
+  process.exit(1);
+}
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] unhandledRejection:', reason);
+});
+process.on('uncaughtException', (error) => {
+  console.error('[process] uncaughtException:', error);
+});
 
 const app = express();
 app.use(cors());
@@ -57,6 +72,15 @@ const pool = dbType === 'mysql'
     user: process.env.DB_USER || 'appuser',
     password: process.env.DB_PASSWORD || 'apppass'
   });
+
+const onPoolError = (error) => {
+  console.error('[db] idle connection error (recovered):', error.message);
+};
+if (typeof pool.on === 'function') {
+  pool.on('error', onPoolError);
+} else if (pool.pool && typeof pool.pool.on === 'function') {
+  pool.pool.on('error', onPoolError);
+}
 
 const parseUserId = (value) => {
   const parsed = Number(value);
