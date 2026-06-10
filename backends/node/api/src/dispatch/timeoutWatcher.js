@@ -79,17 +79,17 @@ export const createTimeoutWatcher = ({
       }
 
       try {
-        await reportsStore.setReportStatus({
-          reportId: report.id,
-          status: 'expired'
-        });
-
         await updateReportCrmItem({
           bitrixClient,
           settings,
           report,
           status: 'expired',
           context
+        });
+
+        await reportsStore.setReportStatus({
+          reportId: report.id,
+          status: 'expired'
         });
         expired += 1;
 

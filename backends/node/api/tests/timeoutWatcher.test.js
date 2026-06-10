@@ -229,3 +229,100 @@ test('timeout watcher counts failures when status update throws', async () => {
   assert.equal(summary.failed, 1);
   assert.equal(summary.notified, 0);
 });
+
+test('timeoutWatcher: CRM failure does NOT expire report in DB (status stays overdue for retry)', async () => {
+  const setStatusCalls = [];
+
+  const watcher = createTimeoutWatcher({
+    reportsStore: {
+      async listOverdueReports() {
+        return [
+          { id: 55, reportItemId: 9001, azsId: 'azs-9', slotKey: '2026-04-28:0900', status: 'in_progress' }
+        ];
+      },
+      async setReportStatus({ reportId, status }) {
+        setStatusCalls.push({ reportId, status });
+      }
+    },
+    bitrixClient: {
+      async updateReportItem() {
+        throw new Error('CRM_CONNECTION_TIMEOUT');
+      }
+    },
+    notificationService: {
+      async notifyReportExpired() {}
+    },
+    settingsStore: {
+      async read() {
+        return {
+          report: {
+            entityTypeId: 163,
+            stages: { expired: 'DT163_1:EXPIRED' }
+          }
+        };
+      }
+    },
+    reviewerUserId: 0
+  });
+
+  const summary = await watcher.runOnce();
+
+  assert.equal(summary.expired, 0, 'report must NOT be counted as expired when CRM update failed');
+  assert.equal(summary.failed, 1, 'failure must be recorded');
+  assert.equal(setStatusCalls.length, 0, 'setReportStatus must NOT be called when CRM update fails');
+});
+
+test('timeoutWatcher: after CRM recovers, next tick expires report and sends notification', async () => {
+  const setStatusCalls = [];
+  const notifications = [];
+  let crmFails = true;
+
+  const makeWatcher = () => createTimeoutWatcher({
+    reportsStore: {
+      async listOverdueReports() {
+        // On second tick, simulate report still in overdue list (status unchanged)
+        return [
+          { id: 56, reportItemId: 9002, azsId: 'azs-10', slotKey: '2026-04-28:0900', status: 'in_progress' }
+        ];
+      },
+      async setReportStatus({ reportId, status }) {
+        setStatusCalls.push({ reportId, status });
+      }
+    },
+    bitrixClient: {
+      async updateReportItem() {
+        if (crmFails) throw new Error('CRM_UNAVAILABLE');
+      }
+    },
+    notificationService: {
+      async notifyReportExpired(payload) {
+        notifications.push(payload);
+      }
+    },
+    settingsStore: {
+      async read() {
+        return {
+          report: {
+            entityTypeId: 163,
+            stages: { expired: 'DT163_1:EXPIRED' }
+          }
+        };
+      }
+    },
+    reviewerUserId: 42
+  });
+
+  // First tick: CRM fails → report not expired
+  const watcher = makeWatcher();
+  const summary1 = await watcher.runOnce();
+  assert.equal(summary1.expired, 0, 'tick 1: no expiry when CRM fails');
+  assert.equal(setStatusCalls.length, 0, 'tick 1: setReportStatus not called');
+
+  // CRM recovers; second tick: should expire and notify
+  crmFails = false;
+  const summary2 = await watcher.runOnce();
+  assert.equal(summary2.expired, 1, 'tick 2: report is expired after CRM recovers');
+  assert.equal(setStatusCalls.length, 1, 'tick 2: setReportStatus called once');
+  assert.deepEqual(setStatusCalls[0], { reportId: 56, status: 'expired' });
+  assert.equal(notifications.length, 1, 'tick 2: notification sent after successful CRM+DB update');
+});
