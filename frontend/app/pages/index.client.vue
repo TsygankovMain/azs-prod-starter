@@ -243,7 +243,7 @@ const extractApiErrorMessage = (error: unknown): string => {
 const checkBackend = async () => {
   try {
     if (!apiStore.isInitTokenJWT) {
-      await apiStore.reinitToken()
+      await apiStore.ensureFreshToken({ force: true })
     }
 
     const health = await apiStore.checkHealth()

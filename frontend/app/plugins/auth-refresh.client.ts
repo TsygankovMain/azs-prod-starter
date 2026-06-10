@@ -28,7 +28,7 @@ export default defineNuxtPlugin(() => {
 
   const refresh = async () => {
     try {
-      await apiStore.reinitToken()
+      await apiStore.ensureFreshToken({ force: true })
     } catch (error) {
       // Failure here is non-fatal — the 401 interceptor will catch the next
       // expired-token error. We log so prod logs surface chronic refresh issues.
@@ -45,10 +45,22 @@ export default defineNuxtPlugin(() => {
     }, REFRESH_INTERVAL_MS)
   }
 
+  // Named handler so stop() can remove it via removeEventListener.
+  const onVisibility = () => {
+    if (!document.hidden && started) {
+      // Coming back from background — refresh once immediately so the
+      // user's first click is on a fresh token even if the timer slept.
+      void refresh()
+    }
+  }
+
   const stop = () => {
     if (timer) {
       clearInterval(timer)
       timer = null
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }
 
@@ -65,12 +77,6 @@ export default defineNuxtPlugin(() => {
 
   if (typeof window !== 'undefined') {
     window.addEventListener('beforeunload', stop)
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && started) {
-        // Coming back from background — refresh once immediately so the
-        // user's first click is on a fresh token even if the timer slept.
-        void refresh()
-      }
-    })
+    document.addEventListener('visibilitychange', onVisibility)
   }
 })

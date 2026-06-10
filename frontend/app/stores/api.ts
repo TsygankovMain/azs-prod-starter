@@ -81,7 +81,18 @@ export const useApiStore = defineStore(
     // re-issues. Cleared in .finally so a subsequent 401 can re-trigger it.
     let reinitInFlight: Promise<void> | null = null
 
-    const ensureFreshToken = async (): Promise<void> => {
+    /**
+     * Single entry-point for token refresh. Deduplicates concurrent callers:
+     * if a refresh is already in-flight every caller joins the same promise
+     * instead of firing a second /api/getToken request.
+     *
+     * force=true  — planned refresh (timer / visibilitychange / init).
+     *               Always initiates a new call when no refresh is in-flight,
+     *               but still joins an existing one if there is.
+     * force=false — 401-retry path. Same deduplication behaviour; the parameter
+     *               is accepted so all call-sites use a uniform signature.
+     */
+    const ensureFreshToken = async ({ force: _force = false }: { force?: boolean } = {}): Promise<void> => {
       if (!reinitInFlight) {
         reinitInFlight = reinitToken().finally(() => {
           reinitInFlight = null
@@ -415,7 +426,7 @@ export const useApiStore = defineStore(
 
     const init = async (b24: B24Frame) => {
       $b24 = b24
-      await reinitToken()
+      await ensureFreshToken({ force: true })
     }
 
     const reinitToken = async () => {
@@ -458,6 +469,7 @@ export const useApiStore = defineStore(
       isInitTokenJWT,
       checkHealth,
       init,
+      ensureFreshToken,
       getSettings,
       getReports,
       getReportsSummary,
@@ -472,7 +484,6 @@ export const useApiStore = defineStore(
       saveSettings,
       refreshBotAvatar,
       getMyRole,
-      reinitToken,
       resyncReport,
       getDispatchPlan,
       generateDispatchPlan,
