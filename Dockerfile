@@ -59,4 +59,10 @@ RUN chmod +x \
 
 EXPOSE 8080
 
+# nginx listens on 8080 and proxies /api/ to Node on port 8000.
+# Checking through nginx reflects the full stack (proxy + app).
+# curl is already present in the apt-get install above.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8080/api/healthz || exit 1
+
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

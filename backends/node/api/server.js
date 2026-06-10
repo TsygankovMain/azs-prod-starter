@@ -301,14 +301,23 @@ app.get('/', (_req, res) => {
   ]);
 });
 
-// Public liveness/readiness probe for platform health checks.
-// Keep this endpoint auth-free and keep /api/health protected.
-app.get('/api/healthz', (_req, res) => {
-  res.status(200).json({
-    status: 'ok',
-    backend: 'node',
-    timestamp: Math.floor(Date.now() / 1000)
-  });
+// Public liveness/readiness probes — both auth-free.
+// /api/livez: always 200 (process is up).
+// /api/healthz: 200 if DB is reachable, 503 otherwise (≤2 s timeout).
+app.get('/api/livez', (_req, res) => res.json({ ok: true }));
+
+app.get('/api/healthz', async (_req, res) => {
+  try {
+    await Promise.race([
+      pool.query('SELECT 1'),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('db healthcheck timeout')), 2000).unref()
+      ),
+    ]);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(503).json({ ok: false, error: 'db_unavailable' });
+  }
 });
 
 app.get('/api/health', verifyToken, attachAccessContext, (req, res) => {

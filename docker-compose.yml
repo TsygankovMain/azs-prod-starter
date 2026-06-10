@@ -1,3 +1,9 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # (~) Database
   database-postgres:
@@ -18,6 +24,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    logging: *default-logging
     networks:
       internal-net:
         aliases:
@@ -42,6 +49,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    logging: *default-logging
     networks:
       internal-net:
         aliases:
@@ -66,6 +74,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging: *default-logging
     networks:
       - internal-net
 
@@ -89,6 +98,7 @@ services:
     #  - "127.0.0.1:3000:3000"
     volumes:
       - ./frontend:/app
+    logging: *default-logging
     networks:
       - internal-net
 
@@ -108,6 +118,7 @@ services:
       - frontend
     volumes:
       - cloudpub-config:/home/cloudpub
+    logging: *default-logging
     networks:
       - internal-net
 
@@ -135,6 +146,7 @@ services:
     volumes:
       - ./backends/php/:/var/www
       - ./logs/php:/var/log/php
+    mem_limit: 1g
     depends_on:
       database-postgres:
         condition: service_healthy
@@ -142,6 +154,7 @@ services:
       database-mysql:
         condition: service_healthy
         required: false
+    logging: *default-logging
     networks:
       - internal-net
 
@@ -169,6 +182,7 @@ services:
       database-mysql:
         condition: service_healthy
         required: false
+    logging: *default-logging
     networks:
       - internal-net
     stdin_open: true
@@ -194,6 +208,7 @@ services:
     volumes:
       - ./backends/python/api:/var/www/api
       - ./logs/python:/var/log/python
+    mem_limit: 1g
     depends_on:
       database-postgres:
         condition: service_healthy
@@ -201,6 +216,7 @@ services:
       database-mysql:
         condition: service_healthy
         required: false
+    logging: *default-logging
     networks:
       - internal-net
 
@@ -224,6 +240,7 @@ services:
     volumes:
       - ./backends/node/api:/app
       - ./logs/node:/var/log/node
+    mem_limit: 1g
     depends_on:
       database-postgres:
         condition: service_healthy
@@ -231,6 +248,7 @@ services:
       database-mysql:
         condition: service_healthy
         required: false
+    logging: *default-logging
     networks:
       - internal-net
 
