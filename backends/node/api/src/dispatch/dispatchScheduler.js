@@ -600,7 +600,10 @@ export const createDispatchScheduler = ({
 
       generationTask = cron.schedule(planGenerationCron, async () => {
         try {
-          await guardedGenerationTick();
+          const result = await guardedGenerationTick();
+          if (!result?.skipped) {
+            logger.info('dispatchScheduler: generation cron finished', result);
+          }
         } catch (error) {
           logger.error('dispatchScheduler: generation cron failed', { error: error.message });
         }

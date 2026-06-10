@@ -67,6 +67,24 @@ test('isTransientError: null/undefined → false', () => {
   assert.equal(isTransientError(undefined), false);
 });
 
+// Narrowed timeout alternatives — DB errors must NOT match (false-positive guard)
+test('isTransientError: MySQL "Lock wait timeout exceeded" → false', () => {
+  assert.equal(isTransientError(new Error('Lock wait timeout exceeded; try restarting transaction')), false);
+});
+
+test('isTransientError: PostgreSQL "canceling statement due to statement timeout" → false', () => {
+  assert.equal(isTransientError(new Error('canceling statement due to statement timeout')), false);
+});
+
+// Network-level timeout phrases that MUST match
+test('isTransientError: "connection timed out" → true', () => {
+  assert.equal(isTransientError(new Error('connection timed out')), true);
+});
+
+test('isTransientError: undici "Headers Timeout Error" → true', () => {
+  assert.equal(isTransientError(new Error('Headers Timeout Error')), true);
+});
+
 // Pattern export sanity check
 test('RETRYABLE_TRANSIENT_ERROR_PATTERN is a RegExp', () => {
   assert.ok(RETRYABLE_TRANSIENT_ERROR_PATTERN instanceof RegExp);

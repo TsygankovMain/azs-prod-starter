@@ -56,8 +56,21 @@ const HTTP_TIMEOUT_MS = (() => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
 })();
 
+// Separate, longer timeout for binary file downloads (disk.file downloadFileContent).
+// Downloading photo attachments over a slow mobile/carrier network can legitimately
+// take much longer than a REST API call — the short REST timeout would false-fire.
+// Set BITRIX_HTTP_DOWNLOAD_TIMEOUT_MS to override the default of 120 seconds.
+const DOWNLOAD_TIMEOUT_MS = (() => {
+  const parsed = Number(process.env.BITRIX_HTTP_DOWNLOAD_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 120_000;
+})();
+
 function fetchWithTimeout(url, options = {}) {
   return fetch(url, { ...options, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+}
+
+function fetchWithDownloadTimeout(url, options = {}) {
+  return fetch(url, { ...options, signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
 }
 
 export const createBitrixRestClient = ({
@@ -371,7 +384,7 @@ export const createBitrixRestClient = ({
         const err = new Error(`Bitrix REST ${method} failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`);
         const retryAfterHeader = response.headers?.get('retry-after');
         const retryAfterSeconds = Number(retryAfterHeader);
-        if (retryAfterSeconds > 0) {
+        if (retryAfterHeader !== null && retryAfterHeader !== undefined && Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
           err.retryAfterMs = retryAfterSeconds * 1000;
         }
         throw err;
@@ -646,7 +659,7 @@ export const createBitrixRestClient = ({
         const info = await call('disk.file.get', { id }, context);
         const url = String(info?.DOWNLOAD_URL || info?.downloadUrl || info?.download_url || '').trim();
         if (!url) throw new Error('disk.file.get response has no DOWNLOAD_URL');
-        const resp = await fetchWithTimeout(url);
+        const resp = await fetchWithDownloadTimeout(url);
         if (!resp.ok) throw new Error(`Disk download failed HTTP ${resp.status}`);
         const buf = Buffer.from(await resp.arrayBuffer());
         return { base64: buf.toString('base64'), name: String(info?.NAME || info?.name || `file_${id}`) };
