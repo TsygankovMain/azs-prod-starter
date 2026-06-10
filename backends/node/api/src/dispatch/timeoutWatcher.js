@@ -143,6 +143,8 @@ export const createTimeoutWatcher = ({
         failed += 1;
         logger.error('timeoutWatcher failed for report', {
           reportId: report.id,
+          azsId: report.azsId,
+          slotKey: report.slotKey,
           error: error.message
         });
       }

@@ -91,6 +91,7 @@ export const useApiStore = defineStore(
      *               but still joins an existing one if there is.
      * force=false — 401-retry path. Same deduplication behaviour; the parameter
      *               is accepted so all call-sites use a uniform signature.
+     * Note: when a refresh is already in-flight, force has no effect — all callers join the existing promise.
      */
     const ensureFreshToken = async ({ force: _force = false }: { force?: boolean } = {}): Promise<void> => {
       if (!reinitInFlight) {

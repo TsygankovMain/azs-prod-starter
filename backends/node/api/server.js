@@ -73,13 +73,15 @@ const pool = dbType === 'mysql'
     password: process.env.DB_PASSWORD || 'apppass'
   });
 
+// pg Pool emits 'error' for idle connection drops — without a listener it becomes
+// an uncaughtException and kills the process. mysql2 pools do NOT emit pool-level
+// 'error' (per-query errors surface on the query promise), so for mysql this listener
+// is a harmless no-op.
 const onPoolError = (error) => {
   console.error('[db] idle connection error (recovered):', error.message);
 };
 if (typeof pool.on === 'function') {
   pool.on('error', onPoolError);
-} else if (pool.pool && typeof pool.pool.on === 'function') {
-  pool.pool.on('error', onPoolError);
 }
 
 const parseUserId = (value) => {

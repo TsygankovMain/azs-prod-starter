@@ -12,7 +12,12 @@
  *   await worker.drain(); // loop tick() until no jobs remain
  */
 
-const STALE_RUNNING_TIMEOUT_MS = Number(process.env.CRM_SYNC_STALE_RUNNING_MS || 5 * 60 * 1000);
+const DEFAULT_STALE_RUNNING_TIMEOUT_MS = 5 * 60 * 1000;
+const parsedStaleTimeout = Number(process.env.CRM_SYNC_STALE_RUNNING_MS);
+const STALE_RUNNING_TIMEOUT_MS =
+  Number.isFinite(parsedStaleTimeout) && parsedStaleTimeout > 0
+    ? parsedStaleTimeout
+    : DEFAULT_STALE_RUNNING_TIMEOUT_MS;
 
 export const createCrmSyncWorker = ({
   store,

@@ -55,6 +55,7 @@ export default defineNuxtPlugin(() => {
   }
 
   const stop = () => {
+    started = false
     if (timer) {
       clearInterval(timer)
       timer = null
