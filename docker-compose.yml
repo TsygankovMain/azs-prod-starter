@@ -147,6 +147,7 @@ services:
       - ./backends/php/:/var/www
       - ./logs/php:/var/log/php
     mem_limit: 1g
+    memswap_limit: 1g
     depends_on:
       database-postgres:
         condition: service_healthy
@@ -209,6 +210,7 @@ services:
       - ./backends/python/api:/var/www/api
       - ./logs/python:/var/log/python
     mem_limit: 1g
+    memswap_limit: 1g
     depends_on:
       database-postgres:
         condition: service_healthy
@@ -233,6 +235,9 @@ services:
       NODE_ENV: ${NODE_ENV:-development}
       NUXT_PUBLIC_API_URL: ${VIRTUAL_HOST}
       PORT: 8000
+      # Cap V8 heap so GC fires before the cgroup mem_limit (1g) triggers
+      # SIGKILL, giving Node a chance for graceful shutdown.
+      NODE_OPTIONS: "--max-old-space-size=768"
     expose:
       - "8000"
     ports:
@@ -241,6 +246,7 @@ services:
       - ./backends/node/api:/app
       - ./logs/node:/var/log/node
     mem_limit: 1g
+    memswap_limit: 1g
     depends_on:
       database-postgres:
         condition: service_healthy

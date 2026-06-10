@@ -71,7 +71,11 @@ const pool = dbType === 'mysql'
     port: Number(process.env.DB_PORT || defaultDbPort),
     database: process.env.DB_NAME || 'appdb',
     user: process.env.DB_USER || 'appuser',
-    password: process.env.DB_PASSWORD || 'apppass'
+    password: process.env.DB_PASSWORD || 'apppass',
+    // Waiting for a free connection must not be infinite: if the pool is
+    // saturated a new request fails after 3 s with an error (→ 500) instead
+    // of blocking forever and piling up in memory.
+    connectionTimeoutMillis: 3000
   });
 
 // pg Pool emits 'error' for idle connection drops — without a listener it becomes
@@ -307,9 +311,19 @@ app.get('/', (_req, res) => {
 app.get('/api/livez', (_req, res) => res.json({ ok: true }));
 
 app.get('/api/healthz', async (_req, res) => {
+  // Per-query timeout (1800 ms) cancels the query at the driver level and
+  // releases the pool slot even if the DB is hung. Without this, every
+  // healthcheck probe (every 30 s) would leave a dangling pool checkout,
+  // eventually exhausting the pool.
+  // Note: this is intentionally NOT a global pool-level timeout — long
+  // analytical queries must not be cut off mid-flight.
+  // The outer race (2 s) is kept as a second line of defence.
+  const probeQuery = dbType === 'mysql'
+    ? { sql: 'SELECT 1', timeout: 1800 }        // mysql2: per-query timeout
+    : { text: 'SELECT 1', query_timeout: 1800 }; // pg: client-side query_timeout
   try {
     await Promise.race([
-      pool.query('SELECT 1'),
+      pool.query(probeQuery),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error('db healthcheck timeout')), 2000).unref()
       ),
