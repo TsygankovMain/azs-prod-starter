@@ -3,6 +3,5 @@
     <!-- Content -->
     <slot />
     <HelpGuide />
-    <AppToasts />
   </B24SidebarLayout>
 </template>

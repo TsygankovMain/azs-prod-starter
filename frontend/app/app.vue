@@ -19,6 +19,7 @@ useHead({
       <NuxtLayout>
         <NuxtPage />
       </NuxtLayout>
+      <AppToasts />
     </B24DashboardGroup>
   </B24App>
 </template>

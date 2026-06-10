@@ -7,8 +7,7 @@
  */
 
 // b24ui's useToast is auto-imported by Nuxt from the library layer.
-// We re-export it under the same name so Nuxt's auto-import picks up
-// our composable first (composables/ takes precedence over node_modules).
+// We expose our wrapper as useAppToast to avoid colliding with the b24ui auto-import.
 import { useToast as useB24Toast } from '#imports'
 
 export type ToastKind = 'success' | 'error' | 'info'
@@ -31,7 +30,7 @@ const COLOR: Record<ToastKind, string> = {
   info: 'air-primary',
 }
 
-export function useToast() {
+export function useAppToast() {
   const toast = useB24Toast()
 
   function push(kind: ToastKind, text: string): void {
