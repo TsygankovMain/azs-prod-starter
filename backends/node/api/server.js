@@ -577,7 +577,7 @@ app.post('/api/getToken', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
@@ -694,3 +694,56 @@ const tokenRefreshScheduler = createTokenRefreshScheduler({
 });
 
 tokenRefreshScheduler.start();
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown — handles SIGTERM (deploy) and SIGINT (Ctrl-C / nodemon)
+// ---------------------------------------------------------------------------
+let shuttingDown = false;
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[process] ${signal}: graceful shutdown started`);
+
+  // Force exit after 10 s so a hung dependency never keeps the container alive.
+  const force = setTimeout(() => {
+    console.error('[process] shutdown timeout, forcing exit');
+    process.exit(1);
+  }, 10_000);
+  force.unref();
+
+  try {
+    // 1. Stop accepting new HTTP requests and wait for in-flight ones to finish.
+    await new Promise((resolve) => server.close(resolve));
+
+    // 2. Stop background schedulers / workers.
+    //    scheduler and tokenRefreshScheduler are always created; crmSyncWorker
+    //    may not have been started (CRM_SYNC_WORKER_ENABLED=false) — optional
+    //    chaining keeps shutdown safe in both cases.
+    scheduler.stop?.();
+    tokenRefreshScheduler.stop?.();
+    crmSyncWorker.stop?.();
+
+    // 3. Flush any in-flight auth-context writes so the refresh token is not lost.
+    await authContextStore.flush();
+
+    // 4. Close the DB pool. pool.end() can hang if the DB is unreachable, so we
+    //    race it against a 3 s timeout — if it loses we log and proceed anyway.
+    if (typeof pool.end === 'function') {
+      await Promise.race([
+        pool.end(),
+        new Promise((resolve) => setTimeout(resolve, 3000).unref())
+          .then(() => { console.warn('[process] pool.end() timed out (3 s) — proceeding'); })
+      ]);
+    }
+
+    console.log('[process] graceful shutdown complete');
+  } catch (error) {
+    console.error('[process] shutdown error:', error);
+  }
+
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
