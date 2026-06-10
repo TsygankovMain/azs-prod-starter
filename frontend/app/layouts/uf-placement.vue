@@ -21,6 +21,7 @@ useHead({
   >
     <!-- Content -->
     <slot />
+    <AppToasts />
   </B24SidebarLayout>
 </template>
 

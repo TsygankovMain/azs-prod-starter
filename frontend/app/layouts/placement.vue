@@ -39,6 +39,7 @@ useSeoMeta({
         </div>
       </div>
     </template>
+    <AppToasts />
   </B24SidebarLayout>
 </template>
 
