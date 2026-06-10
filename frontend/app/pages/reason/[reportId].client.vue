@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 type ReasonItem = { code: string; label: string }
 
@@ -36,6 +36,23 @@ const otherText = ref('')
 const isOtherSelected = computed(() =>
   selectedCode.value === 'other'
 )
+
+// Автофокус поля «Другое» при выборе варианта
+const otherInputRef = ref<{ $el?: HTMLElement; focus?: () => void } | null>(null)
+watch(isOtherSelected, async (value) => {
+  if (value) {
+    await nextTick()
+    const el = otherInputRef.value
+    if (el) {
+      if (typeof el.focus === 'function') {
+        el.focus()
+      } else if (el.$el) {
+        const textarea = el.$el.querySelector('textarea') as HTMLTextAreaElement | null
+        textarea?.focus()
+      }
+    }
+  }
+})
 
 const canSubmit = computed(() =>
   Boolean(selectedCode.value)
@@ -149,15 +166,16 @@ onUnmounted(() => {
         <ProseP class="mb-0 text-sm font-medium">Выберите причину:</ProseP>
 
         <!-- Кнопки-пресеты из настроек (не хардкод) -->
-        <div class="flex flex-wrap gap-2">
+        <div class="grid grid-cols-2 gap-2">
           <button
             v-for="reason in reasons"
             :key="reason.code"
             type="button"
-            class="rounded-lg border px-3 py-2 text-sm transition-colors"
+            class="min-h-12 rounded-lg border px-3 py-2 text-left text-sm leading-tight transition-colors"
             :class="selectedCode === reason.code
               ? 'border-(--ui-color-primary) bg-(--ui-color-primary) text-white'
               : 'border-(--ui-color-base-30) bg-(--ui-color-base-0) hover:bg-(--ui-color-base-10)'"
+            :aria-pressed="selectedCode === reason.code"
             @click="selectedCode = reason.code"
           >
             {{ reason.label }}
@@ -168,6 +186,7 @@ onUnmounted(() => {
         <div v-if="isOtherSelected" class="space-y-1">
           <label class="block text-sm font-medium">Опишите причину <span class="text-(--ui-color-primary-alert)">*</span></label>
           <B24Textarea
+            ref="otherInputRef"
             v-model="otherText"
             class="w-full"
             placeholder="Укажите причину..."
@@ -187,16 +206,18 @@ onUnmounted(() => {
         :description="saveError"
       />
 
-      <!-- Кнопка отправки -->
-      <B24Button
-        color="air-tertiary"
-        label="Сохранить причину"
-        :disabled="!canSubmit"
-        :loading="isSaving"
-        loading-auto
-        class="w-full"
-        @click="submitReason"
-      />
+      <!-- Кнопка отправки — закреплена снизу -->
+      <div class="sticky bottom-0 -mx-4 border-t border-(--ui-color-base-20) bg-white/95 p-3 backdrop-blur dark:bg-gray-900/95">
+        <B24Button
+          color="air-tertiary"
+          label="Сохранить причину"
+          :disabled="!canSubmit"
+          :loading="isSaving"
+          loading-auto
+          class="w-full"
+          @click="submitReason"
+        />
+      </div>
     </template>
 
     <!-- Нет настроенных причин -->
