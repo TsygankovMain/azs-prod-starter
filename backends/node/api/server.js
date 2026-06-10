@@ -703,6 +703,7 @@ let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
+  const startedAt = Date.now();
   console.log(`[process] ${signal}: graceful shutdown started`);
 
   // Force exit after 10 s so a hung dependency never keeps the container alive.
@@ -714,7 +715,15 @@ async function shutdown(signal) {
 
   try {
     // 1. Stop accepting new HTTP requests and wait for in-flight ones to finish.
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise((resolve) => {
+      server.close(resolve);
+      // server.close() does not touch already-open idle keep-alive sockets
+      // (nginx proxy_http_version 1.1) — without this, close waits for
+      // keepAliveTimeout (~5 s) on every deploy. Active requests are not affected.
+      if (typeof server.closeIdleConnections === 'function') {
+        server.closeIdleConnections();
+      }
+    });
 
     // 2. Stop background schedulers / workers.
     //    scheduler and tokenRefreshScheduler are always created; crmSyncWorker
@@ -730,14 +739,17 @@ async function shutdown(signal) {
     // 4. Close the DB pool. pool.end() can hang if the DB is unreachable, so we
     //    race it against a 3 s timeout — if it loses we log and proceed anyway.
     if (typeof pool.end === 'function') {
+      const poolEndPromise = pool.end().catch((err) => {
+        console.warn('[process] pool.end() error:', err?.message ?? err);
+      });
       await Promise.race([
-        pool.end(),
+        poolEndPromise,
         new Promise((resolve) => setTimeout(resolve, 3000).unref())
           .then(() => { console.warn('[process] pool.end() timed out (3 s) — proceeding'); })
       ]);
     }
 
-    console.log('[process] graceful shutdown complete');
+    console.log(`[process] graceful shutdown complete in ${Date.now() - startedAt} ms`);
   } catch (error) {
     console.error('[process] shutdown error:', error);
   }
