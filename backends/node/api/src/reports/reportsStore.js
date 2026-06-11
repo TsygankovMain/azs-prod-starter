@@ -1,5 +1,40 @@
 const isMysql = (dbType) => String(dbType || '').toLowerCase() === 'mysql';
 
+// ---------------------------------------------------------------------------
+// Photo-feed cursor helpers  (keyset по uploaded_at DESC, rp.id DESC)
+// ---------------------------------------------------------------------------
+
+const encodeFeedCursor = (uploadedAt, id) =>
+  Buffer.from(JSON.stringify({ ua: uploadedAt, id: Number(id) })).toString('base64');
+
+const decodeFeedCursor = (cursor) => {
+  try {
+    const raw = JSON.parse(Buffer.from(cursor, 'base64').toString('utf8'));
+    const ua = String(raw.ua || '').trim();
+    const id = Number(raw.id);
+    if (!ua || !Number.isFinite(id)) return null;
+    return { uploadedAt: ua, id };
+  } catch {
+    return null;
+  }
+};
+
+const toFeedItemViewModel = (row) => ({
+  reportId: Number(row.report_id),
+  azsId: String(row.azs_id || ''),
+  azsTitle: row.azs_title || null,
+  photoCode: row.photo_code,
+  exifAt: row.exif_at ? new Date(row.exif_at).toISOString() : null,
+  uploadedAt: row.uploaded_at ? new Date(row.uploaded_at).toISOString() : null,
+  photoRowId: Number(row.photo_row_id || row.id || 0),
+  remark: row.remark_id ? {
+    createdAt: row.remark_created_at ? new Date(row.remark_created_at).toISOString() : null,
+    recipientName: row.remark_recipient_name || null,
+    message: row.remark_message || '',
+    senderName: row.remark_sender_name || null
+  } : null
+});
+
 const normalizeDate = (value, fallback = null) => {
   if (!value) {
     return fallback;
@@ -273,6 +308,109 @@ const createPostgresStore = (pool) => ({
       failed,
       byStatus
     };
+  },
+
+  // ---------------------------------------------------------------------------
+  // listPhotosFeed — photo-feed with optional remark join
+  // ---------------------------------------------------------------------------
+  async listPhotosFeed({
+    dateFrom, dateTo, azsIds = [], photoCodes = [],
+    remarks = 'all', // 'all' | 'with' | 'without'
+    limit = 50,
+    cursor = null
+  } = {}) {
+    const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
+    const where = [];
+    const params = [];
+    let idx = 1;
+
+    if (dateFrom) {
+      where.push(`rp.uploaded_at >= $${idx++}`);
+      params.push(new Date(`${dateFrom}T00:00:00.000Z`));
+    }
+    if (dateTo) {
+      where.push(`rp.uploaded_at <= $${idx++}`);
+      params.push(new Date(`${dateTo}T23:59:59.999Z`));
+    }
+    const normAzs = Array.isArray(azsIds)
+      ? azsIds.map((v) => String(v || '').trim()).filter(Boolean)
+      : [];
+    if (normAzs.length === 1) {
+      where.push(`d.azs_id = $${idx++}`);
+      params.push(normAzs[0]);
+    } else if (normAzs.length > 1) {
+      where.push(`d.azs_id = ANY($${idx++})`);
+      params.push(normAzs);
+    }
+    const normCodes = Array.isArray(photoCodes)
+      ? photoCodes.map((v) => String(v || '').trim()).filter(Boolean)
+      : [];
+    if (normCodes.length === 1) {
+      where.push(`rp.photo_code = $${idx++}`);
+      params.push(normCodes[0]);
+    } else if (normCodes.length > 1) {
+      where.push(`rp.photo_code = ANY($${idx++})`);
+      params.push(normCodes);
+    }
+
+    // remark filter
+    if (remarks === 'with') {
+      where.push(`EXISTS (SELECT 1 FROM photo_remark_photo prp WHERE prp.report_id = rp.report_id AND prp.photo_code = rp.photo_code)`);
+    } else if (remarks === 'without') {
+      where.push(`NOT EXISTS (SELECT 1 FROM photo_remark_photo prp WHERE prp.report_id = rp.report_id AND prp.photo_code = rp.photo_code)`);
+    }
+
+    // keyset cursor
+    if (cursor) {
+      const decoded = decodeFeedCursor(cursor);
+      if (decoded) {
+        where.push(`(rp.uploaded_at, rp.id) < ($${idx}, $${idx + 1})`);
+        idx += 2;
+        params.push(new Date(decoded.uploadedAt), decoded.id);
+      }
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    params.push(safeLimit + 1);
+
+    const sql = `
+      SELECT
+        rp.id         AS photo_row_id,
+        rp.report_id,
+        rp.photo_code,
+        rp.exif_at,
+        rp.uploaded_at,
+        d.azs_id,
+        NULL          AS azs_title,
+        lr.id         AS remark_id,
+        lr.created_at AS remark_created_at,
+        lr.recipient_name AS remark_recipient_name,
+        lr.message    AS remark_message,
+        lr.sender_name AS remark_sender_name
+      FROM report_photo rp
+      JOIN dispatch_log d ON d.id = rp.report_id
+      LEFT JOIN LATERAL (
+        SELECT pr.*
+        FROM photo_remark pr
+        JOIN photo_remark_photo prp ON prp.remark_id = pr.id
+        WHERE prp.report_id = rp.report_id AND prp.photo_code = rp.photo_code
+        ORDER BY pr.created_at DESC
+        LIMIT 1
+      ) lr ON true
+      ${whereSql}
+      ORDER BY rp.uploaded_at DESC, rp.id DESC
+      LIMIT $${idx}
+    `;
+
+    const result = await pool.query(sql, params);
+    const hasMore = result.rows.length > safeLimit;
+    const rows = result.rows.slice(0, safeLimit);
+    const items = rows.map(toFeedItemViewModel);
+    const lastRow = rows[rows.length - 1];
+    const nextCursor = hasMore
+      ? encodeFeedCursor(lastRow.uploaded_at, lastRow.photo_row_id)
+      : null;
+    return { items, nextCursor };
   }
 });
 
@@ -527,6 +665,111 @@ const createMysqlStore = (pool) => ({
       failed,
       byStatus
     };
+  },
+
+  // ---------------------------------------------------------------------------
+  // listPhotosFeed — photo-feed with optional remark join (MySQL)
+  // ---------------------------------------------------------------------------
+  async listPhotosFeed({
+    dateFrom, dateTo, azsIds = [], photoCodes = [],
+    remarks = 'all',
+    limit = 50,
+    cursor = null
+  } = {}) {
+    const toMySqlDate = (d) => d instanceof Date
+      ? d.toISOString().slice(0, 19).replace('T', ' ')
+      : String(d);
+
+    const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
+    const where = [];
+    const params = [];
+
+    if (dateFrom) {
+      where.push('rp.uploaded_at >= ?');
+      params.push(`${dateFrom} 00:00:00`);
+    }
+    if (dateTo) {
+      where.push('rp.uploaded_at <= ?');
+      params.push(`${dateTo} 23:59:59`);
+    }
+    const normAzs = Array.isArray(azsIds)
+      ? azsIds.map((v) => String(v || '').trim()).filter(Boolean)
+      : [];
+    if (normAzs.length === 1) {
+      where.push('d.azs_id = ?');
+      params.push(normAzs[0]);
+    } else if (normAzs.length > 1) {
+      where.push(`d.azs_id IN (${normAzs.map(() => '?').join(',')})`);
+      params.push(...normAzs);
+    }
+    const normCodes = Array.isArray(photoCodes)
+      ? photoCodes.map((v) => String(v || '').trim()).filter(Boolean)
+      : [];
+    if (normCodes.length === 1) {
+      where.push('rp.photo_code = ?');
+      params.push(normCodes[0]);
+    } else if (normCodes.length > 1) {
+      where.push(`rp.photo_code IN (${normCodes.map(() => '?').join(',')})`);
+      params.push(...normCodes);
+    }
+
+    // remark filter — MySQL doesn't support LATERAL, use correlated EXISTS
+    if (remarks === 'with') {
+      where.push(`EXISTS (SELECT 1 FROM photo_remark_photo prp WHERE prp.report_id = rp.report_id AND prp.photo_code = rp.photo_code)`);
+    } else if (remarks === 'without') {
+      where.push(`NOT EXISTS (SELECT 1 FROM photo_remark_photo prp WHERE prp.report_id = rp.report_id AND prp.photo_code = rp.photo_code)`);
+    }
+
+    if (cursor) {
+      const decoded = decodeFeedCursor(cursor);
+      if (decoded) {
+        const ca = toMySqlDate(new Date(decoded.uploadedAt));
+        where.push('(rp.uploaded_at < ? OR (rp.uploaded_at = ? AND rp.id < ?))');
+        params.push(ca, ca, decoded.id);
+      }
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    params.push(safeLimit + 1);
+
+    // MySQL doesn't have LATERAL — use a correlated subquery for the latest remark
+    const sql = `
+      SELECT
+        rp.id         AS photo_row_id,
+        rp.report_id,
+        rp.photo_code,
+        rp.exif_at,
+        rp.uploaded_at,
+        d.azs_id,
+        NULL          AS azs_title,
+        lr.id         AS remark_id,
+        lr.created_at AS remark_created_at,
+        lr.recipient_name AS remark_recipient_name,
+        lr.message    AS remark_message,
+        lr.sender_name AS remark_sender_name
+      FROM report_photo rp
+      JOIN dispatch_log d ON d.id = rp.report_id
+      LEFT JOIN photo_remark lr ON lr.id = (
+        SELECT pr.id FROM photo_remark pr
+        JOIN photo_remark_photo prp ON prp.remark_id = pr.id
+        WHERE prp.report_id = rp.report_id AND prp.photo_code = rp.photo_code
+        ORDER BY pr.created_at DESC
+        LIMIT 1
+      )
+      ${whereSql}
+      ORDER BY rp.uploaded_at DESC, rp.id DESC
+      LIMIT ?
+    `;
+
+    const [rows] = await pool.execute(sql, params);
+    const hasMore = rows.length > safeLimit;
+    const limited = rows.slice(0, safeLimit);
+    const items = limited.map(toFeedItemViewModel);
+    const lastRow = limited[limited.length - 1];
+    const nextCursor = hasMore
+      ? encodeFeedCursor(lastRow.uploaded_at, lastRow.photo_row_id)
+      : null;
+    return { items, nextCursor };
   }
 });
 
