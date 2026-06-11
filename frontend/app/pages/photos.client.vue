@@ -90,7 +90,7 @@ type PhotoFeedItem = {
   photoCode: string
   exifAt: string | null
   uploadedAt: string | null
-  remark: { dt: string; recipientName: string; message: string; senderName: string } | null
+  remark: { createdAt: string | null; recipientName: string; message: string; senderName: string } | null
 }
 
 // ── Вкладки ───────────────────────────────────────────────────────────────

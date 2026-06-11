@@ -449,6 +449,7 @@ app.use('/api/reports/photos', verifyToken, attachAccessContext, createPhotoFeed
 app.use('/api/photo-remarks', verifyToken, attachAccessContext, createPhotoRemarkRouter({
   remarkStore: photoRemarkStore,
   photoRemarkService,
+  reportsStore,
   bitrixClient,
   getAdminContext
 }));

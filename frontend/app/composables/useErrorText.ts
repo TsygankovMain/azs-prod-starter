@@ -35,6 +35,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   REPORT_PHOTOS_MISSING: 'Загружены не все обязательные фото.',
   RECIPIENT_NOT_SET: 'У АЗС не указан получатель. Выберите администратора.',
   REMARK_NOT_FOUND: 'Замечание не найдено.',
+  PHOTOS_AZS_MISMATCH: 'Часть выбранных фото относится к другой АЗС. Обновите страницу и попробуйте снова.',
 }
 
 const DEFAULT_FALLBACK = 'Не получилось. Попробуйте ещё раз или сообщите администратору.'
