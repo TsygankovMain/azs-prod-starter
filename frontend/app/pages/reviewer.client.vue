@@ -539,28 +539,32 @@ const sendManualRequest = async () => {
 }
 
 const requestReportAgain = async (event: FeedEvent) => {
-  try {
-    const selectedAzs = azsOptions.value.find(o => o.value === event.azsId)
-    if (!selectedAzs) return
+  await withPending(`again:${event.azsId}:${event.reportRow.id}`, async () => {
+    try {
+      const selectedAzs = azsOptions.value.find(o => o.value === event.azsId)
+      if (!selectedAzs) return
 
-    const now = new Date()
-    const to2 = (n: number) => String(n).padStart(2, '0')
-    const slotDate = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
-    const slotHHmm = `${to2(now.getUTCHours())}${to2(now.getUTCMinutes())}`
+      const now = new Date()
+      const to2 = (n: number) => String(n).padStart(2, '0')
+      const slotDate = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
+      const slotHHmm = `${to2(now.getUTCHours())}${to2(now.getUTCMinutes())}`
 
-    await apiStore.createManualReport({
-      candidates: [{
-        azsId: event.azsId,
-        adminUserId: selectedAzs.adminUserId
-      }],
-      slotDate,
-      slotHHmm
-    })
+      await apiStore.createManualReport({
+        candidates: [{
+          azsId: event.azsId,
+          adminUserId: selectedAzs.adminUserId
+        }],
+        slotDate,
+        slotHHmm
+      })
 
-    await loadAll()
-  } catch (error) {
-    console.error('Failed to request again', error)
-  }
+      toast.success('Повторный запрос отправлен АЗС')
+      await loadAll()
+    } catch (error) {
+      console.error('requestReportAgain failed', error)
+      toast.error('Не удалось отправить запрос. Проверьте соединение и повторите.')
+    }
+  })
 }
 
 const openPhotoFolder = (item: ReportRow) => {
@@ -612,9 +616,11 @@ const resyncReport = async (reportId: number) => {
   resyncingIds.value = new Set([...resyncingIds.value, reportId])
   try {
     await apiStore.resyncReport(reportId)
+    toast.success('Отчёт синхронизирован')
     await loadAll()
   } catch (error) {
     console.error('Ошибка пересинхронизации', error)
+    toast.error('Не удалось синхронизировать отчёт. Проверьте соединение и повторите.')
   } finally {
     const next = new Set(resyncingIds.value)
     next.delete(reportId)
@@ -683,6 +689,25 @@ const runTimeout = async () => {
     timeoutMessage.value = error instanceof Error ? error.message : 'Ошибка'
   }
 }
+
+// ── Pending-state helper (S2-02) ────────────────────────────────────────────
+// Prevents double-click duplicates and gives visual feedback on any action key.
+const toast = useAppToast()
+
+const pendingActions = ref<Set<string>>(new Set())
+
+async function withPending(key: string, fn: () => Promise<void>): Promise<void> {
+  if (pendingActions.value.has(key)) return // guard against double-click
+  pendingActions.value = new Set(pendingActions.value).add(key)
+  try {
+    await fn()
+  } finally {
+    const next = new Set(pendingActions.value)
+    next.delete(key)
+    pendingActions.value = next
+  }
+}
+// ────────────────────────────────────────────────────────────────────────────
 
 const scrollToQuickRequest = () => {
   const el = document.getElementById('quick-request-card')
@@ -1045,7 +1070,7 @@ onMounted(async () => {
                           <button
                             v-for="btn in event.buttons"
                             :key="btn.action"
-                            :disabled="btn.disabled"
+                            :disabled="btn.disabled || (btn.action === 'request-again' && pendingActions.has(`again:${event.azsId}:${event.reportRow.id}`))"
                             :class="[
                               'px-3 py-1 text-xs rounded-md transition-colors',
                               btn.action === 'request-again'
@@ -1054,7 +1079,7 @@ onMounted(async () => {
                             ]"
                             @click="handleFeedAction(event, btn.action)"
                           >
-                            {{ btn.label }}
+                            {{ btn.action === 'request-again' && pendingActions.has(`again:${event.azsId}:${event.reportRow.id}`) ? 'Отправляем…' : btn.label }}
                           </button>
                         </template>
                         <!-- Resync button (#4): always shown on report-bearing items.
