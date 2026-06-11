@@ -12,6 +12,13 @@
  *   await worker.drain(); // loop tick() until no jobs remain
  */
 
+const DEFAULT_STALE_RUNNING_TIMEOUT_MS = 5 * 60 * 1000;
+const parsedStaleTimeout = Number(process.env.CRM_SYNC_STALE_RUNNING_MS);
+const STALE_RUNNING_TIMEOUT_MS =
+  Number.isFinite(parsedStaleTimeout) && parsedStaleTimeout > 0
+    ? parsedStaleTimeout
+    : DEFAULT_STALE_RUNNING_TIMEOUT_MS;
+
 export const createCrmSyncWorker = ({
   store,
   runSync,
@@ -97,7 +104,7 @@ export const createCrmSyncWorker = ({
    */
   const recover = async () => {
     if (typeof store.reclaimStale !== 'function') return 0;
-    const reclaimed = Number(await store.reclaimStale()) || 0;
+    const reclaimed = Number(await store.reclaimStale({ runningTimeoutMs: STALE_RUNNING_TIMEOUT_MS })) || 0;
     if (reclaimed > 0 && typeof logger.log === 'function') {
       logger.log('crm_sync_reclaimed_stale_running', { count: reclaimed });
     }

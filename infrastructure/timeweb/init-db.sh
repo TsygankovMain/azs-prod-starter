@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# When EMBEDDED_POSTGRES=false skip all local DB initialisation and write the
+# ready-marker immediately. start-backend.sh will perform its own external-DB
+# readiness check and does not rely on this marker for anything else.
+EMBEDDED_POSTGRES="${EMBEDDED_POSTGRES:-true}"
+if [ "${EMBEDDED_POSTGRES}" = "false" ]; then
+  echo "[db-init] EMBEDDED_POSTGRES=false — skipping local DB init"
+  touch "${READY_FILE:-/tmp/db-init.done}"
+  exit 0
+fi
+
 DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-appdb}"

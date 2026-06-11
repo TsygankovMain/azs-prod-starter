@@ -54,7 +54,23 @@ watch(period, load)
       >{{ p }} дней</button>
     </div>
 
-    <div v-if="loading" class="text-center py-8 text-gray-400">Загрузка…</div>
+    <template v-if="loading">
+      <!-- Скелетон первого графика (SvgLine, H≈200px + заголовок + callout-зона) -->
+      <div class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-4 mb-3.5">
+        <SkeletonBlock height="1rem" width="50%" class="mb-3" />
+        <SkeletonBlock height="200px" rounded="rounded-xl" />
+        <SkeletonBlock height="3rem" width="100%" rounded="rounded-xl" class="mt-3.5" />
+      </div>
+      <!-- Скелетон второго графика (SvgGroupBars, H≈170px + заголовок + легенда) -->
+      <div class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-4">
+        <SkeletonBlock height="1rem" width="50%" class="mb-3" />
+        <SkeletonBlock height="170px" rounded="rounded-xl" />
+        <div class="flex gap-3.5 mt-3">
+          <SkeletonBlock height="0.75rem" width="4rem" />
+          <SkeletonBlock height="0.75rem" width="4rem" />
+        </div>
+      </div>
+    </template>
     <B24Alert v-else-if="error" color="air-primary-alert" :description="error" />
     <template v-else>
       <div class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-4 mb-3.5">

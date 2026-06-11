@@ -117,8 +117,29 @@ watch(date, load)
       >{{ items.find(i => i.azsId === id)?.azsTitle || `АЗС ${id}` }}</button>
     </div>
 
-    <div v-if="loading" class="text-center py-8 text-gray-400">Загрузка…</div>
-    <B24Alert v-else-if="error" color="air-primary-alert" :description="error" />
+    <template v-if="loading">
+      <!-- 2 блока-секции АЗС с сеткой тайлов как у итогового контента -->
+      <div v-for="block in 2" :key="block" class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-4 mb-3.5">
+        <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
+          <SkeletonBlock height="1rem" width="30%" />
+          <SkeletonBlock height="0.75rem" width="25%" />
+        </div>
+        <div class="grid grid-cols-2 lg:grid-cols-5 gap-2.5">
+          <SkeletonBlock v-for="n in 5" :key="n" height="0" rounded="rounded-[11px]" class="aspect-[4/3]" />
+        </div>
+      </div>
+    </template>
+    <div v-else-if="error" class="flex flex-col gap-2">
+      <B24Alert color="air-primary-alert" :description="error" />
+      <div>
+        <button
+          class="px-4 py-2 rounded-[10px] border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 text-[13px] font-medium shadow-sm"
+          @click="load"
+        >
+          ↻ Повторить
+        </button>
+      </div>
+    </div>
     <div v-else-if="!displayed.length" class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-8 text-center text-gray-400">
       Нет сданных отчётов под выбранный фильтр
     </div>

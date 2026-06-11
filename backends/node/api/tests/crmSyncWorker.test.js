@@ -87,6 +87,24 @@ test('recover() resolves to 0 without throwing when the store lacks reclaimStale
   assert.equal(n, 0, 'recover is a safe no-op when reclaimStale is absent');
 });
 
+test('recover() passes runningTimeoutMs > 0 to reclaimStale (scoped claim)', async () => {
+  const calls = { reclaim: [] };
+  const store = {
+    async claimNextDue() { return null; },
+    async markDone() {}, async markFailed() {}, async reschedule() {},
+    async reclaimStale(args) { calls.reclaim.push(args); return 0; }
+  };
+  const worker = createCrmSyncWorker({ store, runSync: async () => {} });
+  await worker.recover();
+  assert.equal(calls.reclaim.length, 1, 'reclaimStale called exactly once');
+  const arg = calls.reclaim[0];
+  assert.ok(arg !== undefined && arg !== null, 'reclaimStale called with an argument object');
+  assert.ok(
+    typeof arg?.runningTimeoutMs === 'number' && arg.runningTimeoutMs > 0,
+    `runningTimeoutMs must be a positive number, got: ${JSON.stringify(arg)}`
+  );
+});
+
 test('worker does not misclassify a markDone failure as a sync failure', async () => {
   const calls = { failed: [], reschedule: [] };
   let job = makeJob({ attempts: 0, max_attempts: 4 });

@@ -8,6 +8,8 @@ const period  = ref<PeriodKey>('today')
 const customFrom = ref(''); const customTo = ref('')
 const azsFilter = ref<string[]>([])
 const azsOptions = ref<Array<{ value: string; label: string }>>([])
+const azsOptionsError = ref(false)
+const azsOptionsLoading = ref(false)
 
 type SummaryType = { total: number; done: number; expired: number; open: number; failed: number; overdue: number; byStatus: Record<string, number> }
 type ReportItem = {
@@ -63,11 +65,22 @@ const STATUS_COLOR: Record<string, string> = {
 }
 const fmtTime = (iso: string | null) => iso ? DateTime.fromISO(iso).toFormat('HH:mm') : '—'
 
-onMounted(async () => {
+const loadAzsOptions = async () => {
+  if (azsOptionsLoading.value) return
+  azsOptionsLoading.value = true
   try {
     const resp = await apiStore.getAzsOptions({ limit: 500 })
     azsOptions.value = resp.items.map(i => ({ value: String(i.id), label: i.title || `АЗС ${i.id}` }))
-  } catch { /* non-fatal */ }
+    azsOptionsError.value = false
+  } catch {
+    azsOptionsError.value = true
+  } finally {
+    azsOptionsLoading.value = false
+  }
+}
+
+onMounted(async () => {
+  await loadAzsOptions()
   await load()
 })
 watch(period, load)
@@ -92,15 +105,21 @@ watch(period, load)
         >{{ lbl }}</button>
       </div>
       <!-- AZS multi-select -->
-      <B24InputMenu
-        v-model="azsFilter"
-        :items="azsOptions"
-        value-attribute="value"
-        option-attribute="label"
-        multiple
-        placeholder="Все АЗС"
-        class="min-w-[180px]"
-      />
+      <div class="flex flex-col gap-1">
+        <B24InputMenu
+          v-model="azsFilter"
+          :items="azsOptions"
+          value-attribute="value"
+          option-attribute="label"
+          multiple
+          placeholder="Все АЗС"
+          class="min-w-[180px]"
+        />
+        <div v-if="azsOptionsError" class="flex items-center gap-1.5 text-[12px] text-red-600">
+          <span>Список АЗС не загрузился</span>
+          <button class="underline hover:no-underline disabled:opacity-50" :disabled="azsOptionsLoading" @click="loadAzsOptions">Повторить</button>
+        </div>
+      </div>
     </div>
 
     <!-- KPI cards -->
@@ -155,7 +174,24 @@ watch(period, load)
     </div>
 
     <!-- Таблица -->
-    <div v-if="loading" class="text-center py-8 text-gray-400">Загрузка…</div>
+    <div v-if="loading" class="bg-white border border-gray-200 rounded-[14px] shadow-sm overflow-hidden">
+      <!-- Шапка таблицы-скелетон -->
+      <div class="flex gap-3 px-3 py-2.5 border-b border-gray-100">
+        <SkeletonBlock height="0.75rem" width="15%" />
+        <SkeletonBlock height="0.75rem" width="20%" />
+        <SkeletonBlock height="0.75rem" width="15%" />
+        <SkeletonBlock height="0.75rem" width="15%" />
+        <SkeletonBlock height="0.75rem" width="18%" />
+      </div>
+      <!-- 6 строк данных -->
+      <div v-for="n in 6" :key="n" class="flex gap-3 px-3 py-2.5 border-b border-gray-50">
+        <SkeletonBlock height="2rem" width="15%" rounded="rounded-lg" />
+        <SkeletonBlock height="2rem" width="20%" rounded="rounded-lg" />
+        <SkeletonBlock height="2rem" width="15%" rounded="rounded-lg" />
+        <SkeletonBlock height="2rem" width="15%" rounded="rounded-lg" />
+        <SkeletonBlock height="1.5rem" width="18%" rounded="rounded-full" />
+      </div>
+    </div>
     <B24Alert v-else-if="error" color="air-primary-alert" :description="error" />
     <div v-else class="bg-white border border-gray-200 rounded-[14px] shadow-sm overflow-x-auto">
       <table class="w-full text-[13px] border-collapse">

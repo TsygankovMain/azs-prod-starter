@@ -51,6 +51,7 @@ COPY infrastructure/timeweb/supervisord.conf /etc/supervisor/conf.d/supervisord.
 COPY infrastructure/timeweb/start-postgres.sh /usr/local/bin/start-postgres.sh
 COPY infrastructure/timeweb/init-db.sh /usr/local/bin/init-db.sh
 COPY infrastructure/timeweb/start-backend.sh /usr/local/bin/start-backend.sh
+COPY infrastructure/timeweb/timeweb-root-ca.crt /opt/app/infrastructure/timeweb/timeweb-root-ca.crt
 
 RUN chmod +x \
   /usr/local/bin/start-postgres.sh \
@@ -58,5 +59,11 @@ RUN chmod +x \
   /usr/local/bin/start-backend.sh
 
 EXPOSE 8080
+
+# nginx listens on 8080 and proxies /api/ to Node on port 8000.
+# Checking through nginx reflects the full stack (proxy + app).
+# curl is already present in the apt-get install above.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+  CMD curl -fsS --max-time 3 http://127.0.0.1:8080/api/healthz || exit 1
 
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

@@ -11,12 +11,14 @@ const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
 const userStore = useUserStore()
 const route = useRoute()
+const toast = useAppToast()
 
 let $b24: null | B24Frame = null
 
 const isInit = ref(false)
 const isAzsAdminWaiting = ref(false)
 const isLoading = ref(false)
+const openingReport = ref(false)
 const healthStatus = ref<'unknown' | 'ok' | 'error'>('unknown')
 const healthText = ref('Проверка API...')
 const homeNotice = ref('')
@@ -107,17 +109,27 @@ const openPage = async (path: string) => {
 }
 
 const openAdminReport = async () => {
+  if (openingReport.value) return
+  openingReport.value = true
   homeNotice.value = ''
-  const response = await apiStore.getMyActiveReport(20)
-  const reportId = Number(response?.item?.id || 0)
-  if (reportId > 0) {
-    await navigateTo(`/admin/${reportId}`)
-    return
+  try {
+    const response = await apiStore.getMyActiveReport(20)
+    const reportId = Number(response?.item?.id || 0)
+    if (reportId > 0) {
+      await navigateTo(`/admin/${reportId}`)
+      return
+    }
+    homeNotice.value = 'Нет активного отчёта для загрузки. Дождитесь уведомления бота или создайте отчёт вручную из раздела Проверка.'
+  } catch (error) {
+    console.error('openAdminReport failed', error)
+    toast.error('Не удалось открыть отчёт. Проверьте соединение и попробуйте ещё раз.')
+  } finally {
+    openingReport.value = false
   }
-  homeNotice.value = 'Нет активного отчёта для загрузки. Дождитесь уведомления бота или создайте отчёт вручную из раздела Проверка.'
 }
 
 const recheckAdminReport = async () => {
+  if (isLoading.value) return
   homeNotice.value = ''
   isAzsAdminWaiting.value = false
   isLoading.value = true
@@ -131,6 +143,28 @@ const recheckAdminReport = async () => {
     isLoading.value = false
   }
 }
+
+let recheckTimer: ReturnType<typeof setInterval> | null = null
+
+watch(isAzsAdminWaiting, (visible) => {
+  if (visible && !recheckTimer) {
+    recheckTimer = setInterval(() => {
+      void recheckAdminReport().catch((err) => {
+        console.warn('recheckAdminReport poll error', err)
+      })
+    }, 60_000)
+  } else if (!visible && recheckTimer) {
+    clearInterval(recheckTimer)
+    recheckTimer = null
+  }
+}, { immediate: true })
+
+onUnmounted(() => {
+  if (recheckTimer) {
+    clearInterval(recheckTimer)
+    recheckTimer = null
+  }
+})
 
 const openScreen = async (screen: { key: string, path: string }) => {
   if (screen.key === 'admin') {
@@ -243,7 +277,7 @@ const extractApiErrorMessage = (error: unknown): string => {
 const checkBackend = async () => {
   try {
     if (!apiStore.isInitTokenJWT) {
-      await apiStore.reinitToken()
+      await apiStore.ensureFreshToken({ force: true })
     }
 
     const health = await apiStore.checkHealth()
@@ -397,7 +431,8 @@ onMounted(async () => {
             color="air-primary"
             variant="solid"
             :label="`Открыть: ${screen.title}`"
-            loading-auto
+            :loading="screen.key === 'admin' ? openingReport : undefined"
+            :loading-auto="screen.key !== 'admin'"
             @click="openScreen(screen)"
           />
         </B24Card>
@@ -458,12 +493,15 @@ onMounted(async () => {
           <ProseP class="text-[12px] text-gray-500">
             Пользователь: {{ userStore.id || 'unknown' }} | Роль: {{ currentRole }}
           </ProseP>
-          <B24Button
-            color="air-secondary"
-            label="Проверить снова"
-            loading-auto
-            @click="recheckAdminReport"
-          />
+          <div class="flex flex-col items-end gap-1">
+            <B24Button
+              color="air-secondary"
+              label="Проверить снова"
+              loading-auto
+              @click="recheckAdminReport"
+            />
+            <ProseP class="text-[12px] text-gray-500">Проверяем автоматически раз в минуту</ProseP>
+          </div>
         </div>
       </template>
     </B24Card>

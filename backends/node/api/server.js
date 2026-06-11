@@ -32,6 +32,23 @@ import { createTokenRefreshScheduler } from './src/auth/tokenRefreshScheduler.js
 import { resolveAccessContext } from './src/access/roleResolver.js';
 import createReasonStore from './src/reports/reasonStore.js';
 import createReasonForwardingService from './src/notifications/reasonForwardingService.js';
+import { validateRequiredEnv } from './utils/validateEnv.js';
+import { resolvePgSslConfig } from './utils/dbSsl.js';
+import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from './src/shared/transientErrors.js';
+
+try {
+  validateRequiredEnv();
+} catch (error) {
+  console.error('[fatal]', error.message);
+  process.exit(1);
+}
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] unhandledRejection:', reason);
+});
+process.on('uncaughtException', (error) => {
+  console.error('[process] uncaughtException:', error);
+});
 
 const app = express();
 app.use(cors());
@@ -55,8 +72,28 @@ const pool = dbType === 'mysql'
     port: Number(process.env.DB_PORT || defaultDbPort),
     database: process.env.DB_NAME || 'appdb',
     user: process.env.DB_USER || 'appuser',
-    password: process.env.DB_PASSWORD || 'apppass'
+    password: process.env.DB_PASSWORD || 'apppass',
+    // Waiting for a free connection must not be infinite: if the pool is
+    // saturated a new request fails after 3 s with an error (→ 500) instead
+    // of blocking forever and piling up in memory.
+    connectionTimeoutMillis: 3000,
+    // TLS: resolved from DB_SSL / DB_SSL_CA_CONTENT / DB_SSL_CA env vars.
+    // undefined = no TLS (dev default); see utils/dbSsl.js for details.
+    ...(resolvePgSslConfig(process.env) !== undefined
+      ? { ssl: resolvePgSslConfig(process.env) }
+      : {})
   });
+
+// pg Pool emits 'error' for idle connection drops — without a listener it becomes
+// an uncaughtException and kills the process. mysql2 pools do NOT emit pool-level
+// 'error' (per-query errors surface on the query promise), so for mysql this listener
+// is a harmless no-op.
+const onPoolError = (error) => {
+  console.error('[db] idle connection error (recovered):', error.message);
+};
+if (typeof pool.on === 'function') {
+  pool.on('error', onPoolError);
+}
 
 const parseUserId = (value) => {
   const parsed = Number(value);
@@ -274,14 +311,33 @@ app.get('/', (_req, res) => {
   ]);
 });
 
-// Public liveness/readiness probe for platform health checks.
-// Keep this endpoint auth-free and keep /api/health protected.
-app.get('/api/healthz', (_req, res) => {
-  res.status(200).json({
-    status: 'ok',
-    backend: 'node',
-    timestamp: Math.floor(Date.now() / 1000)
-  });
+// Public liveness/readiness probes — both auth-free.
+// /api/livez: always 200 (process is up).
+// /api/healthz: 200 if DB is reachable, 503 otherwise (≤2 s timeout).
+app.get('/api/livez', (_req, res) => res.json({ ok: true }));
+
+app.get('/api/healthz', async (_req, res) => {
+  // Per-query timeout (1800 ms) cancels the query at the driver level and
+  // releases the pool slot even if the DB is hung. Without this, every
+  // healthcheck probe (every 30 s) would leave a dangling pool checkout,
+  // eventually exhausting the pool.
+  // Note: this is intentionally NOT a global pool-level timeout — long
+  // analytical queries must not be cut off mid-flight.
+  // The outer race (2 s) is kept as a second line of defence.
+  const probeQuery = dbType === 'mysql'
+    ? { sql: 'SELECT 1', timeout: 1800 }        // mysql2: per-query timeout
+    : { text: 'SELECT 1', query_timeout: 1800 }; // pg: client-side query_timeout
+  try {
+    await Promise.race([
+      pool.query(probeQuery),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('db healthcheck timeout')), 2000).unref()
+      ),
+    ]);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(503).json({ ok: false, error: 'db_unavailable' });
+  }
 });
 
 app.get('/api/health', verifyToken, attachAccessContext, (req, res) => {
@@ -551,7 +607,7 @@ app.post('/api/getToken', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
@@ -646,7 +702,7 @@ const crmSyncWorker = createCrmSyncWorker({
   runSync: buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore }),
   backoffMs: [800, 1600, 3200],
   pollIntervalMs: Number(process.env.CRM_SYNC_POLL_MS || 1000),
-  isRetryable: (error) => /(OPERATION_TIME_LIMIT|QUERY_LIMIT_EXCEEDED|HTTP 429|HTTP 504|too many requests|gateway timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|network error|timeout)/i.test(String(error?.message || error || ''))
+  isRetryable: (error) => RETRYABLE_TRANSIENT_ERROR_PATTERN.test(String(error?.message || error || ''))
 });
 if (String(process.env.CRM_SYNC_WORKER_ENABLED || 'true').toLowerCase() === 'true') {
   // Crash recovery first: re-queue any 'running' jobs orphaned by a previous
@@ -668,3 +724,68 @@ const tokenRefreshScheduler = createTokenRefreshScheduler({
 });
 
 tokenRefreshScheduler.start();
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown — handles SIGTERM (deploy) and SIGINT (Ctrl-C / nodemon)
+// ---------------------------------------------------------------------------
+let shuttingDown = false;
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const startedAt = Date.now();
+  console.log(`[process] ${signal}: graceful shutdown started`);
+
+  // Force exit after 10 s so a hung dependency never keeps the container alive.
+  const force = setTimeout(() => {
+    console.error('[process] shutdown timeout, forcing exit');
+    process.exit(1);
+  }, 10_000);
+  force.unref();
+
+  try {
+    // 1. Stop accepting new HTTP requests and wait for in-flight ones to finish.
+    await new Promise((resolve) => {
+      server.close(resolve);
+      // server.close() does not touch already-open idle keep-alive sockets
+      // (nginx proxy_http_version 1.1) — without this, close waits for
+      // keepAliveTimeout (~5 s) on every deploy. Active requests are not affected.
+      if (typeof server.closeIdleConnections === 'function') {
+        server.closeIdleConnections();
+      }
+    });
+
+    // 2. Stop background schedulers / workers.
+    //    scheduler and tokenRefreshScheduler are always created; crmSyncWorker
+    //    may not have been started (CRM_SYNC_WORKER_ENABLED=false) — optional
+    //    chaining keeps shutdown safe in both cases.
+    scheduler.stop?.();
+    tokenRefreshScheduler.stop?.();
+    crmSyncWorker.stop?.();
+
+    // 3. Flush any in-flight auth-context writes so the refresh token is not lost.
+    await authContextStore.flush();
+
+    // 4. Close the DB pool. pool.end() can hang if the DB is unreachable, so we
+    //    race it against a 3 s timeout — if it loses we log and proceed anyway.
+    if (typeof pool.end === 'function') {
+      const poolEndPromise = pool.end().catch((err) => {
+        console.warn('[process] pool.end() error:', err?.message ?? err);
+      });
+      await Promise.race([
+        poolEndPromise,
+        new Promise((resolve) => setTimeout(resolve, 3000).unref())
+          .then(() => { console.warn('[process] pool.end() timed out (3 s) — proceeding'); })
+      ]);
+    }
+
+    console.log(`[process] graceful shutdown complete in ${Date.now() - startedAt} ms`);
+  } catch (error) {
+    console.error('[process] shutdown error:', error);
+  }
+
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

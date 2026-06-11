@@ -6,9 +6,11 @@ import { updateReportCrmItem } from './reportCrmSync.js';
 import { generateDailyPlan } from '../dispatch/dispatchPlanGenerator.js';
 import { createAnalyticsRouter } from './analyticsRoutes.js';
 
+import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from '../shared/transientErrors.js';
+
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const EXIF_MAX_AGE_MINUTES = Number(process.env.EXIF_MAX_AGE_MINUTES || 720);
-const RETRYABLE_UPLOAD_ERROR_PATTERN = /(OPERATION_TIME_LIMIT|QUERY_LIMIT_EXCEEDED|HTTP 429|HTTP 504|too many requests|gateway timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|network error|timeout)/i;
+const RETRYABLE_UPLOAD_ERROR_PATTERN = RETRYABLE_TRANSIENT_ERROR_PATTERN;
 
 class ReportConfigError extends Error {
   constructor(message, code = 'report_config_error') {

@@ -1,3 +1,5 @@
+import { createGuardedTick } from '../shared/guardedTick.js';
+
 export const createDispatchScheduler = ({
   dispatchService,
   getCandidates,
@@ -514,6 +516,16 @@ export const createDispatchScheduler = ({
     return dispatchService.dispatchBatch({ candidates, trigger: 'auto', context });
   };
 
+  // ---------------------------------------------------------------------------
+  // Overlap guards (S1-03): each cron callback gets its own guard so a slow
+  // Bitrix response can never cause two concurrent runs of the same job type.
+  // onSkip emits a warn-level log with a structured marker for alerting.
+  // ---------------------------------------------------------------------------
+  const guardedDispatchTick = createGuardedTick({
+    runOnce,
+    onSkip: () => logger.warn('dispatchScheduler: dispatch.tick_skipped_overlap — previous tick still running, skipping')
+  });
+
   const start = async () => {
     if (!enabled) {
       logger.info('dispatchScheduler: disabled');
@@ -530,8 +542,10 @@ export const createDispatchScheduler = ({
 
     dispatchTask = cron.schedule(cronExpression, async () => {
       try {
-        const result = await runOnce();
-        logger.info('dispatchScheduler: run finished', result.summary ?? result);
+        const result = await guardedDispatchTick();
+        if (!result?.skipped) {
+          logger.info('dispatchScheduler: run finished', result.summary ?? result);
+        }
       } catch (error) {
         logger.error('dispatchScheduler: run failed', { error: error.message });
       }
@@ -540,11 +554,20 @@ export const createDispatchScheduler = ({
     logger.info('dispatchScheduler: started', { cronExpression });
 
     if (timeoutWatcher && typeof timeoutWatcher.runOnce === 'function') {
+      const guardedTimeoutTick = createGuardedTick({
+        runOnce: async () => {
+          const context = await getRuntimeContext().catch(() => ({}));
+          return timeoutWatcher.runOnce({ context });
+        },
+        onSkip: () => logger.warn('dispatchScheduler: timeout.tick_skipped_overlap — previous tick still running, skipping')
+      });
+
       timeoutTask = cron.schedule(timeoutCronExpression, async () => {
         try {
-          const context = await getRuntimeContext().catch(() => ({}));
-          const summary = await timeoutWatcher.runOnce({ context });
-          logger.info('timeoutScheduler: run finished', summary);
+          const result = await guardedTimeoutTick();
+          if (!result?.skipped) {
+            logger.info('timeoutScheduler: run finished', result);
+          }
         } catch (error) {
           logger.error('timeoutScheduler: run failed', { error: error.message });
         }
@@ -565,12 +588,22 @@ export const createDispatchScheduler = ({
       const planSettings = settingsStore ? await settingsStore.read().catch(() => ({})) : {};
       const planTz = String(planSettings?.timezone || process.env.DEFAULT_TIMEZONE || 'Europe/Moscow').trim();
 
-      generationTask = cron.schedule(planGenerationCron, async () => {
-        try {
+      const guardedGenerationTick = createGuardedTick({
+        runOnce: async () => {
           // "today" in the configured settings timezone — so '1 0 * * *' means
           // 00:01 in the settings tz, and dateKey is also the settings-tz date.
           const today = getTimeParts(nowFn(), planTz).dateKey;
-          await generatePlanForDate(today);
+          return generatePlanForDate(today);
+        },
+        onSkip: () => logger.warn('dispatchScheduler: generation.tick_skipped_overlap — previous tick still running, skipping')
+      });
+
+      generationTask = cron.schedule(planGenerationCron, async () => {
+        try {
+          const result = await guardedGenerationTick();
+          if (!result?.skipped) {
+            logger.info('dispatchScheduler: generation cron finished', result);
+          }
         } catch (error) {
           logger.error('dispatchScheduler: generation cron failed', { error: error.message });
         }
@@ -606,7 +639,9 @@ export const createDispatchScheduler = ({
   return {
     start,
     stop,
-    runOnce
+    // Exposed for direct invocation (tests, boot bootstrap, manual trigger).
+    // The guarded variant is used so the public interface is also overlap-safe.
+    runOnce: guardedDispatchTick
   };
 };
 

@@ -190,6 +190,12 @@ export class AuthContextStore {
     return { key, context };
   }
 
+  // Waits for all pending serialized writes to complete.
+  // Call this during graceful shutdown to ensure no in-flight write is lost.
+  async flush() {
+    await this.writeChain;
+  }
+
   // Returns every stored context. Used by tokenRefreshScheduler to walk all
   // user records and pre-emptively refresh the ones nearing 30-day expiry.
   async listContexts() {

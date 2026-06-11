@@ -63,7 +63,31 @@ watch(period, load)
       <span class="text-[12px] text-gray-400 self-center">Клик по заголовку столбца — сортировка</span>
     </div>
 
-    <div v-if="loading" class="text-center py-8 text-gray-400">Загрузка…</div>
+    <div v-if="loading" class="bg-white border border-gray-200 rounded-[14px] shadow-sm overflow-hidden">
+      <!-- Шапка скелетон-таблицы R2 -->
+      <div class="flex gap-2 px-3 py-2.5 border-b border-gray-100">
+        <SkeletonBlock height="0.75rem" width="4%" />
+        <SkeletonBlock height="0.75rem" width="22%" />
+        <SkeletonBlock height="0.75rem" width="10%" />
+        <SkeletonBlock height="0.75rem" width="10%" />
+        <SkeletonBlock height="0.75rem" width="10%" />
+        <SkeletonBlock height="0.75rem" width="22%" />
+        <SkeletonBlock height="0.75rem" width="12%" />
+      </div>
+      <!-- 6 строк рейтинга -->
+      <div v-for="n in 6" :key="n" class="flex gap-2 items-center px-3 py-2.5 border-b border-gray-50">
+        <SkeletonBlock height="1rem" width="4%" />
+        <div class="flex flex-col gap-1 w-[22%]">
+          <SkeletonBlock height="0.875rem" width="80%" />
+          <SkeletonBlock height="0.75rem" width="50%" />
+        </div>
+        <SkeletonBlock height="1rem" width="10%" />
+        <SkeletonBlock height="1rem" width="10%" />
+        <SkeletonBlock height="1rem" width="10%" />
+        <SkeletonBlock height="0.5rem" width="22%" rounded="rounded-full" />
+        <SkeletonBlock height="1rem" width="12%" />
+      </div>
+    </div>
     <B24Alert v-else-if="error" color="air-primary-alert" :description="error" />
     <div v-else class="bg-white border border-gray-200 rounded-[14px] shadow-sm overflow-x-auto">
       <table class="w-full text-[13px] border-collapse">

@@ -499,3 +499,124 @@ test('webhook context: a refreshable-looking error is NOT OAuth-refreshed (no re
     global.fetch = originalFetch;
   }
 });
+
+// ---------------------------------------------------------------------------
+// S1-03: 503 / Retry-After / AbortError (timeout) tests
+// ---------------------------------------------------------------------------
+
+test('bitrix client retries HTTP 503 and succeeds on second attempt', async () => {
+  const originalFetch = global.fetch;
+  let attempt = 0;
+
+  global.fetch = async (url) => {
+    if (String(url).includes('/app.info.json')) {
+      attempt += 1;
+      if (attempt === 1) {
+        return {
+          ok: false,
+          status: 503,
+          headers: { get: () => null },
+          async text() { return 'Service Unavailable'; }
+        };
+      }
+      return createJsonResponse({ result: { status: 'L' } });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://test.bitrix24.ru/rest',
+      authId: 'token',
+      retryBackoffMs: [0, 0, 0],
+      logger: { info() {}, error() {} }
+    });
+
+    const result = await client.callMethod('app.info', {});
+    assert.equal(result.status, 'L');
+    assert.equal(attempt, 2, '503 must trigger a retry');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('bitrix client respects Retry-After header on 503 (uses header delay not default backoff)', async () => {
+  const originalFetch = global.fetch;
+  let attempt = 0;
+  const sleepDelays = [];
+  // We will inject a spy sleep by temporarily overriding sleep via the constructor
+  // and checking the retryAfterMs property on the thrown error.
+
+  // Strategy: inject retryBackoffMs=[99999] so default backoff is huge,
+  // but Retry-After:0 should override it to near-zero delay — test completes fast.
+  global.fetch = async (url) => {
+    if (String(url).includes('/app.info.json')) {
+      attempt += 1;
+      if (attempt === 1) {
+        return {
+          ok: false,
+          status: 503,
+          headers: { get: (h) => h.toLowerCase() === 'retry-after' ? '0' : null },
+          async text() { return 'Service Unavailable'; }
+        };
+      }
+      return createJsonResponse({ result: { status: 'L' } });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://test.bitrix24.ru/rest',
+      authId: 'token',
+      // Large default backoff — would make test slow if Retry-After is ignored
+      retryBackoffMs: [5000, 5000, 5000],
+      logger: { info() {}, error() {} }
+    });
+
+    const start = Date.now();
+    const result = await client.callMethod('app.info', {});
+    const elapsed = Date.now() - start;
+
+    assert.equal(result.status, 'L');
+    assert.equal(attempt, 2);
+    // Retry-After:0 → delay should be close to 0 (under 2000ms), not the 5000ms default backoff
+    assert.ok(elapsed < 2000, `Retry-After:0 should result in fast retry, got ${elapsed}ms`);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('bitrix client treats AbortError (timeout) as transient and retries', async () => {
+  const originalFetch = global.fetch;
+  let attempt = 0;
+
+  global.fetch = async (url) => {
+    if (String(url).includes('/app.info.json')) {
+      attempt += 1;
+      if (attempt === 1) {
+        // Simulate AbortSignal.timeout() firing
+        const err = new Error('The operation was aborted due to timeout');
+        err.name = 'TimeoutError';
+        throw err;
+      }
+      return createJsonResponse({ result: { status: 'L' } });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://test.bitrix24.ru/rest',
+      authId: 'token',
+      retryBackoffMs: [0, 0, 0],
+      logger: { info() {}, error() {} }
+    });
+
+    const result = await client.callMethod('app.info', {});
+    assert.equal(result.status, 'L');
+    assert.equal(attempt, 2, 'TimeoutError must trigger a retry');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

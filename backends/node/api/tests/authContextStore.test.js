@@ -135,6 +135,40 @@ test('refreshTokenIssuedAt is preserved across upserts', async () => {
   assert.equal(ctx.isAdmin, true);
 });
 
+test('flush: дожидается завершения всех отложенных записей', async () => {
+  let dir = '';
+  try {
+    dir = await mkdtemp(join(tmpdir(), 'auth-context-flush-'));
+  } catch (error) {
+    if (error?.code === 'EPERM') return;
+    throw error;
+  }
+  const filePath = join(dir, 'auth-context-flush.json');
+  const store = new AuthContextStore(filePath);
+
+  // Запускаем upsert БЕЗ await — запись идёт в цепочку, но ещё не закончена
+  store.upsertContext({
+    memberId: 'm1',
+    domain: 'nfr-mainsoft.bitrix24.ru',
+    userId: 1,
+    authId: 'access-flush',
+    refreshToken: 'refresh-flush',
+    isAdmin: true
+  });
+
+  // flush() должен дождаться завершения записи в цепочке
+  await store.flush();
+
+  // После flush файл должен уже содержать запись
+  const ctx = await store.getContext({
+    memberId: 'm1',
+    domain: 'nfr-mainsoft.bitrix24.ru',
+    userId: 1
+  });
+  assert.equal(ctx?.authId, 'access-flush', 'flush должен дождаться записи на диск');
+  assert.equal(ctx?.refreshToken, 'refresh-flush');
+});
+
 test('auth context store handles concurrent upserts without loss', async () => {
   let dir = '';
   try {

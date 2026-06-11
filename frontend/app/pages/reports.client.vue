@@ -14,13 +14,17 @@ const activeTab = ref<ReportTab>('r1')
 
 const hasAccess = ref(false)
 const accessError = ref('')
+const loadError = ref('')
 
 let $b24: null | B24Frame = null
 
-onMounted(async () => {
+const loadPage = async () => {
+  loadError.value = ''
   try {
-    $b24 = await $initializeB24Frame()
-    await initApp($b24, localesI18n, setLocale)
+    if (!$b24) {
+      $b24 = await $initializeB24Frame()
+      await initApp($b24, localesI18n, setLocale)
+    }
     const roleResp = await apiStore.getMyRole()
     hasAccess.value = Boolean(
       roleResp.capabilities?.reviewer || roleResp.capabilities?.settings || roleResp.capabilities?.reports
@@ -29,16 +33,39 @@ onMounted(async () => {
       accessError.value = 'Недостаточно прав для просмотра отчётов'
       return
     }
+    accessError.value = ''
     await $b24.parent.setTitle(PAGE_TITLE)
   } catch (e) {
-    processErrorGlobal(e)
+    // guard опирается на то, что после выставления accessError исключений до return не происходит;
+    // при изменении логики ниже — пересмотреть (риск молчаливого поглощения ошибок)
+    if (accessError.value) return // role-check already recorded
+    const msg = e instanceof Error ? e.message : 'Ошибка загрузки'
+    // Bitrix24Frame init errors are fatal — delegate to global error page
+    if (msg.includes('Unable to initialize Bitrix24Frame')) {
+      processErrorGlobal(e)
+      return
+    }
+    loadError.value = msg
   }
-})
+}
+
+onMounted(loadPage)
 </script>
 
 <template>
   <div class="w-full bg-[#eef1f4] min-h-screen">
     <B24Alert v-if="accessError" color="air-primary-alert" :description="accessError" class="m-4" />
+    <div v-else-if="loadError" class="m-4 flex flex-col gap-2">
+      <B24Alert color="air-primary-alert" title="Ошибка загрузки" :description="loadError" />
+      <div>
+        <button
+          class="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium"
+          @click="loadPage"
+        >
+          ↻ Повторить
+        </button>
+      </div>
+    </div>
     <template v-else-if="hasAccess">
       <div class="flex min-h-screen">
         <ReportNav v-model:active="activeTab" class="hidden lg:block" />

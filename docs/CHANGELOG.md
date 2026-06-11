@@ -6,6 +6,37 @@
 
 ---
 
+## Спринт «UX-доверие» — 2026-06-11 (ветка feature/sprints-stability-ux)
+
+План: `docs/superpowers/plans/2026-06-10-sprint-2-ux-trust.md`. Выполнен агентами (Sonnet) с двухступенчатым ревью каждой задачи. Только фронтенд.
+
+- Toast-слой: обёртка `useAppToast` (success/error/info + actions) над встроенной системой b24ui (`B24Toaster`), один инстанс в `app.vue`; modal поднят над тостами через `app.config.ts`.
+- Действия проверяющего: `withPending` (защита от дабл-клика) + видимый результат (тост успеха/ошибки) для «Запросить повторно», ресинка, массовой рассылки и прогона просрочек; стабильная ширина кнопок.
+- Подтверждение массовых действий: `useConfirm` (promise-API, без зависших промисов) + `ConfirmDialog` на `B24Modal` — рассылка на N АЗС, генерация плана, ручной таймаут больше не выполняются одним кликом; в тексте — число затрагиваемых АЗС.
+- Ошибки без тупика: `error.vue` — человеческий текст + кнопка «Обновить» + технические детали под спойлером, `console.log` удалён; кнопки «Повторить» у ошибок загрузки (reviewer, reports, R5); видимая деградация фильтра АЗС с retry (R1, R4).
+- Скелетоны загрузки вместо «Загрузка…»: `SkeletonBlock` на базе `B24Skeleton`, структурно повторяют финальные сетки (R1–R5, лента reviewer) — устранён сдвиг контента на медленной сети.
+- Мобильная страница причины: пресеты 2 колонки с тап-таргетами ≥48px и aria-pressed, автофокус «Другое» со скроллом к полю, sticky-кнопка «Сохранить».
+- Главная: открытие отчёта с обработкой ошибки и гарантированным сбросом спиннера; авто-проверка появления отчёта раз в минуту (без тост-спама в фоне).
+- Сборка и линт чистые; интеграционное ревью всей ветки: READY (25 коммитов, +1651/−169 в 43 файлах).
+- Отложено до smoke на dev-портале: 10 сценариев (чек-лист в отчёте интеграционного ревью; ключевые — confirm-диалог рассылки, скелетоны на Slow 3G, error.vue с восстановлением, мобильная форма причины).
+
+---
+
+## Спринт «Стабильность» — 2026-06-11 (ветка feature/sprints-stability-ux)
+
+План: `docs/superpowers/plans/2026-06-10-sprint-1-stability.md`. Выполнен агентами (Sonnet) с двухступенчатым ревью каждой задачи.
+
+- Fail-fast валидация окружения: без `JWT_SECRET` процесс не стартует (exit 1) вместо тихой поломки auth; глобальные обработчики `unhandledRejection`/`uncaughtException` (log-only); слушатель ошибок pg-пула — рестарт Postgres ночью больше не роняет процесс.
+- Graceful shutdown по SIGTERM/SIGINT: `server.close` + `closeIdleConnections()` (без 5с keep-alive задержки на деплой), остановка всех планировщиков, `authContextStore.flush()` (новый метод — дописывает токен на диск), `pool.end()` с 3с таймаутом, force-exit 10с.
+- Анти-спираль Bitrix: overlap-guard на всех трёх cron-тиках (`src/shared/guardedTick.js`), таймауты на все fetch (`BITRIX_HTTP_TIMEOUT_MS`=30с, для скачивания фото отдельный `BITRIX_HTTP_DOWNLOAD_TIMEOUT_MS`=120с), ретраи HTTP 503 с уважением `Retry-After`, общий модуль `src/shared/transientErrors.js` вместо 3 копий паттерна (сужен от ложных срабатываний на БД lock/statement timeout).
+- Согласованность данных: `recover()` реклеймит только осиротевшие задачи (`CRM_SYNC_STALE_RUNNING_MS`, дефолт 5 мин, NaN-guard) — безопасно для rolling-deploy; статус `expired` ставится только ПОСЛЕ успешного CRM-апдейта (сбой CRM больше не «хоронит» отчёт, повтор следующим тиком).
+- Честный healthcheck: `/api/healthz` = SELECT 1 с per-query таймаутом (слот пула не зависает) → 503 при мёртвой БД; `/api/livez` — статический; `HEALTHCHECK` в Dockerfile (start-period 120с, curl --max-time 3); ротация логов 10m×3 всем сервисам compose; `mem_limit: 1g` + `memswap_limit` + `NODE_OPTIONS=--max-old-space-size=768` (compose и supervisord) против OOM-kill; `connectionTimeoutMillis: 3000` у pg-пула.
+- Фронтенд: единый дедуплицированный путь обновления JWT через `ensureFreshToken({force})` (устранена гонка таймер/visibility/401-интерсептор — «срабатывает со второго раза»); `stop()` плагина снимает visibilitychange-слушатель.
+- Тесты: 240 → 276 зелёных; сборка фронтенда и линт чистые.
+- Отложено до smoke на dev-портале: ручные DevTools-проверки refresh-гонки, сценарий healthz с остановкой БД в docker.
+
+---
+
 ## Sprint 1 v2.0 — 2026-05-31 (ветка feature/v2.0)
 
 - Добавлена durable CRM-sync очередь: таблица `crm_sync_jobs` (PG+MySQL), `crmSyncJobStore` (enqueue/claim/markDone/markFailed/reschedule), воркер `crmSyncWorker` с backoff `[800,1600,3200]`+jitter.

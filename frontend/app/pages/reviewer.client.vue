@@ -54,6 +54,8 @@ const { locales: localesI18n, setLocale } = useI18n()
 const { initApp, processErrorGlobal } = useAppInit('ReviewerPage')
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
+const toast = useAppToast()
+const { confirm } = useConfirm()
 
 let $b24: null | B24Frame = null
 
@@ -496,6 +498,7 @@ const toggleAzsSelection = (value: string) => {
 }
 
 const sendManualRequest = async () => {
+  if (pendingActions.value.has('manual-send')) return
   manualError.value = ''
   manualSuccess.value = ''
 
@@ -504,6 +507,15 @@ const sendManualRequest = async () => {
     return
   }
 
+  const count = manualRequest.azsIds.length
+  const ok = await confirm({
+    title: 'Отправить запрос отчёта?',
+    text: `Push-уведомление будет отправлено ${count} АЗС сразу.`,
+    confirmLabel: `Отправить (${count})`,
+  })
+  if (!ok) return
+
+  pendingActions.value = new Set(pendingActions.value).add('manual-send')
   try {
     const now = new Date()
     const to2 = (n: number) => String(n).padStart(2, '0')
@@ -526,7 +538,6 @@ const sendManualRequest = async () => {
       slotHHmm
     })
 
-    const count = manualRequest.azsIds.length
     manualSuccess.value = `Задание отправлено для ${count} АЗС`
     manualRequest.azsIds = []
     azsSearchQuery.value = ''
@@ -535,32 +546,40 @@ const sendManualRequest = async () => {
     await loadAll()
   } catch (error) {
     manualError.value = extractApiError(error, 'Ошибка при отправке задания')
+  } finally {
+    const next = new Set(pendingActions.value)
+    next.delete('manual-send')
+    pendingActions.value = next
   }
 }
 
 const requestReportAgain = async (event: FeedEvent) => {
-  try {
-    const selectedAzs = azsOptions.value.find(o => o.value === event.azsId)
-    if (!selectedAzs) return
+  await withPending(`again:${event.azsId}:${event.reportRow.id}`, async () => {
+    try {
+      const selectedAzs = azsOptions.value.find(o => o.value === event.azsId)
+      if (!selectedAzs) return
 
-    const now = new Date()
-    const to2 = (n: number) => String(n).padStart(2, '0')
-    const slotDate = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
-    const slotHHmm = `${to2(now.getUTCHours())}${to2(now.getUTCMinutes())}`
+      const now = new Date()
+      const to2 = (n: number) => String(n).padStart(2, '0')
+      const slotDate = `${now.getUTCFullYear()}-${to2(now.getUTCMonth() + 1)}-${to2(now.getUTCDate())}`
+      const slotHHmm = `${to2(now.getUTCHours())}${to2(now.getUTCMinutes())}`
 
-    await apiStore.createManualReport({
-      candidates: [{
-        azsId: event.azsId,
-        adminUserId: selectedAzs.adminUserId
-      }],
-      slotDate,
-      slotHHmm
-    })
+      await apiStore.createManualReport({
+        candidates: [{
+          azsId: event.azsId,
+          adminUserId: selectedAzs.adminUserId
+        }],
+        slotDate,
+        slotHHmm
+      })
 
-    await loadAll()
-  } catch (error) {
-    console.error('Failed to request again', error)
-  }
+      toast.success('Повторный запрос создан')
+      await loadAll()
+    } catch (error) {
+      console.error('requestReportAgain failed', error)
+      toast.error('Не удалось отправить запрос. Проверьте соединение и повторите.')
+    }
+  })
 }
 
 const openPhotoFolder = (item: ReportRow) => {
@@ -612,9 +631,11 @@ const resyncReport = async (reportId: number) => {
   resyncingIds.value = new Set([...resyncingIds.value, reportId])
   try {
     await apiStore.resyncReport(reportId)
+    toast.success('Отчёт синхронизирован')
     await loadAll()
   } catch (error) {
     console.error('Ошибка пересинхронизации', error)
+    toast.error('Не удалось синхронизировать отчёт. Проверьте соединение и повторите.')
   } finally {
     const next = new Set(resyncingIds.value)
     next.delete(reportId)
@@ -658,6 +679,13 @@ const planGenerateMessage = ref('')
 const planGenerateError = ref('')
 
 const handleGeneratePlan = async () => {
+  const ok = await confirm({
+    title: 'Сформировать план рассылки?',
+    text: 'Будет создан новый план заданий для всех АЗС на сегодня. Уже запланированные задания будут заменены.',
+    confirmLabel: 'Сформировать',
+  })
+  if (!ok) return
+
   planGenerating.value = true
   planGenerateMessage.value = ''
   planGenerateError.value = ''
@@ -673,16 +701,42 @@ const handleGeneratePlan = async () => {
 }
 
 const runTimeout = async () => {
-  timeoutMessage.value = ''
+  const ok = await confirm({
+    title: 'Запустить проверку просрочек сейчас?',
+    text: 'Будет выполнен принудительный обход открытых заданий: просроченные отчёты получат статус «Не сдан».',
+    confirmLabel: 'Запустить',
+  })
+  if (!ok) return
+
+  await withPending('run-timeout', async () => {
+    timeoutMessage.value = ''
+    try {
+      const result = await apiStore.runTimeoutWatcher(200)
+      const summaryResult = result.summary as Record<string, unknown>
+      timeoutMessage.value = `Просрочки обработаны: total=${String(summaryResult.total || 0)}, expired=${String(summaryResult.expired || 0)}`
+      await loadAll()
+    } catch (error) {
+      timeoutMessage.value = error instanceof Error ? error.message : 'Ошибка'
+    }
+  })
+}
+
+// ── Pending-state helper (S2-02) ────────────────────────────────────────────
+// Prevents double-click duplicates and gives visual feedback on any action key.
+const pendingActions = ref<Set<string>>(new Set())
+
+async function withPending(key: string, fn: () => Promise<void>): Promise<void> {
+  if (pendingActions.value.has(key)) return // guard against double-click
+  pendingActions.value = new Set(pendingActions.value).add(key)
   try {
-    const result = await apiStore.runTimeoutWatcher(200)
-    const summaryResult = result.summary as Record<string, unknown>
-    timeoutMessage.value = `Просрочки обработаны: total=${String(summaryResult.total || 0)}, expired=${String(summaryResult.expired || 0)}`
-    await loadAll()
-  } catch (error) {
-    timeoutMessage.value = error instanceof Error ? error.message : 'Ошибка'
+    await fn()
+  } finally {
+    const next = new Set(pendingActions.value)
+    next.delete(key)
+    pendingActions.value = next
   }
 }
+// ────────────────────────────────────────────────────────────────────────────
 
 const scrollToQuickRequest = () => {
   const el = document.getElementById('quick-request-card')
@@ -861,14 +915,27 @@ onMounted(async () => {
           </div>
         </header>
 
-        <!-- Load error alert -->
-        <B24Alert
-          v-if="loadError && !hasReviewerAccess"
-          color="air-primary-alert"
-          title="Ошибка"
-          :description="loadError"
-          class="mb-6"
-        />
+        <!--
+          Сетевые ошибки ПЕРВИЧНОЙ инициализации уходят в processErrorGlobal → error.vue (там есть «Обновить»);
+          этот блок — для ошибок loadAll() после успешного init.
+        -->
+        <!-- Load error alert (general network / API errors) -->
+        <div v-if="loadError && hasReviewerAccess" class="mb-6 flex flex-col gap-2">
+          <B24Alert
+            color="air-primary-alert"
+            title="Ошибка загрузки"
+            :description="loadError"
+          />
+          <div>
+            <button
+              class="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium disabled:opacity-50"
+              :disabled="isLoading"
+              @click="loadAll"
+            >
+              {{ isLoading ? 'Загрузка…' : '↻ Повторить' }}
+            </button>
+          </div>
+        </div>
 
         <!-- Summary banner -->
         <section class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-6">
@@ -1020,6 +1087,26 @@ onMounted(async () => {
             </div>
 
             <div class="p-5 space-y-4">
+              <!-- Скелетоны ленты при первичной загрузке -->
+              <template v-if="isLoading && filteredEvents.length === 0">
+                <div v-for="n in 5" :key="`skel-${n}`" class="flex gap-3">
+                  <!-- Иконка-аватар -->
+                  <SkeletonBlock height="2.5rem" width="2.5rem" rounded="rounded-full" class="flex-shrink-0" />
+                  <!-- Тело карточки события -->
+                  <div class="flex-1 flex flex-col gap-2 pb-1">
+                    <div class="flex justify-between gap-3">
+                      <SkeletonBlock height="1rem" width="55%" />
+                      <SkeletonBlock height="0.75rem" width="3rem" />
+                    </div>
+                    <SkeletonBlock height="0.75rem" width="40%" />
+                    <div class="flex gap-2 mt-1">
+                      <SkeletonBlock height="1.5rem" width="6rem" rounded="rounded-md" />
+                      <SkeletonBlock height="1.5rem" width="6rem" rounded="rounded-md" />
+                    </div>
+                  </div>
+                </div>
+              </template>
+
               <div
                 v-for="event in filteredEvents"
                 :key="event.id"
@@ -1045,16 +1132,16 @@ onMounted(async () => {
                           <button
                             v-for="btn in event.buttons"
                             :key="btn.action"
-                            :disabled="btn.disabled"
+                            :disabled="btn.disabled || (btn.action === 'request-again' && pendingActions.has(`again:${event.azsId}:${event.reportRow.id}`))"
                             :class="[
                               'px-3 py-1 text-xs rounded-md transition-colors',
                               btn.action === 'request-again'
-                                ? 'bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50'
+                                ? 'min-w-36 bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50'
                                 : 'text-gray-600 hover:bg-gray-50 disabled:opacity-50'
                             ]"
                             @click="handleFeedAction(event, btn.action)"
                           >
-                            {{ btn.label }}
+                            {{ btn.action === 'request-again' && pendingActions.has(`again:${event.azsId}:${event.reportRow.id}`) ? 'Отправляем…' : btn.label }}
                           </button>
                         </template>
                         <!-- Resync button (#4): always shown on report-bearing items.
@@ -1062,7 +1149,7 @@ onMounted(async () => {
                         <button
                           v-if="event.reportRow.id"
                           :disabled="resyncingIds.has(event.reportRow.id)"
-                          class="px-3 py-1 text-xs rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                          class="min-w-36 px-3 py-1 text-xs rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-50 transition-colors"
                           @click="resyncReport(event.reportRow.id)"
                         >
                           {{ resyncingIds.has(event.reportRow.id) ? 'Синхронизация…' : 'Пересинхронизировать' }}
@@ -1073,7 +1160,7 @@ onMounted(async () => {
                 </div>
               </div>
 
-              <div v-if="filteredEvents.length === 0" class="text-center py-8 text-gray-500">
+              <div v-if="!isLoading && filteredEvents.length === 0" class="text-center py-8 text-gray-500">
                 Нет событий за выбранный период
               </div>
             </div>
@@ -1305,10 +1392,10 @@ onMounted(async () => {
 
                 <button
                   class="w-full px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-medium"
-                  :disabled="manualRequest.azsIds.length === 0"
+                  :disabled="manualRequest.azsIds.length === 0 || pendingActions.has('manual-send')"
                   @click="sendManualRequest"
                 >
-                  {{ manualRequest.azsIds.length > 0 ? `Запросить у ${manualRequest.azsIds.length} АЗС` : 'Выберите АЗС' }}
+                  {{ pendingActions.has('manual-send') ? 'Отправка…' : manualRequest.azsIds.length > 0 ? `Запросить у ${manualRequest.azsIds.length} АЗС` : 'Выберите АЗС' }}
                 </button>
 
                 <B24Alert
@@ -1452,10 +1539,11 @@ onMounted(async () => {
               </table>
             </div>
             <button
-              class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium"
+              class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium"
+              :disabled="pendingActions.has('run-timeout')"
               @click="runTimeout"
             >
-              Проверить просрочки
+              {{ pendingActions.has('run-timeout') ? 'Проверка…' : 'Проверить просрочки' }}
             </button>
             <B24Alert
               v-if="timeoutMessage"

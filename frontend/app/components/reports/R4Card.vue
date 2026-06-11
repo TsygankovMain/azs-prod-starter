@@ -5,6 +5,8 @@ const apiStore = useApiStore()
 
 type AzsOption = { value: string; label: string }
 const azsOptions = ref<AzsOption[]>([])
+const azsOptionsError = ref(false)
+const azsOptionsLoading = ref(false)
 const selectedAzsId = ref('')
 const reportHistory = ref<Array<{
   id: number; status: string; scheduledAt: string | null; deadlineAt: string | null; updatedAt: string | null
@@ -105,13 +107,25 @@ const GRAD: Record<string, string> = {
   area:    'linear-gradient(135deg,#7d9b5a,#4c6a31)',
 }
 
-onMounted(async () => {
+const loadAzsOptions = async () => {
+  if (azsOptionsLoading.value) return
+  azsOptionsLoading.value = true
   try {
     const resp = await apiStore.getAzsOptions({ limit: 500 })
     azsOptions.value = resp.items.map(i => ({ value: String(i.id), label: i.title || `АЗС ${i.id}` }))
-    if (azsOptions.value.length) { selectedAzsId.value = azsOptions.value[0].value; await load() }
-  } catch { /* non-fatal */ }
-})
+    azsOptionsError.value = false
+    if (azsOptions.value.length && !selectedAzsId.value) {
+      selectedAzsId.value = azsOptions.value[0].value
+      await load()
+    }
+  } catch {
+    azsOptionsError.value = true
+  } finally {
+    azsOptionsLoading.value = false
+  }
+}
+
+onMounted(loadAzsOptions)
 watch(selectedAzsId, load)
 </script>
 
@@ -127,18 +141,54 @@ watch(selectedAzsId, load)
 
     <!-- AZS picker -->
     <div class="flex gap-2.5 mb-4 flex-wrap items-center">
-      <B24InputMenu
-        v-model="selectedAzsId"
-        :items="azsOptions"
-        value-attribute="value"
-        option-attribute="label"
-        placeholder="Выберите АЗС…"
-        class="min-w-[260px]"
-      />
+      <div class="flex flex-col gap-1">
+        <B24InputMenu
+          v-model="selectedAzsId"
+          :items="azsOptions"
+          value-attribute="value"
+          option-attribute="label"
+          placeholder="Выберите АЗС…"
+          class="min-w-[260px]"
+        />
+        <div v-if="azsOptionsError" class="flex items-center gap-1.5 text-[12px] text-red-600">
+          <span>Список АЗС не загрузился</span>
+          <button class="underline hover:no-underline disabled:opacity-50" :disabled="azsOptionsLoading" @click="loadAzsOptions">Повторить</button>
+        </div>
+      </div>
       <span class="text-[12px] text-gray-400">за 30 дней</span>
     </div>
 
-    <div v-if="loading" class="text-center py-8 text-gray-400">Загрузка…</div>
+    <template v-if="loading">
+      <!-- Mini KPI-скелетон: 4 карточки как в итоговой сетке (grid-cols-2 lg:grid-cols-4, p-3.5) -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3.5">
+        <div v-for="n in 4" :key="n" class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-3.5 flex flex-col gap-2">
+          <SkeletonBlock height="0.75rem" width="70%" />
+          <SkeletonBlock height="1.75rem" width="50%" />
+        </div>
+      </div>
+      <!-- Секция фото-скелетон: grid-cols-2 lg:grid-cols-5, aspect-[4/3] -->
+      <div class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-4 mb-3.5">
+        <SkeletonBlock height="1rem" width="60%" class="mb-3" />
+        <div class="grid grid-cols-2 lg:grid-cols-5 gap-2.5">
+          <SkeletonBlock v-for="n in 5" :key="n" height="0" rounded="rounded-[11px]" class="aspect-[4/3]" />
+        </div>
+      </div>
+      <!-- Timeline-скелетон: 5 строк -->
+      <div class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-4">
+        <SkeletonBlock height="1rem" width="40%" class="mb-3" />
+        <div v-for="n in 5" :key="n" class="grid gap-3.5 py-3 border-b border-gray-100" style="grid-template-columns:88px 1fr">
+          <div class="flex flex-col gap-1.5">
+            <SkeletonBlock height="0.875rem" width="80%" />
+            <SkeletonBlock height="0.75rem" width="50%" />
+          </div>
+          <div class="flex items-center gap-2">
+            <SkeletonBlock height="1.75rem" width="30%" rounded="rounded-lg" />
+            <SkeletonBlock height="1.75rem" width="30%" rounded="rounded-lg" />
+            <SkeletonBlock height="1.5rem" width="20%" rounded="rounded-full" class="ml-auto" />
+          </div>
+        </div>
+      </div>
+    </template>
     <B24Alert v-else-if="error" color="air-primary-alert" :description="error" />
     <template v-else-if="selectedAzsId">
       <!-- Mini KPIs -->
