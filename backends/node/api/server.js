@@ -421,6 +421,40 @@ app.post('/api/admin/bot/refresh-avatar', verifyToken, attachAccessContext, asyn
   }
 });
 
+app.post('/api/admin/bot/reregister', verifyToken, attachAccessContext, async (req, res) => {
+  if (!req.accessContext?.capabilities?.settings) {
+    return res.status(403).json({
+      error: 'forbidden',
+      message: 'Admin access required'
+    });
+  }
+  const authId = String(req.bitrixContext?.authId || req.bitrixContext?.auth_id || '').trim();
+  if (!authId) {
+    return res.status(400).json({
+      error: 'auth_id_missing',
+      message: 'Bitrix auth id is required to reregister bot'
+    });
+  }
+  try {
+    const registration = await botRegistryService.ensureBot({
+      authId,
+      context: req.bitrixContext || {},
+      force: true
+    });
+    return res.json({
+      ok: true,
+      botId: registration.botId,
+      registered: Boolean(registration.registered),
+      reused: Boolean(registration.reused)
+    });
+  } catch (error) {
+    return res.status(502).json({
+      error: 'bot_reregister_failed',
+      message: error.message
+    });
+  }
+});
+
 app.use('/api/settings', verifyToken, attachAccessContext, createSettingsRouter({ store: settingsStore }));
 app.use('/api/jobs', verifyToken, attachAccessContext, createDispatchRouter({ dispatchService }));
 app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({

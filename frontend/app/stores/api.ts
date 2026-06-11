@@ -202,6 +202,20 @@ export const useApiStore = defineStore(
       })
     }
 
+    const reregisterBot = async (): Promise<{
+      ok: boolean
+      botId: number
+      registered: boolean
+      reused: boolean
+    }> => {
+      return await $api('/api/admin/bot/reregister', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${tokenJWT.value}`
+        }
+      })
+    }
+
     const getReports = async (filters: {
       dateFrom?: string
       dateTo?: string
@@ -600,6 +614,7 @@ export const useApiStore = defineStore(
       submitReport,
       saveSettings,
       refreshBotAvatar,
+      reregisterBot,
       getMyRole,
       resyncReport,
       getDispatchPlan,

@@ -123,7 +123,7 @@ export const createBotRegistryService = ({
     }));
   };
 
-  const ensureBot = async ({ authId = '', context = {} } = {}) => {
+  const ensureBot = async ({ authId = '', context = {}, force = false } = {}) => {
     const runtimeAuthId = normalizeAuthId(authId);
     if (!runtimeAuthId) {
       throw new Error('AUTH_ID is required to ensure bot during install');
@@ -135,7 +135,12 @@ export const createBotRegistryService = ({
       return [];
     });
     const existing = existingBots.find((bot) => bot.id && bot.code === expectedCode);
-    if (existing) {
+
+    // force=true: skip reuse — call registerBot again to re-bind the bot to the
+    // portal. No unregister is issued so existing chats and history are preserved.
+    // Bitrix24 imbot.v2.Bot.register is idempotent for the same code: it returns
+    // the existing botId (or creates a new one) and updates the stored properties.
+    if (existing && !force) {
       logger.info('bot reused', { botId: existing.id, botCode: expectedCode });
       await updateBotAvatar({ botId: existing.id, authId: runtimeAuthId, context });
       return {
@@ -145,6 +150,10 @@ export const createBotRegistryService = ({
         bots: existingBots,
         raw: existing.raw
       };
+    }
+
+    if (existing && force) {
+      logger.info('bot force-reregister', { previousBotId: existing.id, botCode: expectedCode });
     }
 
     const registration = await registerBot({ authId: runtimeAuthId, context });
