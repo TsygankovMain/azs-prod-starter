@@ -12,7 +12,7 @@ type PhotoFeedItem = {
   photoCode: string
   exifAt: string | null
   uploadedAt: string | null
-  remark: { dt: string; recipientName: string; message: string; senderName: string } | null
+  remark: { createdAt: string | null; recipientName: string; message: string; senderName: string } | null
 }
 
 const props = defineProps<{
@@ -116,6 +116,33 @@ watch(() => props.items.length, () => {
       }
     }
   })
+})
+
+// Blob-revoke при смене items (например, после смены фильтров)
+watch(() => props.items, (newItems) => {
+  const newKeys = new Set(newItems.map(i => previewKey(i)))
+  const toRevoke: string[] = []
+  for (const [key, url] of previewUrls.value.entries()) {
+    if (!newKeys.has(key)) {
+      URL.revokeObjectURL(url)
+      toRevoke.push(key)
+    }
+  }
+  if (toRevoke.length > 0) {
+    const next = new Map(previewUrls.value)
+    for (const key of toRevoke) {
+      next.delete(key)
+      previewErrors.value.delete(key)
+    }
+    previewUrls.value = next
+  }
+  for (const key of previewsLoading.value) {
+    if (!newKeys.has(key)) {
+      const next = new Set(previewsLoading.value)
+      next.delete(key)
+      previewsLoading.value = next
+    }
+  }
 })
 
 // ── Группировка «По АЗС» ─────────────────────────────────────────────

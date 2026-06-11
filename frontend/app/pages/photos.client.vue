@@ -27,7 +27,7 @@ const DEFAULT_FILTERS: PhotoFiltersValue = {
   customDateFrom: '',
   customDateTo: '',
   azsIds: [],
-  categoryСodes: [],
+  categoryCodes: [],
   remarks: 'all',
   groupByAzs: false
 }
@@ -92,6 +92,11 @@ type PhotoFeedItem = {
   remark: { dt: string; recipientName: string; message: string; senderName: string } | null
 }
 
+// ── Вкладки ───────────────────────────────────────────────────────────────
+type PageTab = 'feed' | 'journal'
+const activeTab = ref<PageTab>('feed')
+const journalLoaded = ref(0)
+
 const items = ref<PhotoFeedItem[]>([])
 const nextCursor = ref<string | null>(null)
 const loadError = ref('')
@@ -129,7 +134,7 @@ const buildFeedParams = (cursor?: string) => {
   if (range.from) params.dateFrom = range.from
   if (range.to) params.dateTo = range.to
   if (filters.value.azsIds.length > 0) params.azsId = filters.value.azsIds
-  if (filters.value.categoryСodes.length > 0) params.photoCode = filters.value.categoryСodes
+  if (filters.value.categoryCodes.length > 0) params.photoCode = filters.value.categoryCodes
   if (cursor) params.cursor = cursor
   return params
 }
@@ -181,6 +186,11 @@ const setupSentinel = () => {
   )
   sentinelObserver.observe(sentinelRef.value)
 }
+
+// Re-attach sentinel observer когда DOM-элемент пересоздаётся после смены фильтров
+watch(sentinelRef, (el) => {
+  if (el) setupSentinel()
+})
 
 // ── Черновик замечания (С1/С2/С3) ────────────────────────────────────────
 type MarkEntry = { reportId: number; photoCode: string; azsId: string; azsTitle: string }
@@ -268,7 +278,7 @@ const handleSend = async ({ recipientRole, message }: { recipientRole: 'manager'
         items.value[idx] = {
           ...items.value[idx],
           remark: {
-            dt: rec.createdAt,
+            createdAt: rec.createdAt,
             recipientName: rec.recipientName,
             message: rec.message,
             senderName: rec.senderName
@@ -377,8 +387,8 @@ const handleToggleMark = (item: PhotoFeedItem) => {
 const handleRemarkInfo = (item: PhotoFeedItem) => {
   if (!item.remark) return
   const r = item.remark
-  const dt = r.dt
-    ? new Date(r.dt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const dt = r.createdAt
+    ? new Date(r.createdAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
     : '—'
   toast.info(`${dt} → ${r.recipientName}: «${r.message}» — отправил ${r.senderName}`)
 }
@@ -395,7 +405,45 @@ const handleLightboxToggleMark = (item: PhotoFeedItem) => {
   handleToggleMark(item)
 }
 
-onMounted(async () => {
+// ── Переход «миниатюра в журнале → фото в ленте» ─────────────────────────
+const handleJournalOpenPhoto = async (payload: {
+  azsId: string
+  dateFrom: string
+  dateTo: string
+  reportId: number
+  photoCode: string
+}) => {
+  // Переключить на вкладку ленты
+  activeTab.value = 'feed'
+
+  // Выставить фильтры: конкретная АЗС + день записи
+  filters.value = {
+    ...filters.value,
+    azsIds: [payload.azsId],
+    period: 'custom',
+    customDateFrom: payload.dateFrom,
+    customDateTo: payload.dateTo,
+    categoryCodes: []
+  }
+
+  // Дождаться загрузки
+  await nextTick()
+  await loadFeed()
+
+  // Найти item по reportId + photoCode
+  const idx = items.value.findIndex(
+    i => i.reportId === payload.reportId && i.photoCode === payload.photoCode
+  )
+
+  if (idx !== -1) {
+    lightboxIndex.value = idx
+  } else {
+    toast.info('Фото вне текущей выборки')
+  }
+}
+
+const initPage = async () => {
+  initError.value = ''
   try {
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
@@ -424,7 +472,9 @@ onMounted(async () => {
     }
     initError.value = msg
   }
-})
+}
+
+onMounted(initPage)
 
 onBeforeUnmount(() => {
   sentinelObserver?.disconnect()
@@ -465,7 +515,7 @@ const goBack = () => {
       <div>
         <button
           class="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium"
-          @click="initError = ''"
+          @click="initPage()"
         >
           ↻ Повторить
         </button>
@@ -508,10 +558,47 @@ const goBack = () => {
               </button>
             </div>
           </div>
+
+          <!-- Вкладки: Фотолента / Журнал -->
+          <div class="mt-4">
+            <div class="inline-flex rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+              <button
+                :class="[
+                  'px-5 py-2.5 text-sm font-semibold transition-colors',
+                  activeTab === 'feed' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+                ]"
+                @click="activeTab = 'feed'"
+              >
+                Фотолента
+              </button>
+              <button
+                :class="[
+                  'px-5 py-2.5 text-sm font-semibold transition-colors border-l border-gray-200',
+                  activeTab === 'journal' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+                ]"
+                @click="activeTab = 'journal'"
+              >
+                Журнал
+                <span
+                  v-if="journalLoaded > 0"
+                  class="ml-1.5 text-xs opacity-80"
+                >{{ journalLoaded }}</span>
+              </button>
+            </div>
+          </div>
         </header>
 
+        <!-- Журнал (вне двухколоночного макета) -->
+        <div v-if="activeTab === 'journal'" class="max-w-2xl">
+          <RemarkJournal
+            :azs-options="azsOptions"
+            @open-photo="handleJournalOpenPhoto"
+            @loaded="journalLoaded = $event"
+          />
+        </div>
+
         <!-- Двухколоночный макет: фильтры слева + лента справа -->
-        <div class="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6 items-start">
+        <div v-else class="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6 items-start">
 
           <!-- Панель фильтров -->
           <aside class="lg:sticky lg:top-4">

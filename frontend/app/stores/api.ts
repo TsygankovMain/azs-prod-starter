@@ -424,7 +424,7 @@ export const useApiStore = defineStore(
       photoCode: string
       exifAt: string | null
       uploadedAt: string | null
-      remark: { dt: string; recipientName: string; message: string; senderName: string } | null
+      remark: { createdAt: string | null; recipientName: string; message: string; senderName: string } | null
     }
 
     type PhotoCategory = {
@@ -487,6 +487,46 @@ export const useApiStore = defineStore(
       return await $api('/api/photo-remarks', {
         method: 'POST',
         body: payload,
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    type PhotoRemarkJournalItem = {
+      id: number
+      createdAt: string | null
+      azsId: string
+      azsTitle: string | null
+      recipientRole: 'manager' | 'admin'
+      recipientName: string | null
+      message: string
+      senderName: string | null
+      deliveryStatus: 'sent' | 'failed'
+      deliveryError: string | null
+      photos: Array<{ remarkId: number; reportId: number; photoCode: string }>
+    }
+
+    const getPhotoRemarks = async (params: {
+      dateFrom?: string
+      dateTo?: string
+      azsIds?: string[]
+      limit?: number
+      cursor?: string
+    } = {}): Promise<{ items: PhotoRemarkJournalItem[]; nextCursor: string | null }> => {
+      const query: Record<string, unknown> = {}
+      if (params.dateFrom) query.dateFrom = params.dateFrom
+      if (params.dateTo) query.dateTo = params.dateTo
+      if (params.azsIds && params.azsIds.length > 0) query.azsId = params.azsIds
+      if (params.limit) query.limit = params.limit
+      if (params.cursor) query.cursor = params.cursor
+      return await $api('/api/photo-remarks', {
+        query,
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const retryPhotoRemark = async (id: number): Promise<PhotoRemarkJournalItem> => {
+      return await $api(`/api/photo-remarks/${id}/retry`, {
+        method: 'POST',
         headers: { Authorization: `Bearer ${tokenJWT.value}` }
       })
     }
@@ -571,7 +611,9 @@ export const useApiStore = defineStore(
       getPhotoFeed,
       getPhotoCategories,
       getPhotoRecipients,
-      sendPhotoRemark
+      sendPhotoRemark,
+      getPhotoRemarks,
+      retryPhotoRemark
     }
   }
 )

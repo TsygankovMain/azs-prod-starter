@@ -14,7 +14,7 @@ export type PhotoFiltersValue = {
   customDateFrom: string
   customDateTo: string
   azsIds: string[]
-  categoryСodes: string[]
+  categoryCodes: string[]
   remarks: PhotoFilterRemarks
   groupByAzs: boolean
 }
@@ -113,14 +113,14 @@ const loadCategories = async () => {
 onMounted(loadCategories)
 
 const toggleCategory = (code: string) => {
-  const current = [...props.modelValue.categoryСodes]
+  const current = [...props.modelValue.categoryCodes]
   const idx = current.indexOf(code)
   if (idx === -1) current.push(code)
   else current.splice(idx, 1)
-  patch({ categoryСodes: current })
+  patch({ categoryCodes: current })
 }
 
-const isCategoryActive = (code: string) => props.modelValue.categoryСodes.includes(code)
+const isCategoryActive = (code: string) => props.modelValue.categoryCodes.includes(code)
 
 // ── Замечания — циклический чип ────────────────────────────────────────────
 const REMARKS_CYCLE: PhotoFilterRemarks[] = ['all', 'with', 'without']
@@ -266,11 +266,11 @@ const toggleGroupByAzs = () => {
         <button
           :class="[
             'border rounded-full px-3 py-1 text-xs font-medium transition-colors',
-            filters.categoryСodes.length === 0
+            filters.categoryCodes.length === 0
               ? 'bg-blue-600 text-white border-blue-600'
               : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
           ]"
-          @click="patch({ categoryСodes: [] })"
+          @click="patch({ categoryCodes: [] })"
         >
           Все
         </button>

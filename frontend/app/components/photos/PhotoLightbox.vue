@@ -17,7 +17,7 @@ type PhotoFeedItem = {
   photoCode: string
   exifAt: string | null
   uploadedAt: string | null
-  remark: { dt: string; recipientName: string; message: string; senderName: string } | null
+  remark: { createdAt: string | null; recipientName: string; message: string; senderName: string } | null
 }
 
 const props = defineProps<{
@@ -311,7 +311,7 @@ const showDraftPanel = computed(() => props.draftCount > 0)
         <template v-if="current.remark">
           <span class="opacity-50">·</span>
           <span class="text-green-400 font-medium">
-            ✓ {{ fmtDateTime(current.remark.dt) }} → {{ current.remark.recipientName }}: «{{ current.remark.message }}» — {{ current.remark.senderName }}
+            ✓ {{ fmtDateTime(current.remark.createdAt) }} → {{ current.remark.recipientName }}: «{{ current.remark.message }}» — {{ current.remark.senderName }}
           </span>
         </template>
       </div>
