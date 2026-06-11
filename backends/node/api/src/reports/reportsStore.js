@@ -411,6 +411,21 @@ const createPostgresStore = (pool) => ({
       ? encodeFeedCursor(lastRow.uploaded_at, lastRow.photo_row_id)
       : null;
     return { items, nextCursor };
+  },
+
+  async getPhoto(reportId, photoCode) {
+    const result = await pool.query(
+      `SELECT file_name, disk_object_id, file_id FROM report_photo
+       WHERE report_id = $1 AND photo_code = $2 LIMIT 1`,
+      [reportId, photoCode]
+    );
+    if (!result.rows.length) return null;
+    const row = result.rows[0];
+    return {
+      fileName: row.file_name || null,
+      diskObjectId: row.disk_object_id ? Number(row.disk_object_id) : null,
+      fileId: row.file_id ? Number(row.file_id) : null
+    };
   }
 });
 
@@ -770,6 +785,21 @@ const createMysqlStore = (pool) => ({
       ? encodeFeedCursor(lastRow.uploaded_at, lastRow.photo_row_id)
       : null;
     return { items, nextCursor };
+  },
+
+  async getPhoto(reportId, photoCode) {
+    const [rows] = await pool.execute(
+      `SELECT file_name, disk_object_id, file_id FROM report_photo
+       WHERE report_id = ? AND photo_code = ? LIMIT 1`,
+      [reportId, photoCode]
+    );
+    if (!rows.length) return null;
+    const row = rows[0];
+    return {
+      fileName: row.file_name || null,
+      diskObjectId: row.disk_object_id ? Number(row.disk_object_id) : null,
+      fileId: row.file_id ? Number(row.file_id) : null
+    };
   }
 });
 

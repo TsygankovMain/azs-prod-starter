@@ -12,6 +12,9 @@ import {
   AZS_CARD_NOT_FOUND,
   PHOTO_TYPE_NOT_FOUND,
   REPORT_NOT_FOUND,
+  PHOTO_CODE_NOT_REQUIRED,
+  PHOTO_EXIF_TOO_OLD,
+  REPORT_PHOTOS_MISSING,
 } from './errorCodes.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -426,6 +429,7 @@ const validateExifDate = (exifDate) => {
   if (ageMinutes > EXIF_MAX_AGE_MINUTES) {
     return {
       ok: false,
+      ageMinutes: Math.floor(ageMinutes),
       message: `Photo EXIF is too old: ${Math.floor(ageMinutes)} minutes`
     };
   }
@@ -1141,6 +1145,8 @@ export const createReportsRouter = ({
       const statusCode = Number(error?.statusCode || 500);
       return res.status(statusCode).json({
         error: error?.code || 'reason_save_failed',
+        errorCode: error?.errorCode || undefined,
+        meta: error?.meta || undefined,
         message: error.message
       });
     }
@@ -1314,6 +1320,7 @@ export const createReportsRouter = ({
       if (!requiredCodes.includes(photoCode)) {
         return res.status(400).json({
           error: 'photo_code_not_required',
+          errorCode: PHOTO_CODE_NOT_REQUIRED,
           message: `photoCode ${photoCode} is not required for this AZS`
         });
       }
@@ -1324,6 +1331,8 @@ export const createReportsRouter = ({
       if (!exifValidation.ok) {
         return res.status(400).json({
           error: 'photo_exif_too_old',
+          errorCode: PHOTO_EXIF_TOO_OLD,
+          meta: { ageMinutes: exifValidation.ageMinutes },
           message: exifValidation.message
         });
       }
@@ -1468,6 +1477,8 @@ export const createReportsRouter = ({
       if (missingCodes.length > 0) {
         return res.status(409).json({
           error: 'report_photos_missing',
+          errorCode: REPORT_PHOTOS_MISSING,
+          meta: { missingCodes },
           message: `Cannot submit report: missing photos ${missingCodes.join(', ')}`,
           missingCodes
         });

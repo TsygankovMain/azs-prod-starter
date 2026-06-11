@@ -429,3 +429,52 @@ test('createPhotoFeedRouter throws when bitrixClient is missing', () => {
     /bitrixClient is required/
   );
 });
+
+// ---------------------------------------------------------------------------
+// Tests: invalid cursor → 400
+// ---------------------------------------------------------------------------
+
+test('GET /feed returns 400 for invalid cursor', async () => {
+  const router = createPhotoFeedRouter(stubDeps);
+  const handler = getHandler(router, 'get', '/feed');
+  if (!handler) return;
+  const req = makeReq({ query: { cursor: 'not-valid-base64-json!!!' } });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 400);
+  assert.equal(res._payload?.error, 'invalid_cursor');
+});
+
+// ---------------------------------------------------------------------------
+// Tests: azsTitle resolved in /feed items
+// ---------------------------------------------------------------------------
+
+test('GET /feed items have azsTitle resolved from bitrix', async () => {
+  const deps = {
+    ...stubDeps,
+    reportsStore: {
+      async listPhotosFeed() {
+        return {
+          items: [{ reportId: 10, azsId: '42', azsTitle: null, photoCode: 'front', exifAt: null, uploadedAt: '2026-06-11T10:00:00.000Z', photoRowId: 1, remark: null }],
+          nextCursor: null
+        };
+      }
+    },
+    bitrixClient: {
+      ...stubDeps.bitrixClient,
+      async getCrmItem({ id }) {
+        if (id === 42) return { id: 42, title: 'АЗС Север' };
+        return null;
+      }
+    }
+  };
+  const router = createPhotoFeedRouter(deps);
+  const handler = getHandler(router, 'get', '/feed');
+  if (!handler) return;
+  const req = makeReq({});
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.ok(res._payload?.items[0]?.azsTitle, 'azsTitle should be non-empty');
+  assert.equal(res._payload.items[0].azsTitle, 'АЗС Север');
+});

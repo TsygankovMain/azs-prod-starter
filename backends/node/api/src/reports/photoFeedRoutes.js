@@ -6,10 +6,12 @@
  *   GET /categories     — список типов фото из CRM (кэш 10 мин)
  *   GET /recipients     — {manager,admin} для конкретной АЗС
  *
- * Export: createPhotoFeedRouter({ pool, settingsStore, bitrixClient, getAdminContext })
+ * Export: createPhotoFeedRouter({ reportsStore, settingsStore, bitrixClient, getAdminContext })
  */
 
 import express from 'express';
+import { resolveAzsRecipients } from './azsRecipients.js';
+import { createAzsTitleResolver } from './reportsRoutes.js';
 
 // ---------------------------------------------------------------------------
 // Guards — copied verbatim from analyticsRoutes.js pattern
@@ -45,7 +47,7 @@ const normRemarks = (v) => {
 };
 
 // ---------------------------------------------------------------------------
-// parseCrmItemId — same helper as reportsRoutes.js
+// parseCrmItemId — needed for categories id parsing
 // ---------------------------------------------------------------------------
 
 const parseCrmItemId = (value) => {
@@ -57,37 +59,17 @@ const parseCrmItemId = (value) => {
 };
 
 // ---------------------------------------------------------------------------
-// getFieldValue — same helper as reportsRoutes.js (camelCase/original aliases)
+// cursor validation helper
 // ---------------------------------------------------------------------------
 
-const getFieldValue = (item, fieldCode) => {
-  if (!item || !fieldCode) return undefined;
-  const code = String(fieldCode).trim();
-  const aliases = [code, code.toLowerCase(), code.toUpperCase()];
-  const underscoreMatch = code.match(/^UF_CRM_(\d+)_(\d+)$/i);
-  if (underscoreMatch) aliases.push(`ufCrm${underscoreMatch[1]}_${underscoreMatch[2]}`);
-  const camelMatch = code.match(/^ufCrm(\d+)_(\d+)$/i);
-  if (camelMatch) aliases.push(`UF_CRM_${camelMatch[1]}_${camelMatch[2]}`);
-  for (const alias of aliases) {
-    if (alias && alias in item && item[alias] !== undefined && item[alias] !== null) {
-      return item[alias];
-    }
+const isValidCursor = (cursor) => {
+  if (!cursor) return true; // null/empty is always valid (no cursor)
+  try {
+    const raw = JSON.parse(Buffer.from(cursor, 'base64').toString('utf8'));
+    return Boolean(raw && typeof raw === 'object');
+  } catch {
+    return false;
   }
-  return undefined;
-};
-
-const extractMultipleIds = (value) => {
-  if (Array.isArray(value)) return value.flatMap(extractMultipleIds);
-  if (value && typeof value === 'object') {
-    return extractMultipleIds(value.id ?? value.ID ?? value.value ?? value.VALUE);
-  }
-  const id = parseCrmItemId(value);
-  return id ? [id] : [];
-};
-
-const extractFirstUserId = (value) => {
-  const ids = extractMultipleIds(value);
-  return ids.length ? Number(ids[0]) : 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -117,7 +99,6 @@ export const createPhotoFeedRouter = ({
     if (!canReview(req)) return res.status(403).json({ error: 'forbidden' });
 
     const limit = normLimit(req.query.limit, 100);
-    if (limit > 100) return res.status(400).json({ error: 'limit_exceeded', message: 'limit must be ≤ 100' });
 
     const dateFrom = normDate(req.query.dateFrom);
     const dateTo = normDate(req.query.dateTo);
@@ -126,11 +107,38 @@ export const createPhotoFeedRouter = ({
     const remarks = normRemarks(req.query.remarks);
     const cursor = String(req.query.cursor || '').trim() || null;
 
+    // Validate cursor before hitting the store
+    if (cursor && !isValidCursor(cursor)) {
+      return res.status(400).json({ error: 'invalid_cursor' });
+    }
+
     try {
       const result = await reportsStore.listPhotosFeed({
         dateFrom, dateTo, azsIds, photoCodes, remarks, limit, cursor
       });
-      return res.json({ items: result.items, nextCursor: result.nextCursor });
+
+      // Resolve azsTitle for all unique azsIds on this page
+      const pageAzsIds = [...new Set(result.items.map((item) => item.azsId).filter(Boolean))];
+      let items = result.items;
+      if (pageAzsIds.length > 0) {
+        const settings = await settingsStore.read();
+        const resolveAzsTitle = createAzsTitleResolver({
+          bitrixClient,
+          settings,
+          context: req.bitrixContext || {}
+        });
+        const titleMap = new Map();
+        await Promise.all(pageAzsIds.map(async (id) => {
+          const title = await resolveAzsTitle(id);
+          titleMap.set(id, title || null);
+        }));
+        items = result.items.map((item) => ({
+          ...item,
+          azsTitle: titleMap.get(item.azsId) ?? item.azsTitle
+        }));
+      }
+
+      return res.json({ items, nextCursor: result.nextCursor });
     } catch (err) {
       return res.status(500).json({ error: 'feed_failed', message: err.message });
     }
@@ -204,12 +212,7 @@ export const createPhotoFeedRouter = ({
 
     try {
       const settings = await settingsStore.read();
-      const azsEntityTypeId = Number(settings?.azs?.entityTypeId || 0);
-      if (!azsEntityTypeId) {
-        return res.json({ manager: null, admin: null });
-      }
 
-      // Use admin context for CRM reads
       let context = req.bitrixContext || {};
       if (typeof getAdminContext === 'function') {
         try {
@@ -220,41 +223,12 @@ export const createPhotoFeedRouter = ({
         }
       }
 
-      // Fetch AZS card
-      let azsItem = null;
-      try {
-        azsItem = await bitrixClient.getCrmItem({
-          entityTypeId: azsEntityTypeId,
-          id: azsItemId,
-          context
-        });
-      } catch {
-        // fallback to null
-      }
-
-      // ----- manager -----
-      // From settings.azs.fields.manager (may be absent — then null)
-      let manager = null;
-      const managerFieldCode = String(settings?.azs?.fields?.manager || '').trim();
-      if (managerFieldCode && azsItem) {
-        const managerUserId = extractFirstUserId(getFieldValue(azsItem, managerFieldCode));
-        if (managerUserId > 0) {
-          const managerName = await resolveUserName(bitrixClient, managerUserId, context);
-          manager = { id: managerUserId, name: managerName };
-        }
-      }
-
-      // ----- admin -----
-      // Same mechanism as dispatch: settings.azs.fields.admin on the AZS card.
-      let admin = null;
-      const adminFieldCode = String(settings?.azs?.fields?.admin || '').trim();
-      if (adminFieldCode && azsItem) {
-        const adminUserId = extractFirstUserId(getFieldValue(azsItem, adminFieldCode));
-        if (adminUserId > 0) {
-          const adminName = await resolveUserName(bitrixClient, adminUserId, context);
-          admin = { id: adminUserId, name: adminName };
-        }
-      }
+      const { manager, admin } = await resolveAzsRecipients({
+        azsId,
+        settings,
+        bitrixClient,
+        context
+      });
 
       return res.json({ manager, admin });
     } catch (err) {
@@ -264,27 +238,5 @@ export const createPhotoFeedRouter = ({
 
   return router;
 };
-
-// ---------------------------------------------------------------------------
-// resolveUserName — best-effort user.get via callMethod
-// ---------------------------------------------------------------------------
-
-async function resolveUserName(bitrixClient, userId, context = {}) {
-  try {
-    if (typeof bitrixClient.callMethod !== 'function') return null;
-    const result = await bitrixClient.callMethod('user.get', { ID: userId }, context);
-    const users = Array.isArray(result) ? result
-      : Array.isArray(result?.result) ? result.result : [];
-    const user = users[0];
-    if (!user) return null;
-    const name = [
-      String(user.NAME || '').trim(),
-      String(user.LAST_NAME || '').trim()
-    ].filter(Boolean).join(' ');
-    return name || null;
-  } catch {
-    return null;
-  }
-}
 
 export default createPhotoFeedRouter;

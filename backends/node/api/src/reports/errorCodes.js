@@ -45,3 +45,38 @@ export const PHOTO_TYPE_NOT_FOUND = 'PHOTO_TYPE_NOT_FOUND';
  * meta: { reportId: number }
  */
 export const REPORT_NOT_FOUND = 'REPORT_NOT_FOUND';
+
+/**
+ * RECIPIENT_NOT_SET
+ * The requested recipient role (manager or admin) is not configured for this AZS.
+ * meta: { azsId: string, recipientRole: string }
+ */
+export const RECIPIENT_NOT_SET = 'RECIPIENT_NOT_SET';
+
+/**
+ * REMARK_NOT_FOUND
+ * The photo_remark record with the given id does not exist.
+ * meta: { remarkId: number }
+ */
+export const REMARK_NOT_FOUND = 'REMARK_NOT_FOUND';
+
+/**
+ * PHOTO_CODE_NOT_REQUIRED
+ * The uploaded photo code is not in the required photo set for this AZS.
+ * meta: { azsId: string, photoCode: string }
+ */
+export const PHOTO_CODE_NOT_REQUIRED = 'PHOTO_CODE_NOT_REQUIRED';
+
+/**
+ * PHOTO_EXIF_TOO_OLD
+ * The photo EXIF date is older than the allowed maximum age.
+ * meta: { ageMinutes: number }
+ */
+export const PHOTO_EXIF_TOO_OLD = 'PHOTO_EXIF_TOO_OLD';
+
+/**
+ * REPORT_PHOTOS_MISSING
+ * The report cannot be submitted because required photos are missing.
+ * meta: { missingCodes: string[] }
+ */
+export const REPORT_PHOTOS_MISSING = 'REPORT_PHOTOS_MISSING';

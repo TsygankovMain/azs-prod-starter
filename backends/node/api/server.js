@@ -33,6 +33,10 @@ import { createCompositeAuthContextStore } from './src/auth/compositeAuthContext
 import { createTokenRefreshScheduler } from './src/auth/tokenRefreshScheduler.js';
 import { resolveAccessContext } from './src/access/roleResolver.js';
 import createReasonStore from './src/reports/reasonStore.js';
+import { createPhotoFeedRouter } from './src/reports/photoFeedRoutes.js';
+import createPhotoRemarkStore from './src/reports/photoRemarkStore.js';
+import { createPhotoRemarkService } from './src/notifications/photoRemarkService.js';
+import { createPhotoRemarkRouter } from './src/reports/photoRemarkRoutes.js';
 import createReasonForwardingService from './src/notifications/reasonForwardingService.js';
 import { validateRequiredEnv } from './utils/validateEnv.js';
 import { resolvePgSslConfig } from './utils/dbSsl.js';
@@ -208,6 +212,7 @@ const crmSyncJobStore = createCrmSyncJobStore({ pool, dbType });
 const dispatchPlanStore = createDispatchPlanStore({ pool, dbType });
 const dbSettingsStore = createDatabaseSettingsStore({ pool, dbType });
 const reasonStore = createReasonStore({ pool, dbType });
+const photoRemarkStore = createPhotoRemarkStore({ pool, dbType });
 const authContextStoreType = String(process.env.AUTH_CONTEXT_STORE || 'composite').trim().toLowerCase();
 const authContextStore = (() => {
   if (authContextStoreType === 'database') {
@@ -249,6 +254,11 @@ const bitrixClient = createBitrixRestClient({
   }
 });
 const reasonForwardingService = createReasonForwardingService({ bitrixClient });
+const getAdminContext = async () => {
+  const entry = await authContextStore.getLastAdminContext();
+  if (!entry?.context) return {};
+  return { key: entry.key, ...entry.context };
+};
 const bitrixSettingsStore = createBitrixAppSettingsStore({
   bitrixClient,
   optionKey: process.env.BITRIX_APP_SETTINGS_OPTION_KEY || 'azs_photo_report_settings_v1'
@@ -298,6 +308,13 @@ const dispatchService = createDispatchService({
   bitrixClient,
   notificationService,
   timeoutWatcher
+});
+const photoRemarkService = createPhotoRemarkService({
+  bitrixClient,
+  remarkStore: photoRemarkStore,
+  reportsStore,
+  settingsStore,
+  getAdminContext
 });
 const verifyToken = createVerifyToken({ authContextStore });
 const attachAccessContext = async (req, res, next) => {
@@ -420,6 +437,20 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
   diskApi: bitrixClient.diskApi,
   reasonStore,
   reasonForwardingService,
+}));
+
+app.use('/api/reports/photos', verifyToken, attachAccessContext, createPhotoFeedRouter({
+  reportsStore,
+  settingsStore,
+  bitrixClient,
+  getAdminContext
+}));
+
+app.use('/api/photo-remarks', verifyToken, attachAccessContext, createPhotoRemarkRouter({
+  remarkStore: photoRemarkStore,
+  photoRemarkService,
+  bitrixClient,
+  getAdminContext
 }));
 
 app.post('/api/install', async (req, res) => {
@@ -657,6 +688,10 @@ crmSyncJobStore.ensureSchema()
 reasonStore.ensureSchema()
   .then(() => console.log('report_reason schema is ready'))
   .catch((error) => console.error('Failed to prepare report_reason schema', error));
+
+photoRemarkStore.ensureSchema()
+  .then(() => console.log('photo_remark schema is ready'))
+  .catch((error) => console.error('Failed to prepare photo_remark schema', error));
 
 if (typeof authContextStore.ensureSchema === 'function') {
   authContextStore.ensureSchema()
