@@ -224,3 +224,101 @@ test('future manual slot (scheduled 1h from now) is NOT returned by listStalePla
   // Since our fake returns [], this confirms that passing staleBefore < futureScheduled would yield 0 rows
   assert.equal(result.length, 0, 'future scheduled slot should not be returned as stale');
 });
+
+// ── C-1 fix: reserve() accepts explicit scheduledAt (zone-correct) ────────────
+
+test('reserve (PG): uses caller-supplied scheduledAt (timezone-correct) when provided', async () => {
+  const pool = makePostgresPool();
+  pool.query = async (sql, params) => {
+    pool.queries.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+    return { rows: [{ id: 10 }], rowCount: 1 };
+  };
+  const store = createDispatchLogStore({ pool, dbType: 'postgres' });
+  // Moscow slot '0900' on 2026-06-11: Europe/Moscow = UTC+3, so 09:00 MSK = 06:00 UTC
+  const moscowScheduledAt = new Date('2026-06-11T06:00:00.000Z');
+  await store.reserve({
+    slotKey: '2026-06-11:0900',
+    azsId: 'azs1',
+    adminUserId: 5,
+    status: 'reserved',
+    scheduledAt: moscowScheduledAt
+  });
+  const scheduledAt = pool.queries[0].params[4];
+  assert.ok(scheduledAt instanceof Date, 'should be a Date');
+  assert.equal(scheduledAt.toISOString(), '2026-06-11T06:00:00.000Z',
+    'Moscow slot 0900 → scheduled_at should be 06:00Z (UTC+3 offset)');
+});
+
+test('reserve (PG): stale-detect fires 30 min after Moscow slot 0900 (staleBefore = 06:30Z)', async () => {
+  // staleBefore = 06:30Z, scheduled_at = 06:00Z → 06:00 < 06:30 → row IS stale → query params confirm threshold
+  const pool = makePostgresPool();
+  const store = createDispatchLogStore({ pool, dbType: 'postgres' });
+  const staleBefore = new Date('2026-06-11T06:30:00.000Z'); // 30 min after 06:00Z
+  await store.listStalePlanned({ staleBefore });
+  const { params } = pool.queries[0];
+  // PG passes staleBefore directly as a Date
+  assert.ok(params[1] instanceof Date, 'threshold should be a Date');
+  assert.equal(params[1].toISOString(), '2026-06-11T06:30:00.000Z',
+    'stale threshold at 06:30Z triggers for Moscow 0900 slot (scheduled_at 06:00Z)');
+});
+
+test('reserve (PG): fallback to parseSlotDateTimeUtc when scheduledAt param is absent', async () => {
+  const pool = makePostgresPool();
+  pool.query = async (sql, params) => {
+    pool.queries.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+    return { rows: [{ id: 3 }], rowCount: 1 };
+  };
+  const store = createDispatchLogStore({ pool, dbType: 'postgres' });
+  // No scheduledAt passed — should fall back to parseSlotDateTimeUtc which treats HHmm as UTC
+  await store.reserve({ slotKey: '2026-06-11:0900', azsId: 'azs3', adminUserId: 5, status: 'reserved' });
+  const scheduledAt = pool.queries[0].params[4];
+  assert.ok(scheduledAt instanceof Date, 'should be a Date');
+  assert.equal(scheduledAt.toISOString(), '2026-06-11T09:00:00.000Z',
+    'without explicit scheduledAt, falls back to UTC interpretation');
+});
+
+test('reserve (MySQL): uses caller-supplied scheduledAt (Moscow timezone) when provided', async () => {
+  const pool = makeMysqlPool();
+  pool.execute = async (sql, params) => {
+    pool.queries.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+    return [{ affectedRows: 1, insertId: 20 }];
+  };
+  const store = createDispatchLogStore({ pool, dbType: 'mysql' });
+  const moscowScheduledAt = new Date('2026-06-11T06:00:00.000Z');
+  await store.reserve({
+    slotKey: '2026-06-11:0900',
+    azsId: 'azs1',
+    adminUserId: 5,
+    status: 'reserved',
+    scheduledAt: moscowScheduledAt
+  });
+  const scheduledAtParam = pool.queries[0].params[4];
+  // MySQL branch serializes via serializeDate → '2026-06-11 06:00:00'
+  assert.equal(scheduledAtParam, '2026-06-11 06:00:00',
+    'MySQL: Moscow slot 0900 → scheduled_at param should be 2026-06-11 06:00:00 (UTC)');
+});
+
+test('future manual slot (created far in past, scheduled 1h from now) must NOT be stale (regression)', async () => {
+  // Regression for the earlier critical bug: a manual slot scheduled in the future must not
+  // be returned as stale even if its created_at is ancient.
+  // staleBefore < futureScheduled_at → the slot is NOT included.
+  const now = new Date('2026-06-11T10:00:00.000Z');
+  const staleBefore = new Date(now.getTime() - 30 * 60 * 1000);  // 09:30Z — threshold
+  // Simulated future slot: scheduled_at = 11:00Z (1h from now) → NOT stale
+  // Since listStalePlanned filters scheduled_at < staleBefore, 11:00Z < 09:30Z is false → excluded
+
+  const pool = {
+    queries: [],
+    async query(sql, params) {
+      this.queries.push({ sql, params });
+      return { rows: [], rowCount: 0 }; // DB excludes future rows
+    }
+  };
+  const store = createDispatchLogStore({ pool, dbType: 'postgres' });
+  const result = await store.listStalePlanned({ staleBefore });
+  assert.equal(result.length, 0, 'future manual slot must not be returned as stale (regression guard)');
+  // Verify threshold param is correctly passed so the WHERE clause uses it
+  const threshold = pool.queries[0].params[1];
+  assert.ok(threshold instanceof Date, 'staleBefore must be passed as Date to DB');
+  assert.equal(threshold.toISOString(), '2026-06-11T09:30:00.000Z');
+});

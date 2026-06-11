@@ -733,12 +733,7 @@ export const createBitrixRestClient = ({
 
         let { url, name, runtime } = await fetchInfo(context);
 
-        const doDownload = async (downloadUrl) => {
-          const resp = await fetchWithDownloadTimeout(downloadUrl);
-          return resp;
-        };
-
-        let resp = await doDownload(url);
+        let resp = await fetchWithDownloadTimeout(url);
 
         // 401 from the file server: user token may have expired.
         // Refresh once and retry the full fetchInfo+download cycle.
@@ -757,7 +752,7 @@ export const createBitrixRestClient = ({
             throw refreshError;
           }
           const retried = await fetchInfo(refreshedContext);
-          resp = await doDownload(retried.url);
+          resp = await fetchWithDownloadTimeout(retried.url);
           name = retried.name;
         }
 

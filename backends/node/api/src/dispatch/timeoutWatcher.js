@@ -21,6 +21,7 @@ const parseCrmItemId = (value) => {
 
 export const createTimeoutWatcher = ({
   reportsStore,
+  dispatchLogStore = null,
   bitrixClient,
   notificationService,
   settingsStore = null,
@@ -122,12 +123,19 @@ export const createTimeoutWatcher = ({
                 fallbackToNotify: true
               });
 
-              // W1-2: annotate report if delivered via notify fallback
-              if (doborResult?.channel === 'notify' && doborResult?.botError && reportsStore?.appendErrorText) {
-                await reportsStore.appendErrorText({
-                  reportId: report.id,
-                  errorText: `${NOTIFY_FALLBACK_PREFIX}${doborResult.botError}`
-                }).catch(() => {});
+              // W1-2: annotate report if delivered via notify fallback.
+              // Use dispatchLogStore.appendErrorText (canonical); reportsStore
+              // duplicate has been removed (I-1 dedup).
+              if (doborResult?.channel === 'notify' && doborResult?.botError) {
+                const appendFn = dispatchLogStore?.appendErrorText
+                  ? dispatchLogStore.appendErrorText.bind(dispatchLogStore)
+                  : null;
+                if (appendFn) {
+                  await appendFn({
+                    id: report.id,
+                    errorText: `${NOTIFY_FALLBACK_PREFIX}${doborResult.botError}`
+                  }).catch(() => {});
+                }
               }
             }
           } catch (doborError) {

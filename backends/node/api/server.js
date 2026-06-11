@@ -303,6 +303,7 @@ const notificationService = createNotificationService({
 });
 const timeoutWatcher = createTimeoutWatcher({
   reportsStore,
+  dispatchLogStore,
   bitrixClient,
   settingsStore,
   notificationService,

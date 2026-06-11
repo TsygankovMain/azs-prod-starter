@@ -62,8 +62,16 @@ const createPostgresStore = (pool) => {
       `);
     },
 
-    async reserve({ slotKey, azsId, adminUserId, status }) {
-      const scheduledAt = parseSlotDateTimeUtc(slotKey);
+    /**
+     * @param {{ slotKey, azsId, adminUserId, status, scheduledAt?: Date|null }} args
+     *   scheduledAt — zone-correct slot instant (portal timezone) supplied by the
+     *   caller.  When absent, falls back to parseSlotDateTimeUtc(slotKey) which
+     *   treats HHmm as UTC — accurate only for UTC portals.
+     */
+    async reserve({ slotKey, azsId, adminUserId, status, scheduledAt: callerScheduledAt }) {
+      const scheduledAt = callerScheduledAt instanceof Date
+        ? callerScheduledAt
+        : parseSlotDateTimeUtc(slotKey);
       const result = await query(
         `INSERT INTO dispatch_log(slot_key, azs_id, admin_user_id, status, scheduled_at)
          VALUES($1, $2, $3, $4, $5)
@@ -170,8 +178,16 @@ const createMysqlStore = (pool) => {
       `);
     },
 
-    async reserve({ slotKey, azsId, adminUserId, status }) {
-      const scheduledAt = parseSlotDateTimeUtc(slotKey);
+    /**
+     * @param {{ slotKey, azsId, adminUserId, status, scheduledAt?: Date|null }} args
+     *   scheduledAt — zone-correct slot instant (portal timezone) supplied by the
+     *   caller.  When absent, falls back to parseSlotDateTimeUtc(slotKey) which
+     *   treats HHmm as UTC — accurate only for UTC portals.
+     */
+    async reserve({ slotKey, azsId, adminUserId, status, scheduledAt: callerScheduledAt }) {
+      const scheduledAt = callerScheduledAt instanceof Date
+        ? callerScheduledAt
+        : parseSlotDateTimeUtc(slotKey);
       const [result] = await query(
         `INSERT IGNORE INTO dispatch_log(slot_key, azs_id, admin_user_id, status, scheduled_at)
          VALUES(?, ?, ?, ?, ?)`,

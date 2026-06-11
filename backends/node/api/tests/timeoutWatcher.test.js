@@ -443,8 +443,9 @@ test('timeoutWatcher: after CRM recovers, next tick expires report and sends not
   assert.equal(notifications.length, 1, 'tick 2: notification sent after successful CRM+DB update');
 });
 
-// W1-2: timeout watcher dobor via notify fallback → NOTIFY_FALLBACK_PREFIX written to reportsStore
-test('W1-2: timeoutWatcher добор через notify fallback → appendErrorText с NOTIFY_FALLBACK_PREFIX', async () => {
+// W1-2 / I-1: timeout watcher dobor via notify fallback → NOTIFY_FALLBACK_PREFIX written via dispatchLogStore
+// (reportsStore.appendErrorText removed as duplicate; dispatchLogStore is the canonical location)
+test('W1-2: timeoutWatcher добор через notify fallback → appendErrorText с NOTIFY_FALLBACK_PREFIX (dispatchLogStore)', async () => {
   const prevAppCode = process.env.BITRIX_APP_CODE;
   const appendErrorTextCalls = [];
   try {
@@ -457,7 +458,10 @@ test('W1-2: timeoutWatcher добор через notify fallback → appendError
             { id: 70, azsId: 'azs-7', adminUserId: 99, slotKey: '2026-06-01:1200', status: 'in_progress' }
           ];
         },
-        async setReportStatus() {},
+        async setReportStatus() {}
+        // appendErrorText intentionally absent — removed from reportsStore (I-1 dedup)
+      },
+      dispatchLogStore: {
         async appendErrorText(payload) { appendErrorTextCalls.push(payload); }
       },
       bitrixClient: {
@@ -488,7 +492,7 @@ test('W1-2: timeoutWatcher добор через notify fallback → appendError
 
     const summary = await watcher.runOnce();
     assert.equal(summary.expired, 1, 'отчёт должен быть просрочен');
-    assert.equal(appendErrorTextCalls.length, 1, 'appendErrorText должен быть вызван');
+    assert.equal(appendErrorTextCalls.length, 1, 'appendErrorText должен быть вызван через dispatchLogStore');
     assert.ok(
       appendErrorTextCalls[0].errorText.startsWith(NOTIFY_FALLBACK_PREFIX),
       'errorText должен начинаться с NOTIFY_FALLBACK_PREFIX'

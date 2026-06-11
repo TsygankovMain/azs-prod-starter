@@ -1,5 +1,6 @@
 import { buildRestAppUriLink } from '../notifications/reportLinks.js';
 import { NOTIFY_FALLBACK_PREFIX } from '../notifications/notificationService.js';
+import { buildZonedDatetime } from './dispatchPlanGenerator.js';
 
 const MINUTES_TO_MS = 60 * 1000;
 
@@ -138,11 +139,25 @@ export const createDispatchService = ({
     const slotKey = buildSlotKey({ slotDate: plannedDate, slotHHmm });
     const reserveSlotKey = buildReserveSlotKey({ slotKey, trigger });
 
+    // Compute the timezone-correct slot instant so reserve() stores an accurate
+    // scheduled_at.  settings.timezone is the portal timezone (e.g. 'Europe/Moscow');
+    // without it parseSlotDateTimeUtc would treat HHmm as UTC, causing stale-detect
+    // to fire 3 h late on UTC+3 portals.  If buildZonedDatetime throws (bad date)
+    // we fall back to null; reserve() will then use parseSlotDateTimeUtc as before.
+    let reserveScheduledAt = null;
+    try {
+      const tz = String(settings?.timezone || '').trim();
+      reserveScheduledAt = buildZonedDatetime(plannedDate, slotHHmm, tz);
+    } catch {
+      // keep null — reserve() falls back to parseSlotDateTimeUtc(slotKey)
+    }
+
     const reserve = await dispatchLogStore.reserve({
       slotKey: reserveSlotKey,
       azsId: String(candidate.azsId),
       adminUserId: Number(candidate.adminUserId),
-      status: 'reserved'
+      status: 'reserved',
+      scheduledAt: reserveScheduledAt
     });
 
     if (!reserve.reserved) {

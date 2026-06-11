@@ -262,7 +262,7 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
           <!-- Состояние ошибки превью — видимый тайл с подсказкой «повторить» -->
           <div
             v-else-if="previewErrors.has(previewKey(item))"
-            class="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-gray-700/80 cursor-pointer"
+            class="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-gray-700/80 cursor-pointer z-20"
             :title="'Не удалось загрузить превью — нажмите для повтора'"
           >
             <span class="text-2xl opacity-70">⚠</span>
@@ -345,7 +345,7 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
             <!-- Состояние ошибки превью -->
             <div
               v-else-if="previewErrors.has(previewKey(item))"
-              class="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-gray-700/80 cursor-pointer"
+              class="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-gray-700/80 cursor-pointer z-20"
               :title="'Не удалось загрузить превью — нажмите для повтора'"
             >
               <span class="text-2xl opacity-70">⚠</span>
