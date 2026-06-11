@@ -5,6 +5,7 @@ const apiStore = useApiStore()
 
 type AzsOption = { value: string; label: string }
 const azsOptions = ref<AzsOption[]>([])
+const azsOptionsError = ref(false)
 const selectedAzsId = ref('')
 const reportHistory = ref<Array<{
   id: number; status: string; scheduledAt: string | null; deadlineAt: string | null; updatedAt: string | null
@@ -105,13 +106,21 @@ const GRAD: Record<string, string> = {
   area:    'linear-gradient(135deg,#7d9b5a,#4c6a31)',
 }
 
-onMounted(async () => {
+const loadAzsOptions = async () => {
   try {
     const resp = await apiStore.getAzsOptions({ limit: 500 })
     azsOptions.value = resp.items.map(i => ({ value: String(i.id), label: i.title || `АЗС ${i.id}` }))
-    if (azsOptions.value.length) { selectedAzsId.value = azsOptions.value[0].value; await load() }
-  } catch { /* non-fatal */ }
-})
+    azsOptionsError.value = false
+    if (azsOptions.value.length && !selectedAzsId.value) {
+      selectedAzsId.value = azsOptions.value[0].value
+      await load()
+    }
+  } catch {
+    azsOptionsError.value = true
+  }
+}
+
+onMounted(loadAzsOptions)
 watch(selectedAzsId, load)
 </script>
 
@@ -127,14 +136,20 @@ watch(selectedAzsId, load)
 
     <!-- AZS picker -->
     <div class="flex gap-2.5 mb-4 flex-wrap items-center">
-      <B24InputMenu
-        v-model="selectedAzsId"
-        :items="azsOptions"
-        value-attribute="value"
-        option-attribute="label"
-        placeholder="Выберите АЗС…"
-        class="min-w-[260px]"
-      />
+      <div class="flex flex-col gap-1">
+        <B24InputMenu
+          v-model="selectedAzsId"
+          :items="azsOptions"
+          value-attribute="value"
+          option-attribute="label"
+          placeholder="Выберите АЗС…"
+          class="min-w-[260px]"
+        />
+        <div v-if="azsOptionsError" class="flex items-center gap-1.5 text-[12px] text-red-600">
+          <span>Список АЗС не загрузился</span>
+          <button class="underline hover:no-underline" @click="loadAzsOptions">Повторить</button>
+        </div>
+      </div>
       <span class="text-[12px] text-gray-400">за 30 дней</span>
     </div>
 

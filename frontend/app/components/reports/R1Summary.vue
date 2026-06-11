@@ -8,6 +8,7 @@ const period  = ref<PeriodKey>('today')
 const customFrom = ref(''); const customTo = ref('')
 const azsFilter = ref<string[]>([])
 const azsOptions = ref<Array<{ value: string; label: string }>>([])
+const azsOptionsError = ref(false)
 
 type SummaryType = { total: number; done: number; expired: number; open: number; failed: number; overdue: number; byStatus: Record<string, number> }
 type ReportItem = {
@@ -63,11 +64,18 @@ const STATUS_COLOR: Record<string, string> = {
 }
 const fmtTime = (iso: string | null) => iso ? DateTime.fromISO(iso).toFormat('HH:mm') : '—'
 
-onMounted(async () => {
+const loadAzsOptions = async () => {
   try {
     const resp = await apiStore.getAzsOptions({ limit: 500 })
     azsOptions.value = resp.items.map(i => ({ value: String(i.id), label: i.title || `АЗС ${i.id}` }))
-  } catch { /* non-fatal */ }
+    azsOptionsError.value = false
+  } catch {
+    azsOptionsError.value = true
+  }
+}
+
+onMounted(async () => {
+  await loadAzsOptions()
   await load()
 })
 watch(period, load)
@@ -92,15 +100,21 @@ watch(period, load)
         >{{ lbl }}</button>
       </div>
       <!-- AZS multi-select -->
-      <B24InputMenu
-        v-model="azsFilter"
-        :items="azsOptions"
-        value-attribute="value"
-        option-attribute="label"
-        multiple
-        placeholder="Все АЗС"
-        class="min-w-[180px]"
-      />
+      <div class="flex flex-col gap-1">
+        <B24InputMenu
+          v-model="azsFilter"
+          :items="azsOptions"
+          value-attribute="value"
+          option-attribute="label"
+          multiple
+          placeholder="Все АЗС"
+          class="min-w-[180px]"
+        />
+        <div v-if="azsOptionsError" class="flex items-center gap-1.5 text-[12px] text-red-600">
+          <span>Список АЗС не загрузился</span>
+          <button class="underline hover:no-underline" @click="loadAzsOptions">Повторить</button>
+        </div>
+      </div>
     </div>
 
     <!-- KPI cards -->

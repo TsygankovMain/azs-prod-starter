@@ -885,14 +885,23 @@ onMounted(async () => {
           </div>
         </header>
 
-        <!-- Load error alert -->
-        <B24Alert
-          v-if="loadError && !hasReviewerAccess"
-          color="air-primary-alert"
-          title="Ошибка"
-          :description="loadError"
-          class="mb-6"
-        />
+        <!-- Load error alert (general network / API errors) -->
+        <div v-if="loadError && hasReviewerAccess" class="mb-6 flex flex-col gap-2">
+          <B24Alert
+            color="air-primary-alert"
+            title="Ошибка загрузки"
+            :description="loadError"
+          />
+          <div>
+            <button
+              class="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium disabled:opacity-50"
+              :disabled="isLoading"
+              @click="loadAll"
+            >
+              {{ isLoading ? 'Загрузка…' : '↻ Повторить' }}
+            </button>
+          </div>
+        </div>
 
         <!-- Summary banner -->
         <section class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-6">
