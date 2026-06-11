@@ -8,6 +8,7 @@ import { createAnalyticsRouter } from './analyticsRoutes.js';
 import { assertDispatchAvailable } from '../dispatch/dispatchScheduler.js';
 
 import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from '../shared/transientErrors.js';
+import { classifyDispatchError } from './dispatchErrorReasons.js';
 import {
   AZS_PHOTO_SET_EMPTY,
   AZS_CARD_NOT_FOUND,
@@ -785,10 +786,16 @@ export const createReportsRouter = ({
         limit: normalizeLimit(req.query.limit)
       });
 
-      const decorated = await Promise.all(items.map(async (item) => ({
-        ...item,
-        azsTitle: await resolveAzsTitle(item.azsId)
-      })));
+      const decorated = await Promise.all(items.map(async (item) => {
+        const { reasonCode, isFallback } = classifyDispatchError(item.errorText);
+        return {
+          ...item,
+          azsTitle: await resolveAzsTitle(item.azsId),
+          errorText: item.errorText ?? null,
+          errorReason: item.errorText ? reasonCode : null,
+          deliveredViaFallback: isFallback
+        };
+      }));
 
       return res.json({
         items: decorated,
