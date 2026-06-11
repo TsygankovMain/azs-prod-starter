@@ -39,6 +39,7 @@ const isOtherSelected = computed(() =>
 
 // Автофокус поля «Другое» при выборе варианта
 const otherInputRef = ref<{ $el?: HTMLElement; focus?: () => void } | null>(null)
+// фокус только по действию пользователя; предзаполнение selectedCode='other' из API не предусмотрено — если появится, пересмотреть, чтобы клавиатура не открывалась сама
 watch(isOtherSelected, async (value) => {
   if (value) {
     await nextTick()
@@ -46,9 +47,11 @@ watch(isOtherSelected, async (value) => {
     if (el) {
       if (typeof el.focus === 'function') {
         el.focus()
+        ;(el.$el ?? el).scrollIntoView?.({ block: 'center', behavior: 'smooth' })
       } else if (el.$el) {
         const textarea = el.$el.querySelector('textarea') as HTMLTextAreaElement | null
         textarea?.focus()
+        ;(el.$el ?? el).scrollIntoView?.({ block: 'center', behavior: 'smooth' })
       }
     }
   }
@@ -207,7 +210,7 @@ onUnmounted(() => {
       />
 
       <!-- Кнопка отправки — закреплена снизу -->
-      <div class="sticky bottom-0 -mx-4 border-t border-(--ui-color-base-20) bg-white/95 p-3 backdrop-blur dark:bg-gray-900/95">
+      <div class="sticky bottom-0 -mx-4 border-t border-(--ui-color-base-20) bg-(--ui-color-base-0)/95 p-3 backdrop-blur-sm">
         <B24Button
           color="air-tertiary"
           label="Сохранить причину"

@@ -12,10 +12,14 @@ import { useToast as useB24Toast } from '#imports'
 
 export type ToastKind = 'success' | 'error' | 'info'
 
-export interface ToastItem {
-  id: string | number
-  kind: ToastKind
-  text: string
+/**
+ * Passthrough options for toast.add().
+ * `actions` uses a structural type because b24ui's ButtonProps is generated from theme config
+ * and cannot be imported cleanly from outside the library layer.
+ */
+export type ToastOptions = {
+  title?: string
+  actions?: { label: string; onClick?: () => void; [key: string]: unknown }[]
 }
 
 const DURATION: Record<ToastKind, number> = {
@@ -33,21 +37,20 @@ const COLOR: Record<ToastKind, string> = {
 export function useAppToast() {
   const toast = useB24Toast()
 
-  function push(kind: ToastKind, text: string): void {
+  function push(kind: ToastKind, text: string, options?: ToastOptions): void {
     toast.add({
       description: text,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- b24ui color union is generated from theme, not exported as a plain type
       color: COLOR[kind] as any,
       duration: DURATION[kind],
       close: true,
+      ...options,
     })
   }
 
   return {
-    /** Raw toast list from b24ui (reactive). */
-    toasts: toast.toasts,
-    success: (text: string) => push('success', text),
-    error: (text: string) => push('error', text),
-    info: (text: string) => push('info', text),
+    success: (text: string, options?: ToastOptions) => push('success', text, options),
+    error: (text: string, options?: ToastOptions) => push('error', text, options),
+    info: (text: string, options?: ToastOptions) => push('info', text, options),
   }
 }
