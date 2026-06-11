@@ -364,11 +364,9 @@ test('invalid pre-computed scheduledAt causes candidate to fail gracefully', asy
   assert.match(markFailedCalls[0].errorText, /invalid/i, 'markFailed errorText must mention "invalid"');
 });
 
-test('dispatchCandidate: клавиатура содержит кнопку причины при ENABLE_REPORT_DEEP_LINK=true', async () => {
-  const prevEnableFlag = process.env.ENABLE_REPORT_DEEP_LINK;
+test('dispatchCandidate: клавиатура содержит кнопку причины при наличии BITRIX_APP_CODE', async () => {
   const prevAppCode = process.env.BITRIX_APP_CODE;
 
-  process.env.ENABLE_REPORT_DEEP_LINK = 'true';
   process.env.BITRIX_APP_CODE = 'test.app';
 
   try {
@@ -446,9 +444,6 @@ test('dispatchCandidate: клавиатура содержит кнопку пр
     assert.ok(typeof reasonButton.LINK === 'string' && reasonButton.LINK.includes('test.app'), 'LINK кнопки должен содержать appCode');
   } finally {
     // Восстановить env чтобы не загрязнять другие тесты
-    if (prevEnableFlag === undefined) delete process.env.ENABLE_REPORT_DEEP_LINK;
-    else process.env.ENABLE_REPORT_DEEP_LINK = prevEnableFlag;
-
     if (prevAppCode === undefined) delete process.env.BITRIX_APP_CODE;
     else process.env.BITRIX_APP_CODE = prevAppCode;
   }

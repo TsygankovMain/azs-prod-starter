@@ -75,5 +75,4 @@
 | `CRM_SYNC_POLL_MS` | `crmSyncWorker.js` |
 | `TOKEN_REFRESH_SCHEDULER_ENABLED` | `tokenRefreshScheduler.js` |
 | `BITRIX_BOT_MODE` / `BITRIX_BOT_ID` | `notificationService.js`, `botRegistryService.js` |
-| `APP_PUBLIC_BASE_URL` / `BITRIX_APP_CODE` | `reportLinks.js`, уведомления |
-| `ENABLE_REPORT_DEEP_LINK` | `dispatchService.js` (за флагом, default `false`) |
+| `APP_PUBLIC_BASE_URL` / `BITRIX_APP_CODE` | `reportLinks.js`, уведомления; наличие `BITRIX_APP_CODE` включает deep-link кнопки в диспетчеризации |

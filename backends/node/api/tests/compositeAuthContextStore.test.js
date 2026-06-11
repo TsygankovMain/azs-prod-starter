@@ -276,3 +276,64 @@ test('compositeAuthContextStore: throws when fileStore is missing', () => {
     /fileStore.*required/i
   );
 });
+
+// ---------------------------------------------------------------------------
+// I1 resilience: DB fails → file still written, no throw (single failure)
+// ---------------------------------------------------------------------------
+test('compositeAuthContextStore: DB write fails → file is written, does not throw', async () => {
+  const warnCalls = [];
+  const logger = { warn: (msg, meta) => warnCalls.push({ msg, meta }) };
+
+  const input = { memberId: 'm1', domain: 'a.bitrix24.ru', userId: 1, authId: 'tok', refreshToken: 'ref', isAdmin: false };
+
+  const db = {
+    ...makeDbStore(),
+    async upsertContext() {
+      throw new Error('connection refused');
+    }
+  };
+  const file = makeFileStore();
+  const store = createCompositeAuthContextStore({ dbStore: db, fileStore: file, logger });
+
+  // Must not throw — DB failure is non-fatal when file succeeds
+  await assert.doesNotReject(() => store.upsertContext(input));
+
+  // File must have been written despite DB failure
+  assert.equal(file.state._upsertCalls.length, 1, 'file must receive upsert even when DB fails');
+  assert.equal(file.state._upsertCalls[0].authId, 'tok');
+
+  // DB failure must be logged
+  const dbWarn = warnCalls.find((c) => c.msg === 'compositeAuthContextStore.db_write_failed');
+  assert.ok(dbWarn, 'DB failure must be logged');
+  assert.match(dbWarn.meta.message, /connection refused/i);
+});
+
+// ---------------------------------------------------------------------------
+// I1 resilience: both stores fail → throws
+// ---------------------------------------------------------------------------
+test('compositeAuthContextStore: both stores fail → throws', async () => {
+  const warnCalls = [];
+  const logger = { warn: (msg, meta) => warnCalls.push({ msg, meta }) };
+
+  const input = { memberId: 'm1', domain: 'a.bitrix24.ru', userId: 1, authId: 'tok', refreshToken: 'ref', isAdmin: false };
+
+  const db = {
+    ...makeDbStore(),
+    async upsertContext() { throw new Error('db down'); }
+  };
+  const file = {
+    ...makeFileStore(),
+    async upsertContext() { throw new Error('disk full'); }
+  };
+  const store = createCompositeAuthContextStore({ dbStore: db, fileStore: file, logger });
+
+  await assert.rejects(
+    () => store.upsertContext(input),
+    /db down/i,
+    'must throw when both stores fail'
+  );
+
+  // Both failures must be logged
+  assert.ok(warnCalls.some((c) => c.msg === 'compositeAuthContextStore.db_write_failed'), 'DB failure must be logged');
+  assert.ok(warnCalls.some((c) => c.msg === 'compositeAuthContextStore.file_write_failed'), 'file failure must be logged');
+});

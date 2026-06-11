@@ -272,3 +272,88 @@ test('databaseAuthContextStore: throws when pool is missing', () => {
     /pool is required/i
   );
 });
+
+// ---------------------------------------------------------------------------
+// Concurrent upserts do not lose fields (C1 — serialisation regression test)
+//
+// Simulates the token-rotation race: a background onTokenRefreshed and an
+// in-flight /api/getToken each call upsertContext concurrently.
+// Without the writeChain serialisation the two calls both read the same
+// pre-write snapshot and the slower write silently overwrites the faster one,
+// losing the refreshToken OR the verifiedAt update.
+//
+// The fake pool introduces a one-tick await-hop between SELECT and INSERT so
+// the race window is clearly open at test time.
+// ---------------------------------------------------------------------------
+test('databaseAuthContextStore: handles concurrent upserts without loss (pg)', async () => {
+  const stored = {};
+
+  // Pool with explicit microtask delay between SELECT and INSERT to reproduce
+  // the interleaving that causes data loss without the writeChain fix.
+  const pool = {
+    _calls: [],
+    async query(sql, params) {
+      this._calls.push({ sql, params });
+
+      if (/SELECT.*WHERE/i.test(sql)) {
+        // Yield to the event loop so the second concurrent call can start its
+        // SELECT before either write has committed.
+        await new Promise((r) => setImmediate(r));
+        const key = params[0];
+        const row = stored[key];
+        if (!row) return { rows: [] };
+        return {
+          rows: [{
+            key,
+            payload: row.payload,
+            is_admin: row.is_admin,
+            updated_at: new Date().toISOString(),
+            last_admin_at: null
+          }]
+        };
+      }
+
+      if (/ON CONFLICT/i.test(sql)) {
+        await new Promise((r) => setImmediate(r));
+        const key = params[0];
+        stored[key] = { payload: params[1], is_admin: params[2] };
+        return { rows: [] };
+      }
+
+      return { rows: [] };
+    }
+  };
+
+  const store = createDatabaseAuthContextStore({ pool, dbType: 'postgresql' });
+
+  // Seed full context first (sequential — baseline state)
+  await store.upsertContext({
+    memberId: 'm1', domain: 'a.bitrix24.ru', userId: 1,
+    authId: 'old-tok', refreshToken: 'original-ref',
+    isAdmin: true, verifiedAt: '2026-01-01T00:00:00.000Z'
+  });
+
+  const verifiedAtNew = '2026-06-11T12:00:00.000Z';
+
+  // Fire both concurrent partial upserts simultaneously — the race window is
+  // open: without serialisation one will read stale data and overwrite the
+  // other's field.
+  await Promise.all([
+    // Simulates onTokenRefreshed: only updates refreshToken
+    store.upsertContext({
+      memberId: 'm1', domain: 'a.bitrix24.ru', userId: 1,
+      authId: 'old-tok', refreshToken: 'NEW-refresh-token'
+    }),
+    // Simulates getToken: only updates verifiedAt
+    store.upsertContext({
+      memberId: 'm1', domain: 'a.bitrix24.ru', userId: 1,
+      authId: 'old-tok', verifiedAt: verifiedAtNew
+    })
+  ]);
+
+  const ctx = await store.getContextByKey('m1:a.bitrix24.ru:1');
+  assert.ok(ctx, 'context must exist');
+  assert.equal(ctx.refreshToken, 'NEW-refresh-token', 'refreshToken must not be lost after concurrent writes');
+  assert.equal(ctx.verifiedAt, verifiedAtNew, 'verifiedAt must not be lost after concurrent writes');
+  assert.equal(ctx.isAdmin, true, 'isAdmin must be preserved');
+});

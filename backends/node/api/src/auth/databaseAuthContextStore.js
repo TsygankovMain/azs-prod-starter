@@ -143,6 +143,17 @@ export const createDatabaseAuthContextStore = ({ pool, dbType } = {}) => {
 
   const db = isMysql(dbType) ? createMysqlStore(pool) : createPgStore(pool);
 
+  // Serialises concurrent upsertContext calls so that a concurrent
+  // onTokenRefreshed running in the background and a /api/getToken call cannot
+  // interleave their read→merge→write steps and lose each other's fields (e.g.
+  // the new refreshToken getting overwritten by stale data read before the
+  // previous write landed).
+  //
+  // NOTE: this store is designed for a single application instance. For
+  // horizontal scaling a proper DB-level transaction (SELECT FOR UPDATE / a
+  // single atomic SQL-merge) is required.
+  let writeChain = Promise.resolve();
+
   return {
     async ensureSchema() {
       await db.ensureSchema();
@@ -159,14 +170,22 @@ export const createDatabaseAuthContextStore = ({ pool, dbType } = {}) => {
         throw new Error('memberId, domain and userId are required for auth context upsert');
       }
 
-      // Load existing record for merge so partial upsert never wipes existing fields
-      const existing = await db.getByKey(key);
-      const previous = existing ? (parsePayload(existing.payload) || {}) : {};
-      const merged = mergeContextRecords(previous, source);
+      const run = async () => {
+        // Load existing record for merge so partial upsert never wipes existing fields
+        const existing = await db.getByKey(key);
+        const previous = existing ? (parsePayload(existing.payload) || {}) : {};
+        const merged = mergeContextRecords(previous, source);
 
-      await db.upsert(key, merged, Boolean(merged.isAdmin));
+        await db.upsert(key, merged, Boolean(merged.isAdmin));
 
-      return { key, context: merged };
+        return { key, context: merged };
+      };
+
+      // Chain onto the write queue — even if the previous write failed we still
+      // attempt the new one (run is used as both fulfillment and rejection handler).
+      const result = writeChain.then(run, run);
+      writeChain = result.catch(() => {});
+      return result;
     },
 
     async getContextByKey(keyValue) {
@@ -199,9 +218,8 @@ export const createDatabaseAuthContextStore = ({ pool, dbType } = {}) => {
         .filter(Boolean);
     },
 
-    // DB writes are synchronous per-call — no write chain to drain.
     async flush() {
-      return Promise.resolve();
+      await writeChain;
     }
   };
 };

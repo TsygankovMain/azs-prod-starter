@@ -42,13 +42,34 @@ export const createCompositeAuthContextStore = ({
 
     // Write to both stores. DB is authoritative; file is a warm backup so
     // the old flush-on-shutdown path keeps working.
+    //
+    // Uses Promise.allSettled so that a DB outage does not prevent the file
+    // write (and vice-versa). Only throws if BOTH stores fail; a single
+    // failure is logged and the result of the surviving store is returned
+    // (DB takes priority).
     async upsertContext(contextInput) {
-      const result = await dbStore.upsertContext(contextInput);
-      // File write failure is non-fatal
-      await fileStore.upsertContext(contextInput).catch((error) => {
-        logger.warn('compositeAuthContextStore.file_write_failed', { message: error.message });
-      });
-      return result;
+      const [dbOutcome, fileOutcome] = await Promise.allSettled([
+        dbStore.upsertContext(contextInput),
+        fileStore.upsertContext(contextInput)
+      ]);
+
+      if (dbOutcome.status === 'rejected') {
+        logger.warn('compositeAuthContextStore.db_write_failed', {
+          message: dbOutcome.reason?.message
+        });
+      }
+      if (fileOutcome.status === 'rejected') {
+        logger.warn('compositeAuthContextStore.file_write_failed', {
+          message: fileOutcome.reason?.message
+        });
+      }
+
+      if (dbOutcome.status === 'rejected' && fileOutcome.status === 'rejected') {
+        throw dbOutcome.reason;
+      }
+
+      // DB result is authoritative; fall back to file result when DB failed
+      return dbOutcome.status === 'fulfilled' ? dbOutcome.value : fileOutcome.value;
     },
 
     async getContextByKey(key) {
