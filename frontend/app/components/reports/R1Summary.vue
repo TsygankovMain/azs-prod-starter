@@ -174,7 +174,24 @@ watch(period, load)
     </div>
 
     <!-- Таблица -->
-    <div v-if="loading" class="text-center py-8 text-gray-400">Загрузка…</div>
+    <div v-if="loading" class="bg-white border border-gray-200 rounded-[14px] shadow-sm overflow-hidden">
+      <!-- Шапка таблицы-скелетон -->
+      <div class="flex gap-3 px-3 py-2.5 border-b border-gray-100">
+        <SkeletonBlock height="0.75rem" width="15%" />
+        <SkeletonBlock height="0.75rem" width="20%" />
+        <SkeletonBlock height="0.75rem" width="15%" />
+        <SkeletonBlock height="0.75rem" width="15%" />
+        <SkeletonBlock height="0.75rem" width="18%" />
+      </div>
+      <!-- 6 строк данных -->
+      <div v-for="n in 6" :key="n" class="flex gap-3 px-3 py-2.5 border-b border-gray-50">
+        <SkeletonBlock height="2rem" width="15%" rounded="rounded-lg" />
+        <SkeletonBlock height="2rem" width="20%" rounded="rounded-lg" />
+        <SkeletonBlock height="2rem" width="15%" rounded="rounded-lg" />
+        <SkeletonBlock height="2rem" width="15%" rounded="rounded-lg" />
+        <SkeletonBlock height="1.5rem" width="18%" rounded="rounded-full" />
+      </div>
+    </div>
     <B24Alert v-else-if="error" color="air-primary-alert" :description="error" />
     <div v-else class="bg-white border border-gray-200 rounded-[14px] shadow-sm overflow-x-auto">
       <table class="w-full text-[13px] border-collapse">

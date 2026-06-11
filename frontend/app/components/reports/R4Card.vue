@@ -158,7 +158,37 @@ watch(selectedAzsId, load)
       <span class="text-[12px] text-gray-400">за 30 дней</span>
     </div>
 
-    <div v-if="loading" class="text-center py-8 text-gray-400">Загрузка…</div>
+    <template v-if="loading">
+      <!-- Mini KPI-скелетон: 4 карточки как в итоговой сетке (grid-cols-2 lg:grid-cols-4, p-3.5) -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3.5">
+        <div v-for="n in 4" :key="n" class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-3.5 flex flex-col gap-2">
+          <SkeletonBlock height="0.75rem" width="70%" />
+          <SkeletonBlock height="1.75rem" width="50%" />
+        </div>
+      </div>
+      <!-- Секция фото-скелетон: grid-cols-2 lg:grid-cols-5, aspect-[4/3] -->
+      <div class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-4 mb-3.5">
+        <SkeletonBlock height="1rem" width="60%" class="mb-3" />
+        <div class="grid grid-cols-2 lg:grid-cols-5 gap-2.5">
+          <SkeletonBlock v-for="n in 5" :key="n" height="0" rounded="rounded-[11px]" class="aspect-[4/3]" />
+        </div>
+      </div>
+      <!-- Timeline-скелетон: 5 строк -->
+      <div class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-4">
+        <SkeletonBlock height="1rem" width="40%" class="mb-3" />
+        <div v-for="n in 5" :key="n" class="grid gap-3.5 py-3 border-b border-gray-100" style="grid-template-columns:88px 1fr">
+          <div class="flex flex-col gap-1.5">
+            <SkeletonBlock height="0.875rem" width="80%" />
+            <SkeletonBlock height="0.75rem" width="50%" />
+          </div>
+          <div class="flex items-center gap-2">
+            <SkeletonBlock height="1.75rem" width="30%" rounded="rounded-lg" />
+            <SkeletonBlock height="1.75rem" width="30%" rounded="rounded-lg" />
+            <SkeletonBlock height="1.5rem" width="20%" rounded="rounded-full" class="ml-auto" />
+          </div>
+        </div>
+      </div>
+    </template>
     <B24Alert v-else-if="error" color="air-primary-alert" :description="error" />
     <template v-else-if="selectedAzsId">
       <!-- Mini KPIs -->

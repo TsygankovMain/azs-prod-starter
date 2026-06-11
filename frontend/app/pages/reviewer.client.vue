@@ -1087,6 +1087,26 @@ onMounted(async () => {
             </div>
 
             <div class="p-5 space-y-4">
+              <!-- Скелетоны ленты при первичной загрузке -->
+              <template v-if="isLoading && filteredEvents.length === 0">
+                <div v-for="n in 5" :key="`skel-${n}`" class="flex gap-3">
+                  <!-- Иконка-аватар -->
+                  <SkeletonBlock height="2.5rem" width="2.5rem" rounded="rounded-full" class="flex-shrink-0" />
+                  <!-- Тело карточки события -->
+                  <div class="flex-1 flex flex-col gap-2 pb-1">
+                    <div class="flex justify-between gap-3">
+                      <SkeletonBlock height="1rem" width="55%" />
+                      <SkeletonBlock height="0.75rem" width="3rem" />
+                    </div>
+                    <SkeletonBlock height="0.75rem" width="40%" />
+                    <div class="flex gap-2 mt-1">
+                      <SkeletonBlock height="1.5rem" width="6rem" rounded="rounded-md" />
+                      <SkeletonBlock height="1.5rem" width="6rem" rounded="rounded-md" />
+                    </div>
+                  </div>
+                </div>
+              </template>
+
               <div
                 v-for="event in filteredEvents"
                 :key="event.id"
@@ -1140,7 +1160,7 @@ onMounted(async () => {
                 </div>
               </div>
 
-              <div v-if="filteredEvents.length === 0" class="text-center py-8 text-gray-500">
+              <div v-if="!isLoading && filteredEvents.length === 0" class="text-center py-8 text-gray-500">
                 Нет событий за выбранный период
               </div>
             </div>
