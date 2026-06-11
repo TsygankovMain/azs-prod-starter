@@ -750,6 +750,8 @@ export const createReportsRouter = ({
   diskApi = null,
   reasonStore = null,
   reasonForwardingService = null,
+  getBackgroundContext = null,
+  getAdminContext = null,
 }) => {
   if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService || !authContextStore || !crmSyncJobStore) {
     throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient, notificationService, authContextStore and crmSyncJobStore are required');
@@ -1228,7 +1230,8 @@ export const createReportsRouter = ({
         getRuntimeContext: async () => {
           const entry = await authContextStore.getLastAdminContext();
           return entry?.context ? { key: entry.key, ...entry.context } : {};
-        }
+        },
+        getBackgroundContext: typeof getBackgroundContext === 'function' ? getBackgroundContext : null
       });
 
       const settings = await settingsStore.read();
@@ -1591,7 +1594,7 @@ export const createReportsRouter = ({
   });
 
   if (analyticsStore) {
-    router.use(createAnalyticsRouter({ analyticsStore, reportsStore, bitrixClient, settingsStore, diskApi }));
+    router.use(createAnalyticsRouter({ analyticsStore, reportsStore, bitrixClient, settingsStore, diskApi, getAdminContext }));
   }
 
   return router;

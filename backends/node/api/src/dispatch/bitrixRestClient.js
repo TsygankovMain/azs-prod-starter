@@ -656,13 +656,49 @@ export const createBitrixRestClient = ({
       async downloadFileContent(diskObjectId, context = {}) {
         const id = Number(diskObjectId);
         if (!id) throw new Error('downloadFileContent requires a disk object id');
-        const info = await call('disk.file.get', { id }, context);
-        const url = String(info?.DOWNLOAD_URL || info?.downloadUrl || info?.download_url || '').trim();
-        if (!url) throw new Error('disk.file.get response has no DOWNLOAD_URL');
-        const resp = await fetchWithDownloadTimeout(url);
+
+        // Helper: fetch fresh disk.file.get info (fresh DOWNLOAD_URL + name).
+        const fetchInfo = async (ctx) => {
+          const runtime = resolveRuntimeContext(ctx);
+          const info = await call('disk.file.get', { id }, ctx);
+          const url = String(info?.DOWNLOAD_URL || info?.downloadUrl || info?.download_url || '').trim();
+          if (!url) throw new Error('disk.file.get response has no DOWNLOAD_URL');
+          return { url, name: String(info?.NAME || info?.name || `file_${id}`), runtime };
+        };
+
+        let { url, name, runtime } = await fetchInfo(context);
+
+        const doDownload = async (downloadUrl) => {
+          const resp = await fetchWithDownloadTimeout(downloadUrl);
+          return resp;
+        };
+
+        let resp = await doDownload(url);
+
+        // 401 from the file server: user token may have expired.
+        // Refresh once and retry the full fetchInfo+download cycle.
+        if (resp.status === 401 && !resolveRuntimeContext(context).isWebhook) {
+          let refreshedContext;
+          try {
+            refreshedContext = await refreshAccessToken(runtime);
+          } catch (refreshError) {
+            if (isOauthClientInvalid(refreshError)) {
+              logger.error('oauth_client_invalid', {
+                method: 'disk.file.get',
+                domain: runtime.domain || null,
+                message: refreshError.message
+              });
+            }
+            throw refreshError;
+          }
+          const retried = await fetchInfo(refreshedContext);
+          resp = await doDownload(retried.url);
+          name = retried.name;
+        }
+
         if (!resp.ok) throw new Error(`Disk download failed HTTP ${resp.status}`);
         const buf = Buffer.from(await resp.arrayBuffer());
-        return { base64: buf.toString('base64'), name: String(info?.NAME || info?.name || `file_${id}`) };
+        return { base64: buf.toString('base64'), name };
       },
 
       async markFileDeleted(fileId, context = {}) {

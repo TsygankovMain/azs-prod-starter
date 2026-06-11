@@ -148,6 +148,24 @@ test('POST /api/admin/bot/reregister returns 502 on Bitrix error', async () => {
   assert.ok(String(res.state.payload?.message).includes('BITRIX_INTERNAL_ERROR'));
 });
 
+test('POST /api/admin/bot/reregister returns 400 when auth_id_missing', async () => {
+  const service = createBotRegistryService({
+    bitrixClient: {
+      async callMethodWithAuth() { return { bot: { id: 1 } }; }
+    },
+    logger: { info() {}, warn() {} }
+  });
+  const handler = buildReregisterHandler(service);
+  const req = {
+    accessContext: { capabilities: { settings: true } },
+    bitrixContext: { authId: '' } // empty authId
+  };
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.state.statusCode, 400);
+  assert.equal(res.state.payload?.error, 'auth_id_missing');
+});
+
 // ── botRegistryService force=true branch ─────────────────────────────────────
 
 test('ensureBot with force=true calls registerBot even when bot already exists', async () => {

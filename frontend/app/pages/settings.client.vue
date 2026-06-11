@@ -115,6 +115,7 @@ const { $logger, initApp, b24Helper, destroyB24Helper, processErrorGlobal } = us
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
 const userStore = useUserStore()
+const { confirm } = useConfirm()
 
 let $b24: null | B24Frame = null
 
@@ -930,8 +931,12 @@ async function reregisterBot() {
   if (isReregisteringBot.value) {
     return
   }
-  const confirmed = confirm('Перерегистрировать бота? Бот будет заново привязан к порталу. Чаты и история сохранятся.')
-  if (!confirmed) {
+  const ok = await confirm({
+    title: 'Перерегистрировать бота?',
+    text: 'Бот будет заново привязан к порталу. Чаты и история сохранятся.',
+    confirmLabel: 'Перерегистрировать',
+  })
+  if (!ok) {
     return
   }
   isReregisteringBot.value = true

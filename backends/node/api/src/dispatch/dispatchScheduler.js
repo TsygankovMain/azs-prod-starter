@@ -63,7 +63,10 @@ export const createDispatchScheduler = ({
   executeBatchLimit = Number(process.env.DISPATCH_EXECUTE_BATCH_LIMIT || 20),
   // Stale planned-slot finisher: slots with status 'reserved' older than this
   // threshold are retried (context live) or marked failed (context dead).
-  stalePlannedMinutes = Number(process.env.DISPATCH_STALE_PLANNED_MINUTES || STALE_PLANNED_MINUTES_DEFAULT),
+  stalePlannedMinutes = (() => {
+    const parsed = Number(process.env.DISPATCH_STALE_PLANNED_MINUTES);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : STALE_PLANNED_MINUTES_DEFAULT;
+  })(),
   // dispatchLogStore: optional, needed for stale-slot finisher
   dispatchLogStore = null,
   // Resilience deps (all optional, backward-compatible):

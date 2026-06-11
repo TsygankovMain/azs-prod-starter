@@ -227,6 +227,26 @@ const createPostgresStore = (pool) => ({
     );
   },
 
+  async appendErrorText({ id, reportId, errorText }) {
+    const rowId = id ?? reportId;
+    if (!rowId || !String(errorText || '').trim()) return;
+    const text = String(errorText).trim();
+    const MAX_LEN = 1000;
+    await pool.query(
+      `UPDATE dispatch_log
+       SET error_text = LEFT(
+         CASE WHEN error_text IS NULL OR error_text = ''
+           THEN $1
+           ELSE error_text || ' | ' || $1
+         END,
+         ${MAX_LEN}
+       ),
+       updated_at = NOW()
+       WHERE id = $2`,
+      [text, rowId]
+    );
+  },
+
   async listOverdueReports({ now = new Date(), limit = 200 } = {}) {
     const result = await pool.query(
       `SELECT *
@@ -596,6 +616,25 @@ const createMysqlStore = (pool) => ({
     await pool.execute(
       'UPDATE dispatch_log SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [status, reportId]
+    );
+  },
+
+  async appendErrorText({ id, reportId, errorText }) {
+    const rowId = id ?? reportId;
+    if (!rowId || !String(errorText || '').trim()) return;
+    const text = String(errorText).trim();
+    const MAX_LEN = 1000;
+    await pool.execute(
+      `UPDATE dispatch_log
+       SET error_text = LEFT(
+         CASE WHEN error_text IS NULL OR error_text = ''
+           THEN ?
+           ELSE CONCAT(error_text, ' | ', ?)
+         END,
+         ${MAX_LEN}
+       )
+       WHERE id = ?`,
+      [text, text, rowId]
     );
   },
 

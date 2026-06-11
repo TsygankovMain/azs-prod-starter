@@ -293,6 +293,11 @@ const notificationService = createNotificationService({
     }
     const registration = await botRegistryService.ensureBot({ authId, context });
     return registration.botId;
+  },
+  ensureBot: async (context = {}) => {
+    const authId = String(context?.authId || '').trim();
+    if (!authId) return { botId: 0 };
+    return botRegistryService.ensureBot({ authId, context });
   }
 });
 const timeoutWatcher = createTimeoutWatcher({
@@ -441,6 +446,10 @@ app.post('/api/admin/bot/reregister', verifyToken, attachAccessContext, async (r
       context: req.bitrixContext || {},
       force: true
     });
+    process.env.BITRIX_BOT_ID = String(registration.botId);
+    if (typeof notificationService.setBotId === 'function') {
+      notificationService.setBotId(registration.botId);
+    }
     return res.json({
       ok: true,
       botId: registration.botId,
@@ -471,6 +480,14 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
   diskApi: bitrixClient.diskApi,
   reasonStore,
   reasonForwardingService,
+  getAdminContext,
+  getBackgroundContext: async () => {
+    if (webhookBackgroundContext) {
+      return webhookBackgroundContext;
+    }
+    const entry = await authContextStore.getLastAdminContext();
+    return entry?.context ? { key: entry.key, ...entry.context } : {};
+  },
 }));
 
 app.use('/api/reports/photos', verifyToken, attachAccessContext, createPhotoFeedRouter({

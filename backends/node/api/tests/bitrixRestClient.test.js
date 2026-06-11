@@ -620,3 +620,170 @@ test('bitrix client treats AbortError (timeout) as transient and retries', async
     global.fetch = originalFetch;
   }
 });
+
+// ── downloadFileContent: 401 → refresh → retry ────────────────────────────────
+
+test('diskApi.downloadFileContent: 401 from file server → refreshes token → retries once → 200', async () => {
+  const originalFetch = global.fetch;
+  const fileGetCalls = [];
+  const downloadCalls = [];
+  const oauthCalls = [];
+  let fileGetCallCount = 0;
+
+  global.fetch = async (url, options = {}) => {
+    const urlStr = String(url);
+
+    if (urlStr.includes('/disk.file.get.json')) {
+      fileGetCallCount += 1;
+      fileGetCalls.push({ url: urlStr, fileGetCallCount });
+      const auth = JSON.parse(options.body || '{}')?.auth;
+      const downloadUrl = `https://cdn.bitrix24.ru/download/file_42?auth=${auth}`;
+      return createJsonResponse({
+        result: {
+          ID: '42',
+          NAME: 'photo.jpg',
+          DOWNLOAD_URL: downloadUrl
+        }
+      });
+    }
+
+    if (urlStr.includes('/download/file_42')) {
+      downloadCalls.push(urlStr);
+      // First download attempt returns 401 (expired user token)
+      if (downloadCalls.length === 1) {
+        return { ok: false, status: 401, arrayBuffer: async () => new ArrayBuffer(0) };
+      }
+      // Second attempt (after refresh) succeeds
+      const fakeBytes = Buffer.from('FAKEPNG');
+      return {
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => fakeBytes.buffer.slice(fakeBytes.byteOffset, fakeBytes.byteOffset + fakeBytes.byteLength)
+      };
+    }
+
+    if (urlStr.includes('/oauth/token/')) {
+      oauthCalls.push(urlStr);
+      return createJsonResponse({
+        access_token: 'refreshed-token',
+        refresh_token: 'new-refresh',
+        domain: 'test.bitrix24.ru',
+        client_endpoint: 'https://test.bitrix24.ru/rest/'
+      });
+    }
+
+    throw new Error(`Unexpected URL in downloadFileContent test: ${urlStr}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://test.bitrix24.ru/rest',
+      authId: 'expired-user-token',
+      refreshToken: 'user-refresh-token',
+      oauthDomain: 'test.bitrix24.ru',
+      clientId: 'local.test',
+      clientSecret: 'secret',
+      retryBackoffMs: [0],
+      logger: { info() {}, warn() {}, error() {} }
+    });
+
+    const result = await client.diskApi.downloadFileContent(42, {});
+    assert.ok(typeof result.base64 === 'string' && result.base64.length > 0, 'should return base64 data');
+    assert.equal(result.name, 'photo.jpg', 'should return file name');
+
+    assert.equal(oauthCalls.length, 1, 'OAuth refresh must be called exactly once');
+    assert.equal(fileGetCalls.length, 2, 'disk.file.get must be called twice (initial + after refresh)');
+    assert.equal(downloadCalls.length, 2, 'download must be attempted twice (401 + retry)');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('diskApi.downloadFileContent: 401 → refresh throws → propagates error', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async (url) => {
+    const urlStr = String(url);
+    if (urlStr.includes('/disk.file.get.json')) {
+      return createJsonResponse({
+        result: { ID: '99', NAME: 'file.jpg', DOWNLOAD_URL: 'https://cdn.bitrix24.ru/dl/99' }
+      });
+    }
+    if (urlStr.includes('/dl/99')) {
+      return { ok: false, status: 401, arrayBuffer: async () => new ArrayBuffer(0) };
+    }
+    if (urlStr.includes('/oauth/token/')) {
+      return createJsonResponse({ error: 'invalid_client', error_description: 'bad credentials' });
+    }
+    throw new Error(`Unexpected URL: ${urlStr}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://test.bitrix24.ru/rest',
+      authId: 'expired-token',
+      refreshToken: 'refresh-token',
+      oauthDomain: 'test.bitrix24.ru',
+      clientId: 'bad-id',
+      clientSecret: 'bad-secret',
+      retryBackoffMs: [0],
+      logger: { info() {}, warn() {}, error() {} }
+    });
+
+    await assert.rejects(
+      () => client.diskApi.downloadFileContent(99, {}),
+      /Bitrix OAuth refresh failed/,
+      'should propagate refresh failure'
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('diskApi.downloadFileContent: webhook context — does NOT attempt token refresh on 401', async () => {
+  const originalFetch = global.fetch;
+  let oauthAttempts = 0;
+
+  global.fetch = async (url) => {
+    const urlStr = String(url);
+    if (urlStr.includes('/disk.file.get.json')) {
+      return createJsonResponse({
+        result: { ID: '77', NAME: 'img.jpg', DOWNLOAD_URL: 'https://cdn.bitrix24.ru/dl/77' }
+      });
+    }
+    if (urlStr.includes('/dl/77')) {
+      return { ok: false, status: 401, arrayBuffer: async () => new ArrayBuffer(0) };
+    }
+    if (urlStr.includes('/oauth/token/')) {
+      oauthAttempts += 1;
+      return createJsonResponse({ access_token: 'new', refresh_token: 'new', domain: 'wh.bitrix24.ru' });
+    }
+    throw new Error(`Unexpected URL: ${urlStr}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: '',
+      authId: '',
+      refreshToken: 'refresh',
+      clientId: 'local.test',
+      clientSecret: 'secret',
+      retryBackoffMs: [0],
+      logger: { info() {}, warn() {}, error() {} }
+    });
+
+    const webhookContext = {
+      isWebhook: true,
+      endpoint: 'https://wh.bitrix24.ru/rest/1/abcdef'
+    };
+
+    await assert.rejects(
+      () => client.diskApi.downloadFileContent(77, webhookContext),
+      /Disk download failed HTTP 401/,
+      'should throw without refresh for webhook context'
+    );
+    assert.equal(oauthAttempts, 0, 'OAuth refresh must NOT be called for webhook context');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

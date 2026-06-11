@@ -242,7 +242,7 @@ export const createNotificationService = ({
 
   return {
     mode: resolvedMode,
-    botId: currentBotId || null,
+    get botId() { return currentBotId || null; },
     setBotId(nextBotId) {
       const parsed = Number(nextBotId);
       if (Number.isFinite(parsed) && parsed > 0) {
