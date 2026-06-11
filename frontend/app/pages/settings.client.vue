@@ -563,20 +563,51 @@ function setEntitySelectValue(module: ModuleKey, value: string) {
   }
 }
 
-function getModuleFieldValue(module: ModuleKey, key: FieldMapKey) {
-  return String((form[module].fields as Record<string, string>)[key] || '')
-}
-
 function setModuleFieldValue(module: ModuleKey, key: FieldMapKey, value: string) {
   ;(form[module].fields as Record<string, string>)[key] = value
+}
+
+// ─── Sentinel helpers for "resettable" selects (reka-ui forbids value="") ──────
+const NONE_SENTINEL = '__none__'
+
+/** Returns field value mapped to sentinel for display in B24Select */
+function getModuleFieldSelectValue(module: ModuleKey, key: FieldMapKey): string {
+  const v = String((form[module].fields as Record<string, string>)[key] || '')
+  return v === '' ? NONE_SENTINEL : v
+}
+
+/** Stores field value after mapping sentinel back to '' */
+function setModuleFieldSelectValue(module: ModuleKey, key: FieldMapKey, value: string) {
+  ;(form[module].fields as Record<string, string>)[key] = value === NONE_SENTINEL ? '' : value
+}
+
+/** Returns stage value mapped to sentinel for display in B24Select */
+function getStageSelectValue(key: keyof typeof form.report.stages): string {
+  const v = String(form.report.stages[key] || '')
+  return v === '' ? NONE_SENTINEL : v
+}
+
+/** Stores stage value after mapping sentinel back to '' */
+function setStageSelectValue(key: keyof typeof form.report.stages, value: string) {
+  form.report.stages[key] = value === NONE_SENTINEL ? '' : value
 }
 
 function fieldSelectItems(module: ModuleKey) {
   return fieldsByModule[module].map((f) => ({ label: f.label, value: f.value }))
 }
 
+/** Field items with sentinel "Не сопоставлено" prepended (no empty-string value) */
+function fieldSelectItemsWithNone(module: ModuleKey) {
+  return [{ label: 'Не сопоставлено', value: NONE_SENTINEL }, ...fieldSelectItems(module)]
+}
+
 function stageSelectItems() {
   return reportStages.value.map((s) => ({ label: s.label, value: s.value }))
+}
+
+/** Stage items with sentinel "Выберите стадию" prepended (no empty-string value) */
+function stageSelectItemsWithNone() {
+  return [{ label: 'Выберите стадию', value: NONE_SENTINEL }, ...stageSelectItems()]
 }
 
 function normalizeFieldOptions(fields: JsonObject): CrmFieldOption[] {
@@ -1048,7 +1079,7 @@ onUnmounted(() => {
                     </span>
                   </template>
                   <B24Select
-                    :items="[{ label: 'Выберите СП', value: '' }, ...smartProcessSelectItems]"
+                    :items="smartProcessSelectItems"
                     :model-value="entitySelectValue('azs')"
                     :disabled="!isAdminReady"
                     placeholder="Выберите СП"
@@ -1068,12 +1099,12 @@ onUnmounted(() => {
                         </td>
                         <td class="py-2 pr-2">
                           <B24Select
-                            :items="[{ label: 'Не сопоставлено', value: '' }, ...fieldSelectItems('azs')]"
-                            :model-value="getModuleFieldValue('azs', req.key)"
+                            :items="fieldSelectItemsWithNone('azs')"
+                            :model-value="getModuleFieldSelectValue('azs', req.key)"
                             :disabled="!isAdminReady || !form.azs.entityTypeId"
                             placeholder="Не сопоставлено"
                             class="w-full"
-                            @update:model-value="(v) => setModuleFieldValue('azs', req.key, String(v ?? ''))"
+                            @update:model-value="(v) => setModuleFieldSelectValue('azs', req.key, String(v ?? ''))"
                           />
                         </td>
                         <td class="w-[100px] py-2 text-right">
@@ -1106,7 +1137,7 @@ onUnmounted(() => {
                     </span>
                   </template>
                   <B24Select
-                    :items="[{ label: 'Выберите СП', value: '' }, ...smartProcessSelectItems]"
+                    :items="smartProcessSelectItems"
                     :model-value="entitySelectValue('photoType')"
                     :disabled="!isAdminReady"
                     placeholder="Выберите СП"
@@ -1133,7 +1164,7 @@ onUnmounted(() => {
                     </span>
                   </template>
                   <B24Select
-                    :items="[{ label: 'Выберите СП', value: '' }, ...smartProcessSelectItems]"
+                    :items="smartProcessSelectItems"
                     :model-value="entitySelectValue('report')"
                     :disabled="!isAdminReady"
                     placeholder="Выберите СП"
@@ -1152,12 +1183,12 @@ onUnmounted(() => {
                         </td>
                         <td class="py-2 pr-2">
                           <B24Select
-                            :items="[{ label: 'Не сопоставлено', value: '' }, ...fieldSelectItems('report')]"
-                            :model-value="getModuleFieldValue('report', req.key)"
+                            :items="fieldSelectItemsWithNone('report')"
+                            :model-value="getModuleFieldSelectValue('report', req.key)"
                             :disabled="!isAdminReady || !form.report.entityTypeId"
                             placeholder="Не сопоставлено"
                             class="w-full"
-                            @update:model-value="(v) => setModuleFieldValue('report', req.key, String(v ?? ''))"
+                            @update:model-value="(v) => setModuleFieldSelectValue('report', req.key, String(v ?? ''))"
                           />
                         </td>
                         <td class="w-[100px] py-2 text-right">
@@ -1192,12 +1223,12 @@ onUnmounted(() => {
                   </template>
                   <div class="flex gap-2">
                     <B24Select
-                      :items="[{ label: 'Не сопоставлено', value: '' }, ...fieldSelectItems('report')]"
-                      :model-value="form.report.fields.reason"
+                      :items="fieldSelectItemsWithNone('report')"
+                      :model-value="form.report.fields.reason === '' ? NONE_SENTINEL : form.report.fields.reason"
                       :disabled="!isAdminReady || !form.report.entityTypeId"
                       placeholder="Не сопоставлено"
                       class="flex-1"
-                      @update:model-value="(v) => { form.report.fields.reason = String(v ?? '') }"
+                      @update:model-value="(v) => { form.report.fields.reason = String(v ?? '') === NONE_SENTINEL ? '' : String(v ?? '') }"
                     />
                     <B24Button
                       size="sm"
@@ -1293,38 +1324,42 @@ onUnmounted(() => {
               <div class="grid gap-3 p-4 sm:grid-cols-2">
                 <B24FormField label="Стадия: новая" class="w-full">
                   <B24Select
-                    v-model="form.report.stages.new"
-                    :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                    :items="stageSelectItemsWithNone()"
+                    :model-value="getStageSelectValue('new')"
                     :disabled="!isAdminReady || !reportStages.length"
                     placeholder="Выберите стадию"
                     class="w-full"
+                    @update:model-value="(v) => setStageSelectValue('new', String(v ?? ''))"
                   />
                 </B24FormField>
                 <B24FormField label="Стадия: в работе" class="w-full">
                   <B24Select
-                    v-model="form.report.stages.inProgress"
-                    :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                    :items="stageSelectItemsWithNone()"
+                    :model-value="getStageSelectValue('inProgress')"
                     :disabled="!isAdminReady || !reportStages.length"
                     placeholder="Выберите стадию"
                     class="w-full"
+                    @update:model-value="(v) => setStageSelectValue('inProgress', String(v ?? ''))"
                   />
                 </B24FormField>
                 <B24FormField label="Стадия: выполнено" class="w-full">
                   <B24Select
-                    v-model="form.report.stages.done"
-                    :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                    :items="stageSelectItemsWithNone()"
+                    :model-value="getStageSelectValue('done')"
                     :disabled="!isAdminReady || !reportStages.length"
                     placeholder="Выберите стадию"
                     class="w-full"
+                    @update:model-value="(v) => setStageSelectValue('done', String(v ?? ''))"
                   />
                 </B24FormField>
                 <B24FormField label="Стадия: просрочено" class="w-full">
                   <B24Select
-                    v-model="form.report.stages.expired"
-                    :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                    :items="stageSelectItemsWithNone()"
+                    :model-value="getStageSelectValue('expired')"
                     :disabled="!isAdminReady || !reportStages.length"
                     placeholder="Выберите стадию"
                     class="w-full"
+                    @update:model-value="(v) => setStageSelectValue('expired', String(v ?? ''))"
                   />
                 </B24FormField>
                 <B24FormField label="Таймаут, минут" class="w-full">
@@ -1598,7 +1633,7 @@ onUnmounted(() => {
                   </span>
                 </template>
                 <B24Select
-                  :items="[{ label: 'Выберите СП', value: '' }, ...smartProcessSelectItems]"
+                  :items="smartProcessSelectItems"
                   :model-value="entitySelectValue('azs')"
                   :disabled="!isAdminReady"
                   placeholder="Выберите СП"
@@ -1617,12 +1652,12 @@ onUnmounted(() => {
                       </td>
                       <td class="py-2 pr-2">
                         <B24Select
-                          :items="[{ label: 'Не сопоставлено', value: '' }, ...fieldSelectItems('azs')]"
-                          :model-value="getModuleFieldValue('azs', req.key)"
+                          :items="fieldSelectItemsWithNone('azs')"
+                          :model-value="getModuleFieldSelectValue('azs', req.key)"
                           :disabled="!isAdminReady || !form.azs.entityTypeId"
                           placeholder="Не сопоставлено"
                           class="w-full"
-                          @update:model-value="(v) => setModuleFieldValue('azs', req.key, String(v ?? ''))"
+                          @update:model-value="(v) => setModuleFieldSelectValue('azs', req.key, String(v ?? ''))"
                         />
                       </td>
                       <td class="w-[120px] py-2 text-right">
@@ -1679,7 +1714,7 @@ onUnmounted(() => {
                   </span>
                 </template>
                 <B24Select
-                  :items="[{ label: 'Выберите СП', value: '' }, ...smartProcessSelectItems]"
+                  :items="smartProcessSelectItems"
                   :model-value="entitySelectValue('photoType')"
                   :disabled="!isAdminReady"
                   placeholder="Выберите СП"
@@ -1731,7 +1766,7 @@ onUnmounted(() => {
                   </span>
                 </template>
                 <B24Select
-                  :items="[{ label: 'Выберите СП', value: '' }, ...smartProcessSelectItems]"
+                  :items="smartProcessSelectItems"
                   :model-value="entitySelectValue('report')"
                   :disabled="!isAdminReady"
                   placeholder="Выберите СП"
@@ -1750,12 +1785,12 @@ onUnmounted(() => {
                       </td>
                       <td class="py-2 pr-2">
                         <B24Select
-                          :items="[{ label: 'Не сопоставлено', value: '' }, ...fieldSelectItems('report')]"
-                          :model-value="getModuleFieldValue('report', req.key)"
+                          :items="fieldSelectItemsWithNone('report')"
+                          :model-value="getModuleFieldSelectValue('report', req.key)"
                           :disabled="!isAdminReady || !form.report.entityTypeId"
                           placeholder="Не сопоставлено"
                           class="w-full"
-                          @update:model-value="(v) => setModuleFieldValue('report', req.key, String(v ?? ''))"
+                          @update:model-value="(v) => setModuleFieldSelectValue('report', req.key, String(v ?? ''))"
                         />
                       </td>
                       <td class="w-[120px] py-2 text-right">
@@ -1814,12 +1849,12 @@ onUnmounted(() => {
                 </template>
                 <div class="flex gap-2">
                   <B24Select
-                    :items="[{ label: 'Не сопоставлено', value: '' }, ...fieldSelectItems('report')]"
-                    :model-value="form.report.fields.reason"
+                    :items="fieldSelectItemsWithNone('report')"
+                    :model-value="form.report.fields.reason === '' ? NONE_SENTINEL : form.report.fields.reason"
                     :disabled="!isAdminReady || !form.report.entityTypeId"
                     placeholder="Не сопоставлено"
                     class="flex-1"
-                    @update:model-value="(v) => { form.report.fields.reason = String(v ?? '') }"
+                    @update:model-value="(v) => { form.report.fields.reason = String(v ?? '') === NONE_SENTINEL ? '' : String(v ?? '') }"
                   />
                   <B24Button
                     size="sm"
@@ -1939,38 +1974,42 @@ onUnmounted(() => {
             <div class="grid gap-3 sm:grid-cols-2">
               <B24FormField label="Стадия: новая" class="w-full">
                 <B24Select
-                  v-model="form.report.stages.new"
-                  :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                  :items="stageSelectItemsWithNone()"
+                  :model-value="getStageSelectValue('new')"
                   :disabled="!isAdminReady || !reportStages.length"
                   placeholder="Выберите стадию"
                   class="w-full"
+                  @update:model-value="(v) => setStageSelectValue('new', String(v ?? ''))"
                 />
               </B24FormField>
               <B24FormField label="Стадия: в работе" class="w-full">
                 <B24Select
-                  v-model="form.report.stages.inProgress"
-                  :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                  :items="stageSelectItemsWithNone()"
+                  :model-value="getStageSelectValue('inProgress')"
                   :disabled="!isAdminReady || !reportStages.length"
                   placeholder="Выберите стадию"
                   class="w-full"
+                  @update:model-value="(v) => setStageSelectValue('inProgress', String(v ?? ''))"
                 />
               </B24FormField>
               <B24FormField label="Стадия: выполнено" class="w-full">
                 <B24Select
-                  v-model="form.report.stages.done"
-                  :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                  :items="stageSelectItemsWithNone()"
+                  :model-value="getStageSelectValue('done')"
                   :disabled="!isAdminReady || !reportStages.length"
                   placeholder="Выберите стадию"
                   class="w-full"
+                  @update:model-value="(v) => setStageSelectValue('done', String(v ?? ''))"
                 />
               </B24FormField>
               <B24FormField label="Стадия: просрочено" class="w-full">
                 <B24Select
-                  v-model="form.report.stages.expired"
-                  :items="[{ label: 'Выберите стадию', value: '' }, ...stageSelectItems()]"
+                  :items="stageSelectItemsWithNone()"
+                  :model-value="getStageSelectValue('expired')"
                   :disabled="!isAdminReady || !reportStages.length"
                   placeholder="Выберите стадию"
                   class="w-full"
+                  @update:model-value="(v) => setStageSelectValue('expired', String(v ?? ''))"
                 />
               </B24FormField>
               <B24FormField label="Таймаут, минут" class="w-full">
