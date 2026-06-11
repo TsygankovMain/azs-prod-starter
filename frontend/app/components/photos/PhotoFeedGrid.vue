@@ -20,6 +20,8 @@ const props = defineProps<{
   groupByAzs: boolean
   loading?: boolean
   markedKeys?: Set<string>
+  /** Map от photoCode → человеческое название категории */
+  categoryTitles?: Map<string, string>
 }>()
 
 const emit = defineEmits<{
@@ -35,6 +37,16 @@ const previewsLoading = ref(new Set<string>())
 const previewErrors = ref(new Set<string>())
 
 const previewKey = (item: PhotoFeedItem) => `${item.reportId}:${item.photoCode}`
+
+const retryPreview = (item: PhotoFeedItem) => {
+  const key = previewKey(item)
+  if (previewErrors.value.has(key)) {
+    const next = new Set(previewErrors.value)
+    next.delete(key)
+    previewErrors.value = next
+  }
+  void loadPreview(item)
+}
 
 const loadPreview = async (item: PhotoFeedItem) => {
   const key = previewKey(item)
@@ -167,6 +179,15 @@ const grouped = computed<AzsGroup[]>(() => {
   return [...map.values()]
 })
 
+// ── Helpers подписи ───────────────────────────────────────────────────
+const getCategoryTitle = (code: string): string => {
+  return props.categoryTitles?.get(code) ?? code
+}
+
+const getAzsLabel = (item: PhotoFeedItem): string => {
+  return item.azsTitle || `АЗС ${item.azsId}`
+}
+
 // ── Форматирование времени ────────────────────────────────────────────
 const fmtTime = (iso: string | null): string => {
   if (!iso) return '—'
@@ -223,10 +244,10 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
           :key="previewKey(item)"
           :ref="(el) => setTileRef(item, el as HTMLElement | null)"
           :data-preview-key="previewKey(item)"
-          class="relative rounded-[11px] aspect-[4/3] overflow-hidden border border-black/5 flex items-end text-white cursor-pointer group"
-          :class="isMarked(item) ? 'ring-2 ring-blue-500' : ''"
+          class="relative rounded-[11px] aspect-[4/3] overflow-hidden border border-black/5 flex items-end text-white group"
+          :class="[isMarked(item) ? 'ring-2 ring-blue-500' : '', previewErrors.has(previewKey(item)) ? 'cursor-default' : 'cursor-pointer']"
           :style="`background:${GRAD}`"
-          @click="emit('open', globalIndex(item))"
+          @click="previewErrors.has(previewKey(item)) ? retryPreview(item) : emit('open', globalIndex(item))"
         >
           <!-- Превью -->
           <img
@@ -237,6 +258,25 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
             :alt="item.photoCode"
             @error="($event.target as HTMLImageElement).style.display='none'"
           >
+
+          <!-- Состояние ошибки превью — видимый тайл с подсказкой «повторить» -->
+          <div
+            v-else-if="previewErrors.has(previewKey(item))"
+            class="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-gray-700/80 cursor-pointer"
+            :title="'Не удалось загрузить превью — нажмите для повтора'"
+          >
+            <span class="text-2xl opacity-70">⚠</span>
+            <span class="text-[10px] text-white/70 font-medium leading-tight text-center px-1">Не удалось</span>
+            <span class="text-[9px] text-white/50 leading-tight">Нажмите для повтора</span>
+          </div>
+
+          <!-- Спиннер загрузки превью -->
+          <div
+            v-else-if="previewsLoading.has(previewKey(item))"
+            class="absolute inset-0 flex items-center justify-center"
+          >
+            <div class="w-5 h-5 border-2 border-white/20 border-t-white/80 rounded-full animate-spin" />
+          </div>
 
           <!-- Бейдж замечания -->
           <button
@@ -257,11 +297,11 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
             <span class="text-white text-base">⚑</span>
           </button>
 
-          <!-- Подпись «№АЗС · категория · время» -->
+          <!-- Подпись «АЗС · категория · время» -->
           <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
-            <span class="opacity-80">№{{ item.azsId }}</span>
+            <span class="opacity-80">{{ getAzsLabel(item) }}</span>
             <span class="opacity-60"> · </span>
-            <span>{{ item.photoCode }}</span>
+            <span>{{ getCategoryTitle(item.photoCode) }}</span>
             <span class="opacity-60"> · </span>
             <span class="tabular-nums">{{ fmtTime(item.exifAt || item.uploadedAt) }}</span>
           </div>
@@ -288,10 +328,10 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
             :key="previewKey(item)"
             :ref="(el) => setTileRef(item, el as HTMLElement | null)"
             :data-preview-key="previewKey(item)"
-            class="relative rounded-[11px] aspect-[4/3] overflow-hidden border border-black/5 flex items-end text-white cursor-pointer group"
-            :class="isMarked(item) ? 'ring-2 ring-blue-500' : ''"
+            class="relative rounded-[11px] aspect-[4/3] overflow-hidden border border-black/5 flex items-end text-white group"
+            :class="[isMarked(item) ? 'ring-2 ring-blue-500' : '', previewErrors.has(previewKey(item)) ? 'cursor-default' : 'cursor-pointer']"
             :style="`background:${GRAD}`"
-            @click="emit('open', globalIndex(item))"
+            @click="previewErrors.has(previewKey(item)) ? retryPreview(item) : emit('open', globalIndex(item))"
           >
             <img
               v-if="previewUrls.get(previewKey(item))"
@@ -301,6 +341,25 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
               :alt="item.photoCode"
               @error="($event.target as HTMLImageElement).style.display='none'"
             >
+
+            <!-- Состояние ошибки превью -->
+            <div
+              v-else-if="previewErrors.has(previewKey(item))"
+              class="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-gray-700/80 cursor-pointer"
+              :title="'Не удалось загрузить превью — нажмите для повтора'"
+            >
+              <span class="text-2xl opacity-70">⚠</span>
+              <span class="text-[10px] text-white/70 font-medium leading-tight text-center px-1">Не удалось</span>
+              <span class="text-[9px] text-white/50 leading-tight">Нажмите для повтора</span>
+            </div>
+
+            <!-- Спиннер загрузки превью -->
+            <div
+              v-else-if="previewsLoading.has(previewKey(item))"
+              class="absolute inset-0 flex items-center justify-center"
+            >
+              <div class="w-5 h-5 border-2 border-white/20 border-t-white/80 rounded-full animate-spin" />
+            </div>
 
             <button
               v-if="item.remark"
@@ -319,8 +378,9 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
               <span class="text-white text-base">⚑</span>
             </button>
 
+            <!-- Подпись «категория · время» (АЗС в заголовке группы) -->
             <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
-              <span>{{ item.photoCode }}</span>
+              <span>{{ getCategoryTitle(item.photoCode) }}</span>
               <span class="opacity-60"> · </span>
               <span class="tabular-nums">{{ fmtTime(item.exifAt || item.uploadedAt) }}</span>
             </div>

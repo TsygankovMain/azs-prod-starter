@@ -82,6 +82,22 @@ const loadAzsOptions = async () => {
   }
 }
 
+// ── Маппинг категорий code→title (для подписей тайлов) ───────────────────
+const categoryTitles = ref(new Map<string, string>())
+
+const loadCategoryTitles = async () => {
+  try {
+    const resp = await apiStore.getPhotoCategories()
+    const map = new Map<string, string>()
+    for (const cat of resp.items) {
+      map.set(String(cat.code), String(cat.title || cat.code))
+    }
+    categoryTitles.value = map
+  } catch {
+    // категории деградируют к пустому маппингу — фоллбек на code
+  }
+}
+
 // ── Загрузка ленты (cursor pagination) ───────────────────────────────────
 type PhotoFeedItem = {
   reportId: number
@@ -468,6 +484,7 @@ const initPage = async () => {
 
     await Promise.all([
       loadAzsOptions(),
+      loadCategoryTitles(),
       loadFeed(),
       loadRemarkTemplates()
     ])
@@ -601,6 +618,7 @@ const goBack = () => {
         <div v-if="activeTab === 'journal'" class="max-w-2xl">
           <RemarkJournal
             :azs-options="azsOptions"
+            :category-titles="categoryTitles"
             @open-photo="handleJournalOpenPhoto"
             @loaded="journalLoaded = $event"
           />
@@ -650,6 +668,7 @@ const goBack = () => {
                 :group-by-azs="filters.groupByAzs"
                 :loading="isLoading"
                 :marked-keys="markedKeys"
+                :category-titles="categoryTitles"
                 @open="handleOpen"
                 @toggle-mark="handleToggleMark"
                 @remark-info="handleRemarkInfo"
@@ -751,6 +770,7 @@ const goBack = () => {
       :items="items"
       :start-index="lightboxIndex"
       :marked-keys="markedKeys"
+      :category-titles="categoryTitles"
       :draft-count="draftCount"
       :draft-azs-id="activeAzsId"
       :draft-azs-title="draftAzsTitle"
