@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createReportsRouter } from '../src/reports/reportsRoutes.js';
+import { REPORT_NOT_FOUND } from '../src/reports/errorCodes.js';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -171,6 +172,37 @@ test('POST /:id/resync returns 404 when report does not exist', async () => {
 
   assert.equal(res.statusCode, 404);
   assert.equal(res._payload?.error, 'report_not_found');
+});
+
+// ---------------------------------------------------------------------------
+// BUG-007: typed errorCode on 404 report_not_found
+// ---------------------------------------------------------------------------
+
+test('POST /:id/resync 404 includes errorCode REPORT_NOT_FOUND and meta.reportId', async () => {
+  const deps = makeMinimalDeps({
+    reportsStore: {
+      async getById() { return null; }, // always missing
+      async listPhotos() { return []; },
+      async setReportStatus() {}
+    },
+    crmSyncJobStore: {
+      async enqueue() { return { id: 1 }; },
+      async listByReport() { return []; }
+    }
+  });
+
+  const router = createReportsRouter(deps);
+  const handler = findHandler(router, 'post', '/:id/resync');
+
+  const req = makeReviewerReq({ params: { id: '77' } });
+  const res = makeRes();
+
+  await handler(req, res);
+
+  assert.equal(res.statusCode, 404);
+  assert.equal(res._payload?.error, 'report_not_found', 'legacy error field must be unchanged');
+  assert.equal(res._payload?.errorCode, REPORT_NOT_FOUND, 'errorCode must be REPORT_NOT_FOUND');
+  assert.equal(res._payload?.meta?.reportId, 77, 'meta.reportId must be numeric');
 });
 
 // ---------------------------------------------------------------------------
