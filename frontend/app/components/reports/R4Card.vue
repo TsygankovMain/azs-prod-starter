@@ -6,6 +6,7 @@ const apiStore = useApiStore()
 type AzsOption = { value: string; label: string }
 const azsOptions = ref<AzsOption[]>([])
 const azsOptionsError = ref(false)
+const azsOptionsLoading = ref(false)
 const selectedAzsId = ref('')
 const reportHistory = ref<Array<{
   id: number; status: string; scheduledAt: string | null; deadlineAt: string | null; updatedAt: string | null
@@ -107,6 +108,8 @@ const GRAD: Record<string, string> = {
 }
 
 const loadAzsOptions = async () => {
+  if (azsOptionsLoading.value) return
+  azsOptionsLoading.value = true
   try {
     const resp = await apiStore.getAzsOptions({ limit: 500 })
     azsOptions.value = resp.items.map(i => ({ value: String(i.id), label: i.title || `АЗС ${i.id}` }))
@@ -117,6 +120,8 @@ const loadAzsOptions = async () => {
     }
   } catch {
     azsOptionsError.value = true
+  } finally {
+    azsOptionsLoading.value = false
   }
 }
 
@@ -147,7 +152,7 @@ watch(selectedAzsId, load)
         />
         <div v-if="azsOptionsError" class="flex items-center gap-1.5 text-[12px] text-red-600">
           <span>Список АЗС не загрузился</span>
-          <button class="underline hover:no-underline" @click="loadAzsOptions">Повторить</button>
+          <button class="underline hover:no-underline disabled:opacity-50" :disabled="azsOptionsLoading" @click="loadAzsOptions">Повторить</button>
         </div>
       </div>
       <span class="text-[12px] text-gray-400">за 30 дней</span>

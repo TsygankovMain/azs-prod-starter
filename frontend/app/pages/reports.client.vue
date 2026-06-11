@@ -36,6 +36,8 @@ const loadPage = async () => {
     accessError.value = ''
     await $b24.parent.setTitle(PAGE_TITLE)
   } catch (e) {
+    // guard опирается на то, что после выставления accessError исключений до return не происходит;
+    // при изменении логики ниже — пересмотреть (риск молчаливого поглощения ошибок)
     if (accessError.value) return // role-check already recorded
     const msg = e instanceof Error ? e.message : 'Ошибка загрузки'
     // Bitrix24Frame init errors are fatal — delegate to global error page

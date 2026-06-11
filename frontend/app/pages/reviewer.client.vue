@@ -885,6 +885,10 @@ onMounted(async () => {
           </div>
         </header>
 
+        <!--
+          Сетевые ошибки ПЕРВИЧНОЙ инициализации уходят в processErrorGlobal → error.vue (там есть «Обновить»);
+          этот блок — для ошибок loadAll() после успешного init.
+        -->
         <!-- Load error alert (general network / API errors) -->
         <div v-if="loadError && hasReviewerAccess" class="mb-6 flex flex-col gap-2">
           <B24Alert

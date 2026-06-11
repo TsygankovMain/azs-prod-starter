@@ -56,8 +56,8 @@ const reload = () => {
             />
           </div>
 
-          <details class="text-xs text-gray-400">
-            <summary class="cursor-pointer hover:text-gray-600 select-none">Подробности</summary>
+          <details class="list-none text-xs text-gray-400">
+            <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer hover:text-gray-600 select-none">Подробности</summary>
             <p class="mt-1 font-mono break-all">{{ technicalDetail }}</p>
           </details>
         </div>

@@ -9,6 +9,7 @@ const customFrom = ref(''); const customTo = ref('')
 const azsFilter = ref<string[]>([])
 const azsOptions = ref<Array<{ value: string; label: string }>>([])
 const azsOptionsError = ref(false)
+const azsOptionsLoading = ref(false)
 
 type SummaryType = { total: number; done: number; expired: number; open: number; failed: number; overdue: number; byStatus: Record<string, number> }
 type ReportItem = {
@@ -65,12 +66,16 @@ const STATUS_COLOR: Record<string, string> = {
 const fmtTime = (iso: string | null) => iso ? DateTime.fromISO(iso).toFormat('HH:mm') : '—'
 
 const loadAzsOptions = async () => {
+  if (azsOptionsLoading.value) return
+  azsOptionsLoading.value = true
   try {
     const resp = await apiStore.getAzsOptions({ limit: 500 })
     azsOptions.value = resp.items.map(i => ({ value: String(i.id), label: i.title || `АЗС ${i.id}` }))
     azsOptionsError.value = false
   } catch {
     azsOptionsError.value = true
+  } finally {
+    azsOptionsLoading.value = false
   }
 }
 
@@ -112,7 +117,7 @@ watch(period, load)
         />
         <div v-if="azsOptionsError" class="flex items-center gap-1.5 text-[12px] text-red-600">
           <span>Список АЗС не загрузился</span>
-          <button class="underline hover:no-underline" @click="loadAzsOptions">Повторить</button>
+          <button class="underline hover:no-underline disabled:opacity-50" :disabled="azsOptionsLoading" @click="loadAzsOptions">Повторить</button>
         </div>
       </div>
     </div>
