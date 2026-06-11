@@ -417,6 +417,122 @@ export const useApiStore = defineStore(
       })
     }
 
+    type PhotoFeedItem = {
+      reportId: number
+      azsId: string
+      azsTitle?: string | null
+      photoCode: string
+      exifAt: string | null
+      uploadedAt: string | null
+      remark: { createdAt: string | null; recipientName: string; message: string; senderName: string } | null
+    }
+
+    type PhotoCategory = {
+      code: string
+      title: string
+    }
+
+    type PhotoRecipients = {
+      manager: { id: number; name: string } | null
+      admin: { id: number; name: string } | null
+    }
+
+    const getPhotoFeed = async (params: {
+      dateFrom?: string
+      dateTo?: string
+      azsId?: string[]
+      photoCode?: string[]
+      remarks?: 'all' | 'with' | 'without'
+      limit?: number
+      cursor?: string
+    } = {}): Promise<{ items: PhotoFeedItem[]; nextCursor: string | null }> => {
+      return await $api('/api/reports/photos/feed', {
+        query: params,
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const getPhotoCategories = async (): Promise<{ items: PhotoCategory[] }> => {
+      return await $api('/api/reports/photos/categories', {
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const getPhotoRecipients = async (azsId: string): Promise<PhotoRecipients> => {
+      return await $api('/api/reports/photos/recipients', {
+        query: { azsId },
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    type PhotoRemarkRecord = {
+      id: number
+      createdAt: string
+      azsId: string
+      azsTitle: string | null
+      recipientRole: 'manager' | 'admin'
+      recipientName: string
+      message: string
+      senderName: string
+      deliveryStatus: 'sent' | 'failed'
+      deliveryError: string | null
+    }
+
+    const sendPhotoRemark = async (payload: {
+      azsId: string
+      azsTitle?: string | null
+      recipientRole: 'manager' | 'admin'
+      message: string
+      photos: Array<{ reportId: number; photoCode: string }>
+    }): Promise<{ item: PhotoRemarkRecord }> => {
+      return await $api('/api/photo-remarks', {
+        method: 'POST',
+        body: payload,
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    type PhotoRemarkJournalItem = {
+      id: number
+      createdAt: string | null
+      azsId: string
+      azsTitle: string | null
+      recipientRole: 'manager' | 'admin'
+      recipientName: string | null
+      message: string
+      senderName: string | null
+      deliveryStatus: 'sent' | 'failed'
+      deliveryError: string | null
+      photos: Array<{ remarkId: number; reportId: number; photoCode: string }>
+    }
+
+    const getPhotoRemarks = async (params: {
+      dateFrom?: string
+      dateTo?: string
+      azsIds?: string[]
+      limit?: number
+      cursor?: string
+    } = {}): Promise<{ items: PhotoRemarkJournalItem[]; nextCursor: string | null }> => {
+      const query: Record<string, unknown> = {}
+      if (params.dateFrom) query.dateFrom = params.dateFrom
+      if (params.dateTo) query.dateTo = params.dateTo
+      if (params.azsIds && params.azsIds.length > 0) query.azsId = params.azsIds
+      if (params.limit) query.limit = params.limit
+      if (params.cursor) query.cursor = params.cursor
+      return await $api('/api/photo-remarks', {
+        query,
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const retryPhotoRemark = async (id: number): Promise<PhotoRemarkJournalItem> => {
+      const resp = await $api<{ item: PhotoRemarkJournalItem }>(`/api/photo-remarks/${id}/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+      return resp.item
+    }
+
     const getPhotoPreviewObjectUrl = async (reportId: number, photoCode: string): Promise<string> => {
       const blob = await $fetch(`${apiUrl}/api/reports/photos/${reportId}/${encodeURIComponent(photoCode)}/preview`, {
         headers: { Authorization: `Bearer ${tokenJWT.value}` },
@@ -493,7 +609,13 @@ export const useApiStore = defineStore(
       getDayPhotos,
       getPhotoPreviewObjectUrl,
       submitReason,
-      getReasonCounts
+      getReasonCounts,
+      getPhotoFeed,
+      getPhotoCategories,
+      getPhotoRecipients,
+      sendPhotoRemark,
+      getPhotoRemarks,
+      retryPhotoRemark
     }
   }
 )

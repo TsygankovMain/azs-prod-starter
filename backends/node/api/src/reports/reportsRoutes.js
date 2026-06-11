@@ -7,6 +7,15 @@ import { generateDailyPlan } from '../dispatch/dispatchPlanGenerator.js';
 import { createAnalyticsRouter } from './analyticsRoutes.js';
 
 import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from '../shared/transientErrors.js';
+import {
+  AZS_PHOTO_SET_EMPTY,
+  AZS_CARD_NOT_FOUND,
+  PHOTO_TYPE_NOT_FOUND,
+  REPORT_NOT_FOUND,
+  PHOTO_CODE_NOT_REQUIRED,
+  PHOTO_EXIF_TOO_OLD,
+  REPORT_PHOTOS_MISSING,
+} from './errorCodes.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const EXIF_MAX_AGE_MINUTES = Number(process.env.EXIF_MAX_AGE_MINUTES || 720);
@@ -349,18 +358,24 @@ export const readRequiredPhotos = async ({ bitrixClient, settings, azsId, contex
     context
   });
   if (!azsItem) {
-    throw new ReportConfigError(
+    const err = new ReportConfigError(
       `AZS item ${azsItemId} was not found in entityTypeId=${azsEntityTypeId}`,
       'azs_item_not_found'
     );
+    err.errorCode = AZS_CARD_NOT_FOUND;
+    err.meta = { azsId: String(azsId) };
+    throw err;
   }
 
   const photoTypeIds = [...new Set(extractMultipleIds(getFieldValue(azsItem, photoSetField)))];
   if (!photoTypeIds.length) {
-    throw new ReportConfigError(
+    const err = new ReportConfigError(
       `AZS item ${azsItemId} has empty required photo set field "${photoSetField}"`,
       'azs_photo_set_empty'
     );
+    err.errorCode = AZS_PHOTO_SET_EMPTY;
+    err.meta = { azsId: String(azsId) };
+    throw err;
   }
 
   const items = await Promise.all(photoTypeIds.map((id) => bitrixClient.getCrmItem({
@@ -383,10 +398,13 @@ export const readRequiredPhotos = async ({ bitrixClient, settings, azsId, contex
     .map(({ code, title, sort }) => ({ code, title, sort }));
 
   if (!requiredPhotos.length) {
-    throw new ReportConfigError(
+    const err = new ReportConfigError(
       'Failed to load photo type records',
       'photo_types_not_found'
     );
+    err.errorCode = PHOTO_TYPE_NOT_FOUND;
+    err.meta = { azsId: String(azsId) };
+    throw err;
   }
 
   return requiredPhotos;
@@ -411,6 +429,7 @@ const validateExifDate = (exifDate) => {
   if (ageMinutes > EXIF_MAX_AGE_MINUTES) {
     return {
       ok: false,
+      ageMinutes: Math.floor(ageMinutes),
       message: `Photo EXIF is too old: ${Math.floor(ageMinutes)} minutes`
     };
   }
@@ -1032,7 +1051,7 @@ export const createReportsRouter = ({
       }
 
       const report = await reportsStore.getById(reportId);
-      if (!report) return res.status(404).json({ error: 'report_not_found' });
+      if (!report) return res.status(404).json({ error: 'report_not_found', errorCode: REPORT_NOT_FOUND, meta: { reportId } });
 
       // Доступ: владелец отчёта ИЛИ проверяющий
       const currentUserId = extractUserId(req.user);
@@ -1126,6 +1145,8 @@ export const createReportsRouter = ({
       const statusCode = Number(error?.statusCode || 500);
       return res.status(statusCode).json({
         error: error?.code || 'reason_save_failed',
+        errorCode: error?.errorCode || undefined,
+        meta: error?.meta || undefined,
         message: error.message
       });
     }
@@ -1151,7 +1172,9 @@ export const createReportsRouter = ({
       const item = await reportsStore.getById(id);
       if (!item) {
         return res.status(404).json({
-          error: 'report_not_found'
+          error: 'report_not_found',
+          errorCode: REPORT_NOT_FOUND,
+          meta: { reportId: id }
         });
       }
 
@@ -1178,6 +1201,8 @@ export const createReportsRouter = ({
       const statusCode = Number(error?.statusCode || 500);
       return res.status(statusCode).json({
         error: error?.code || 'report_get_failed',
+        errorCode: error?.errorCode || undefined,
+        meta: error?.meta || undefined,
         message: error.message
       });
     }
@@ -1273,7 +1298,9 @@ export const createReportsRouter = ({
       const report = await reportsStore.getById(reportId);
       if (!report) {
         return res.status(404).json({
-          error: 'report_not_found'
+          error: 'report_not_found',
+          errorCode: REPORT_NOT_FOUND,
+          meta: { reportId }
         });
       }
 
@@ -1293,6 +1320,7 @@ export const createReportsRouter = ({
       if (!requiredCodes.includes(photoCode)) {
         return res.status(400).json({
           error: 'photo_code_not_required',
+          errorCode: PHOTO_CODE_NOT_REQUIRED,
           message: `photoCode ${photoCode} is not required for this AZS`
         });
       }
@@ -1303,6 +1331,8 @@ export const createReportsRouter = ({
       if (!exifValidation.ok) {
         return res.status(400).json({
           error: 'photo_exif_too_old',
+          errorCode: PHOTO_EXIF_TOO_OLD,
+          meta: { ageMinutes: exifValidation.ageMinutes },
           message: exifValidation.message
         });
       }
@@ -1394,7 +1424,8 @@ export const createReportsRouter = ({
       }
       return res.status(statusCode).json({
         error: error?.code || 'report_photo_upload_failed',
-        errorCode: retryable ? 'bitrix_retryable' : undefined,
+        errorCode: error?.errorCode || (retryable ? 'bitrix_retryable' : undefined),
+        meta: error?.meta || undefined,
         message: error.message,
         currentUserId: error?.currentUserId,
         expectedAdminUserId: error?.expectedAdminUserId
@@ -1422,7 +1453,9 @@ export const createReportsRouter = ({
       const report = await reportsStore.getById(reportId);
       if (!report) {
         return res.status(404).json({
-          error: 'report_not_found'
+          error: 'report_not_found',
+          errorCode: REPORT_NOT_FOUND,
+          meta: { reportId }
         });
       }
 
@@ -1444,6 +1477,8 @@ export const createReportsRouter = ({
       if (missingCodes.length > 0) {
         return res.status(409).json({
           error: 'report_photos_missing',
+          errorCode: REPORT_PHOTOS_MISSING,
+          meta: { missingCodes },
           message: `Cannot submit report: missing photos ${missingCodes.join(', ')}`,
           missingCodes
         });
@@ -1502,6 +1537,8 @@ export const createReportsRouter = ({
       const statusCode = Number(error?.statusCode || 500);
       return res.status(statusCode).json({
         error: error?.code || 'report_submit_failed',
+        errorCode: error?.errorCode || undefined,
+        meta: error?.meta || undefined,
         message: error.message,
         currentUserId: error?.currentUserId,
         expectedAdminUserId: error?.expectedAdminUserId
@@ -1520,7 +1557,7 @@ export const createReportsRouter = ({
       }
       const report = await reportsStore.getById(reportId);
       if (!report) {
-        return res.status(404).json({ error: 'report_not_found' });
+        return res.status(404).json({ error: 'report_not_found', errorCode: REPORT_NOT_FOUND, meta: { reportId } });
       }
       await crmSyncJobStore.enqueue({
         reportId,

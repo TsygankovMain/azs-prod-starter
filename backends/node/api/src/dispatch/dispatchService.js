@@ -211,26 +211,24 @@ export const createDispatchService = ({
         });
 
         let dispatchKeyboard = null;
-        if (process.env.ENABLE_REPORT_DEEP_LINK === 'true') {
-          try {
-            const appCode = String(process.env.BITRIX_APP_CODE || '').trim();
-            const reserveItemId = reportItemId || reserve.id;
-            if (appCode && reserveItemId) {
-              const deepLink = buildRestAppUriLink({ appCode, reportId: reserveItemId });
-              const reasonPath = `/reason/${reserve.id}`;
-              const reasonParams = new URLSearchParams();
-              reasonParams.set('params[reportId]', String(reserve.id));
-              reasonParams.set('params[path]', reasonPath);
-              const reasonDeepLink = `/marketplace/view/${encodeURIComponent(appCode)}/?${reasonParams.toString()}`;
+        try {
+          const appCode = String(process.env.BITRIX_APP_CODE || '').trim();
+          const reserveItemId = reportItemId || reserve.id;
+          if (appCode && reserveItemId) {
+            const deepLink = buildRestAppUriLink({ appCode, reportId: reserveItemId });
+            const reasonPath = `/reason/${reserve.id}`;
+            const reasonParams = new URLSearchParams();
+            reasonParams.set('params[reportId]', String(reserve.id));
+            reasonParams.set('params[path]', reasonPath);
+            const reasonDeepLink = `/marketplace/view/${encodeURIComponent(appCode)}/?${reasonParams.toString()}`;
 
-              const buttons = [];
-              if (deepLink) buttons.push({ TEXT: 'Открыть отчёт', LINK: deepLink });
-              if (reasonDeepLink) buttons.push({ TEXT: '⏰ Не успеваю — указать причину', LINK: reasonDeepLink });
-              if (buttons.length) dispatchKeyboard = [buttons];
-            }
-          } catch {
-            // Defensive: skip keyboard if link building fails
+            const buttons = [];
+            if (deepLink) buttons.push({ TEXT: 'Открыть приложение', LINK: deepLink });
+            if (reasonDeepLink) buttons.push({ TEXT: 'Не успеваю — указать причину', LINK: reasonDeepLink });
+            if (buttons.length) dispatchKeyboard = [buttons];
           }
+        } catch {
+          // Defensive: skip keyboard if link building fails
         }
 
         await notificationService.notifyDispatch({

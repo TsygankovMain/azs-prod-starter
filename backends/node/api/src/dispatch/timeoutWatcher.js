@@ -100,7 +100,7 @@ export const createTimeoutWatcher = ({
             if (!existing) {
               const appCode = String(process.env.BITRIX_APP_CODE || '').trim();
               let reasonLink = null;
-              if (process.env.ENABLE_REPORT_DEEP_LINK === 'true' && appCode && report.id) {
+              if (appCode && report.id) {
                 const reasonPath = `/reason/${report.id}`;
                 const reasonParams = new URLSearchParams();
                 reasonParams.set('params[reportId]', String(report.id));
@@ -108,7 +108,7 @@ export const createTimeoutWatcher = ({
                 reasonLink = `/marketplace/view/${encodeURIComponent(appCode)}/?${reasonParams.toString()}`;
               }
               const reasonKeyboard = reasonLink
-                ? [[{ TEXT: '⏰ Указать причину', LINK: reasonLink }]]
+                ? [[{ TEXT: 'Указать причину', LINK: reasonLink }]]
                 : null;
               const azsTitle = await resolveAzsTitle(report.azsId);
               await notificationService.notify({

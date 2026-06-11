@@ -57,6 +57,23 @@ const apiStore = useApiStore()
 const toast = useAppToast()
 const { confirm } = useConfirm()
 
+// ── Pending-state helper (S2-02) ────────────────────────────────────────────
+// Prevents double-click duplicates and gives visual feedback on any action key.
+const pendingActions = ref<Set<string>>(new Set())
+
+async function withPending(key: string, fn: () => Promise<void>): Promise<void> {
+  if (pendingActions.value.has(key)) return // guard against double-click
+  pendingActions.value = new Set(pendingActions.value).add(key)
+  try {
+    await fn()
+  } finally {
+    const next = new Set(pendingActions.value)
+    next.delete(key)
+    pendingActions.value = next
+  }
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 let $b24: null | B24Frame = null
 
 const isLoading = ref(false)
@@ -721,23 +738,6 @@ const runTimeout = async () => {
   })
 }
 
-// ── Pending-state helper (S2-02) ────────────────────────────────────────────
-// Prevents double-click duplicates and gives visual feedback on any action key.
-const pendingActions = ref<Set<string>>(new Set())
-
-async function withPending(key: string, fn: () => Promise<void>): Promise<void> {
-  if (pendingActions.value.has(key)) return // guard against double-click
-  pendingActions.value = new Set(pendingActions.value).add(key)
-  try {
-    await fn()
-  } finally {
-    const next = new Set(pendingActions.value)
-    next.delete(key)
-    pendingActions.value = next
-  }
-}
-// ────────────────────────────────────────────────────────────────────────────
-
 const scrollToQuickRequest = () => {
   const el = document.getElementById('quick-request-card')
   if (el) {
@@ -1144,10 +1144,10 @@ onMounted(async () => {
                             {{ btn.action === 'request-again' && pendingActions.has(`again:${event.azsId}:${event.reportRow.id}`) ? 'Отправляем…' : btn.label }}
                           </button>
                         </template>
-                        <!-- Resync button (#4): always shown on report-bearing items.
+                        <!-- Resync button (#4): shown only for done/expired reports.
                              TODO: show «не синхронизировано» B24Badge only when feed carries syncStatus (follow-up). -->
                         <button
-                          v-if="event.reportRow.id"
+                          v-if="event.reportRow.id && ['done', 'expired'].includes(event.reportRow.status)"
                           :disabled="resyncingIds.has(event.reportRow.id)"
                           class="min-w-36 px-3 py-1 text-xs rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-50 transition-colors"
                           @click="resyncReport(event.reportRow.id)"
@@ -1524,8 +1524,9 @@ onMounted(async () => {
                         >
                           Папка
                         </button>
-                        <!-- Resync button in tech table (#4) -->
+                        <!-- Resync button in tech table (#4) - shown only for done/expired -->
                         <button
+                          v-if="['done', 'expired'].includes(item.status)"
                           class="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded disabled:opacity-50"
                           :disabled="resyncingIds.has(item.id)"
                           @click="resyncReport(item.id)"

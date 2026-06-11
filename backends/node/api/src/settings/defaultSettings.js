@@ -16,7 +16,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
       admin: '',
       reviewers: '',
       photoSet: '',
-      enabled: ''
+      enabled: '',
+      manager: ''
     }
   },
   photoType: {
@@ -53,6 +54,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
     adminUserIds: [],
     reviewerUserIds: [],
     azsAdminUserIds: []
+  },
+  photoFeed: {
+    remarkTemplates: [
+      'Переделайте выкладку промо-товара',
+      'Перегрузите правый монитор — старая реклама'
+    ]
   }
 });
 
@@ -179,6 +186,26 @@ export const validateSettings = (settings, {
 
   for (const key of ['azs', 'photoType', 'report', 'disk', 'access']) {
     validateObject(settings, key, errors);
+  }
+
+  if (settings.photoFeed !== undefined) {
+    if (!isPlainObject(settings.photoFeed)) {
+      errors.push('photoFeed must be an object');
+    } else if (settings.photoFeed.remarkTemplates !== undefined) {
+      if (!Array.isArray(settings.photoFeed.remarkTemplates)) {
+        errors.push('photoFeed.remarkTemplates must be an array');
+      } else {
+        if (settings.photoFeed.remarkTemplates.length > 10) {
+          errors.push('photoFeed.remarkTemplates must contain at most 10 items');
+        }
+        const hasInvalidTemplate = settings.photoFeed.remarkTemplates.some(
+          (t) => typeof t !== 'string' || !t.trim() || t.length > 200
+        );
+        if (hasInvalidTemplate) {
+          errors.push('photoFeed.remarkTemplates items must be non-empty strings of at most 200 characters');
+        }
+      }
+    }
   }
 
   if (typeof settings.timezone !== 'string' || settings.timezone.trim() === '') {
@@ -321,6 +348,13 @@ export const validateSettings = (settings, {
       adminUserIds: normalizeUserIdList(settings.access.adminUserIds),
       reviewerUserIds: normalizeUserIdList(settings.access.reviewerUserIds),
       azsAdminUserIds: normalizeUserIdList(settings.access.azsAdminUserIds)
+    },
+    photoFeed: {
+      remarkTemplates: Array.isArray(settings.photoFeed?.remarkTemplates)
+        ? settings.photoFeed.remarkTemplates
+            .filter((t) => typeof t === 'string' && t.trim())
+            .map((t) => t.trim())
+        : DEFAULT_SETTINGS.photoFeed.remarkTemplates.slice()
     }
   };
 };

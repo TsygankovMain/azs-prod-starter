@@ -47,13 +47,16 @@ const { initApp, processErrorGlobal } = useAppInit('AdminReportPage')
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
 const route = useRoute()
+const { errorText, errorDetail } = useErrorText()
 
 let $b24: null | B24Frame = null
 
 const isLoading = ref(false)
 const loadError = ref('')
+const loadErrorDetail = ref('')
 const report = ref<ReportRow | null>(null)
 const saveError = ref('')
+const saveErrorDetail = ref('')
 const saveSuccess = ref('')
 const activeCameraSlotKey = ref('')
 const cameraError = ref('')
@@ -63,6 +66,7 @@ const cameraStream = ref<MediaStream | null>(null)
 const isSubmitting = ref(false)
 const hasSettingsAccess = ref(false)
 const submitError = ref('')
+const submitErrorDetail = ref('')
 
 const photoSlots = reactive<SlotState[]>([])
 const queueSlotRefs = new Map<string, HTMLElement>()
@@ -421,16 +425,17 @@ const runUploadTask = async (task: UploadTask) => {
     const accessDetails = responseData?.error === 'forbidden_user'
       ? ` Текущий пользователь: ${String(responseData.currentUserId || '—')}, назначенный админ отчёта: ${String(responseData.expectedAdminUserId || '—')}.`
       : ''
-    const responseMessage = responseData?.message || responseData?.error || (error instanceof Error ? error.message : 'Не удалось загрузить фото')
     const retryable = isRetryableUploadIssue({
       errorCode: responseData?.errorCode,
-      message: responseMessage
+      message: responseData?.message || responseData?.error
     })
-    slot.error = `${responseMessage}${accessDetails}`
+    const humanText = errorText(error, 'Не удалось загрузить фото')
+    slot.error = `${humanText}${accessDetails}`
     if (retryable) {
       enableLowConcurrencyMode()
     }
     saveError.value = slot.error
+    saveErrorDetail.value = errorDetail(error)
   } finally {
     if (task.sessionId === uploadWorker.sessionId) {
       uploadWorker.activeCount = Math.max(0, uploadWorker.activeCount - 1)
@@ -489,6 +494,7 @@ const loadReport = async () => {
 
   isLoading.value = true
   loadError.value = ''
+  loadErrorDetail.value = ''
   resetUploadWorker()
   try {
     const response = await apiStore.getReportById(id)
@@ -508,13 +514,8 @@ const loadReport = async () => {
       slot.uploadTaskId = 0
     }
   } catch (error) {
-    const responseData = (error as {
-      data?: {
-        message?: string
-        error?: string
-      }
-    })?.data
-    loadError.value = responseData?.message || responseData?.error || (error instanceof Error ? error.message : 'Не удалось загрузить отчёт')
+    loadError.value = errorText(error, 'Не удалось загрузить отчёт')
+    loadErrorDetail.value = errorDetail(error)
   } finally {
     isLoading.value = false
   }
@@ -582,6 +583,7 @@ const acceptSlotPhoto = (slot: SlotState) => {
   slot.uploadState = 'queued'
   slot.error = ''
   saveError.value = ''
+  saveErrorDetail.value = ''
   saveSuccess.value = ''
   if (slot.file.size > 10 * 1024 * 1024) {
     slot.uploadState = 'error'
@@ -618,6 +620,7 @@ const retrySlotUpload = (slot: SlotState) => {
     return
   }
   saveError.value = ''
+  saveErrorDetail.value = ''
   slot.error = ''
   slot.confirmed = true
   queueSlotUpload(slot, slot.file)
@@ -673,19 +676,15 @@ const submitReport = async () => {
 
   isSubmitting.value = true
   submitError.value = ''
+  submitErrorDetail.value = ''
   saveSuccess.value = ''
   try {
     await apiStore.submitReport(id)
     saveSuccess.value = 'Отчёт отправлен. Статус переведён в DONE.'
     await loadReport()
   } catch (error) {
-    const responseData = (error as {
-      data?: {
-        message?: string
-        error?: string
-      }
-    })?.data
-    submitError.value = responseData?.message || responseData?.error || (error instanceof Error ? error.message : 'Не удалось отправить отчёт')
+    submitError.value = errorText(error, 'Не удалось отправить отчёт')
+    submitErrorDetail.value = errorDetail(error)
   } finally {
     isSubmitting.value = false
   }
@@ -845,12 +844,17 @@ const showAllSlots = ref(false)
     <!-- ─── END STICKY HEADER ───────────────────────────────────────────────── -->
 
     <!-- ─── GLOBAL ALERTS ───────────────────────────────────────────────────── -->
-    <B24Alert
-      v-if="loadError"
-      color="air-primary-alert"
-      title="Ошибка загрузки отчёта"
-      :description="loadError"
-    />
+    <div v-if="loadError" class="space-y-1">
+      <B24Alert
+        color="air-primary-alert"
+        title="Ошибка загрузки отчёта"
+        :description="loadError"
+      />
+      <details v-if="loadErrorDetail" class="list-none text-xs text-gray-400">
+        <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer hover:text-gray-600 select-none">Подробности</summary>
+        <p class="mt-1 font-mono break-all">{{ loadErrorDetail }}</p>
+      </details>
+    </div>
     <B24Alert
       v-if="isLoading"
       color="air-secondary"
@@ -869,18 +873,28 @@ const showAllSlots = ref(false)
       title="Успешно"
       :description="saveSuccess"
     />
-    <B24Alert
-      v-if="saveError"
-      color="air-primary-alert"
-      title="Ошибка загрузки"
-      :description="saveError"
-    />
-    <B24Alert
-      v-if="submitError"
-      color="air-primary-alert"
-      title="Ошибка отправки отчёта"
-      :description="submitError"
-    />
+    <div v-if="saveError" class="space-y-1">
+      <B24Alert
+        color="air-primary-alert"
+        title="Ошибка загрузки"
+        :description="saveError"
+      />
+      <details v-if="saveErrorDetail" class="list-none text-xs text-gray-400">
+        <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer hover:text-gray-600 select-none">Подробности</summary>
+        <p class="mt-1 font-mono break-all">{{ saveErrorDetail }}</p>
+      </details>
+    </div>
+    <div v-if="submitError" class="space-y-1">
+      <B24Alert
+        color="air-primary-alert"
+        title="Ошибка отправки отчёта"
+        :description="submitError"
+      />
+      <details v-if="submitErrorDetail" class="list-none text-xs text-gray-400">
+        <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer hover:text-gray-600 select-none">Подробности</summary>
+        <p class="mt-1 font-mono break-all">{{ submitErrorDetail }}</p>
+      </details>
+    </div>
 
     <!-- ─── COMPACT REPORT META ─────────────────────────────────────────────── -->
     <B24Card v-if="report" variant="outline">

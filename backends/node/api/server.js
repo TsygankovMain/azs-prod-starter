@@ -28,9 +28,15 @@ import { createCrmSyncWorker } from './src/reports/crmSyncWorker.js';
 import createNotificationService from './src/notifications/notificationService.js';
 import createBotRegistryService from './src/notifications/botRegistryService.js';
 import { createAuthContextStore } from './src/auth/authContextStore.js';
+import { createDatabaseAuthContextStore } from './src/auth/databaseAuthContextStore.js';
+import { createCompositeAuthContextStore } from './src/auth/compositeAuthContextStore.js';
 import { createTokenRefreshScheduler } from './src/auth/tokenRefreshScheduler.js';
 import { resolveAccessContext } from './src/access/roleResolver.js';
 import createReasonStore from './src/reports/reasonStore.js';
+import { createPhotoFeedRouter } from './src/reports/photoFeedRoutes.js';
+import createPhotoRemarkStore from './src/reports/photoRemarkStore.js';
+import { createPhotoRemarkService } from './src/notifications/photoRemarkService.js';
+import { createPhotoRemarkRouter } from './src/reports/photoRemarkRoutes.js';
 import createReasonForwardingService from './src/notifications/reasonForwardingService.js';
 import { validateRequiredEnv } from './utils/validateEnv.js';
 import { resolvePgSslConfig } from './utils/dbSsl.js';
@@ -206,7 +212,21 @@ const crmSyncJobStore = createCrmSyncJobStore({ pool, dbType });
 const dispatchPlanStore = createDispatchPlanStore({ pool, dbType });
 const dbSettingsStore = createDatabaseSettingsStore({ pool, dbType });
 const reasonStore = createReasonStore({ pool, dbType });
-const authContextStore = createAuthContextStore();
+const photoRemarkStore = createPhotoRemarkStore({ pool, dbType });
+const authContextStoreType = String(process.env.AUTH_CONTEXT_STORE || 'composite').trim().toLowerCase();
+const authContextStore = (() => {
+  if (authContextStoreType === 'database') {
+    return createDatabaseAuthContextStore({ pool, dbType });
+  }
+  if (authContextStoreType === 'file') {
+    return createAuthContextStore();
+  }
+  // Default: composite — DB primary, file fallback, startup seed
+  return createCompositeAuthContextStore({
+    dbStore: createDatabaseAuthContextStore({ pool, dbType }),
+    fileStore: createAuthContextStore()
+  });
+})();
 const bitrixClient = createBitrixRestClient({
   onTokenRefreshed: async (context) => {
     if (!context?.memberId || !context?.domain || !context?.userId) {
@@ -234,6 +254,11 @@ const bitrixClient = createBitrixRestClient({
   }
 });
 const reasonForwardingService = createReasonForwardingService({ bitrixClient });
+const getAdminContext = async () => {
+  const entry = await authContextStore.getLastAdminContext();
+  if (!entry?.context) return {};
+  return { key: entry.key, ...entry.context };
+};
 const bitrixSettingsStore = createBitrixAppSettingsStore({
   bitrixClient,
   optionKey: process.env.BITRIX_APP_SETTINGS_OPTION_KEY || 'azs_photo_report_settings_v1'
@@ -283,6 +308,13 @@ const dispatchService = createDispatchService({
   bitrixClient,
   notificationService,
   timeoutWatcher
+});
+const photoRemarkService = createPhotoRemarkService({
+  bitrixClient,
+  remarkStore: photoRemarkStore,
+  reportsStore,
+  settingsStore,
+  getAdminContext
 });
 const verifyToken = createVerifyToken({ authContextStore });
 const attachAccessContext = async (req, res, next) => {
@@ -405,6 +437,21 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
   diskApi: bitrixClient.diskApi,
   reasonStore,
   reasonForwardingService,
+}));
+
+app.use('/api/reports/photos', verifyToken, attachAccessContext, createPhotoFeedRouter({
+  reportsStore,
+  settingsStore,
+  bitrixClient,
+  getAdminContext
+}));
+
+app.use('/api/photo-remarks', verifyToken, attachAccessContext, createPhotoRemarkRouter({
+  remarkStore: photoRemarkStore,
+  photoRemarkService,
+  reportsStore,
+  bitrixClient,
+  getAdminContext
 }));
 
 app.post('/api/install', async (req, res) => {
@@ -643,6 +690,16 @@ reasonStore.ensureSchema()
   .then(() => console.log('report_reason schema is ready'))
   .catch((error) => console.error('Failed to prepare report_reason schema', error));
 
+photoRemarkStore.ensureSchema()
+  .then(() => console.log('photo_remark schema is ready'))
+  .catch((error) => console.error('Failed to prepare photo_remark schema', error));
+
+if (typeof authContextStore.ensureSchema === 'function') {
+  authContextStore.ensureSchema()
+    .then(() => console.log('auth_context schema is ready'))
+    .catch((error) => console.error('Failed to prepare auth_context schema', error));
+}
+
 const scheduler = createDispatchScheduler({
   dispatchService,
   getCandidates: () => readDispatchCandidates(),
@@ -724,6 +781,15 @@ const tokenRefreshScheduler = createTokenRefreshScheduler({
 });
 
 tokenRefreshScheduler.start();
+
+// Startup seed: if composite mode and DB is empty, migrate file → DB once.
+// This ensures a server that was previously file-only doesn't lose its admin
+// context on the first deploy after upgrading to composite mode.
+if (authContextStoreType === 'composite' && typeof authContextStore.seedFromFile === 'function') {
+  authContextStore.seedFromFile().catch((error) => {
+    console.error('auth_context seed from file failed', error);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown — handles SIGTERM (deploy) and SIGINT (Ctrl-C / nodemon)

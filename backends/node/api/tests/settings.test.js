@@ -189,3 +189,87 @@ test('normalizeSettings uses default workWindow when absent from saved settings'
   assert.deepEqual(normalized.report.workWindow, DEFAULT_SETTINGS.report.workWindow);
   assert.deepEqual(normalized.report.workWindow, { start: '07:00', end: '22:00' });
 });
+
+// ─── azs.fields.manager ───────────────────────────────────────────────────────
+
+test('DEFAULT_SETTINGS includes azs.fields.manager as empty string', () => {
+  assert.equal(DEFAULT_SETTINGS.azs.fields.manager, '');
+});
+
+test('mergeSettings preserves azs.fields.manager from saved settings', () => {
+  const merged = mergeSettings({ azs: { fields: { manager: 'UF_CRM_AZS_MANAGER' } } });
+  assert.equal(merged.azs.fields.manager, 'UF_CRM_AZS_MANAGER');
+});
+
+test('mergeSettings defaults azs.fields.manager to empty string when absent', () => {
+  const merged = mergeSettings({ azs: { entityTypeId: 42 } });
+  assert.equal(merged.azs.fields.manager, '');
+});
+
+test('validateSettings passes through azs.fields.manager unchanged', () => {
+  const normalized = validateSettings(mergeSettings({
+    azs: { fields: { manager: 'UF_CRM_AZS_MGR' } }
+  }));
+  assert.equal(normalized.azs.fields.manager, 'UF_CRM_AZS_MGR');
+});
+
+// ─── photoFeed.remarkTemplates ────────────────────────────────────────────────
+
+test('DEFAULT_SETTINGS includes photoFeed.remarkTemplates with two seed entries', () => {
+  assert.ok(Array.isArray(DEFAULT_SETTINGS.photoFeed.remarkTemplates));
+  assert.equal(DEFAULT_SETTINGS.photoFeed.remarkTemplates.length, 2);
+  assert.ok(DEFAULT_SETTINGS.photoFeed.remarkTemplates.every((t) => typeof t === 'string' && t.trim()));
+});
+
+test('normalizeSettings uses default photoFeed.remarkTemplates when absent', () => {
+  const normalized = normalizeSettings({});
+  assert.deepEqual(normalized.photoFeed.remarkTemplates, DEFAULT_SETTINGS.photoFeed.remarkTemplates);
+});
+
+test('normalizeSettings preserves custom photoFeed.remarkTemplates', () => {
+  const templates = ['Шаблон 1', 'Шаблон 2'];
+  const normalized = normalizeSettings({ photoFeed: { remarkTemplates: templates } });
+  assert.deepEqual(normalized.photoFeed.remarkTemplates, templates);
+});
+
+test('validateSettings rejects photoFeed.remarkTemplates that is not an array', () => {
+  assert.throws(
+    () => validateSettings(mergeSettings({ photoFeed: { remarkTemplates: 'bad' } })),
+    /photoFeed\.remarkTemplates must be an array/
+  );
+});
+
+test('validateSettings rejects photoFeed.remarkTemplates with more than 10 items', () => {
+  const tooMany = Array.from({ length: 11 }, (_, i) => `Шаблон ${i + 1}`);
+  assert.throws(
+    () => validateSettings(mergeSettings({ photoFeed: { remarkTemplates: tooMany } })),
+    /photoFeed\.remarkTemplates must contain at most 10 items/
+  );
+});
+
+test('validateSettings rejects photoFeed.remarkTemplates with empty string item', () => {
+  assert.throws(
+    () => validateSettings(mergeSettings({ photoFeed: { remarkTemplates: ['OK', ''] } })),
+    /photoFeed\.remarkTemplates items must be non-empty strings/
+  );
+});
+
+test('validateSettings rejects photoFeed.remarkTemplates item exceeding 200 characters', () => {
+  const longTemplate = 'А'.repeat(201);
+  assert.throws(
+    () => validateSettings(mergeSettings({ photoFeed: { remarkTemplates: [longTemplate] } })),
+    /photoFeed\.remarkTemplates items must be non-empty strings of at most 200 characters/
+  );
+});
+
+test('validateSettings rejects photoFeed when it is not an object', () => {
+  assert.throws(
+    () => validateSettings(mergeSettings({ photoFeed: 'bad' })),
+    /photoFeed must be an object/
+  );
+});
+
+test('normalizeSettings trims whitespace from photoFeed.remarkTemplates items', () => {
+  const normalized = normalizeSettings({ photoFeed: { remarkTemplates: ['  Шаблон  '] } });
+  assert.deepEqual(normalized.photoFeed.remarkTemplates, ['Шаблон']);
+});

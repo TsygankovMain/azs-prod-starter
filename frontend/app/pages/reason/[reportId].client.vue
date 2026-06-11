@@ -10,6 +10,7 @@ const { initApp, b24Helper, destroyB24Helper, processErrorGlobal } = useAppInit(
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
 const route = useRoute()
+const { errorText, errorDetail } = useErrorText()
 
 // reportId берётся из URL — НЕ хардкодим
 const reportId = computed(() => Number(route.params.reportId))
@@ -25,7 +26,9 @@ const isLoading = ref(false)
 const isSaving = ref(false)
 const isSubmitted = ref(false)
 const loadError = ref('')
+const loadErrorDetail = ref('')
 const saveError = ref('')
+const saveErrorDetail = ref('')
 const report = ref<ReportData | null>(null)
 // Список причин из настроек (не хардкод)
 const reasons = ref<ReasonItem[]>([])
@@ -85,7 +88,8 @@ async function loadData() {
       ? (reportSettings.reasons as ReasonItem[]).filter(r => r?.code && r?.label)
       : []
   } catch (error) {
-    loadError.value = error instanceof Error ? error.message : String(error)
+    loadError.value = errorText(error)
+    loadErrorDetail.value = errorDetail(error)
   } finally {
     isLoading.value = false
   }
@@ -95,6 +99,7 @@ async function submitReason() {
   if (!canSubmit.value) return
   isSaving.value = true
   saveError.value = ''
+  saveErrorDetail.value = ''
   try {
     await apiStore.submitReason(reportId.value, {
       reasonCode: selectedCode.value,
@@ -102,12 +107,13 @@ async function submitReason() {
     })
     isSubmitted.value = true
   } catch (error) {
-    const errData = (error as { data?: { message?: string } })?.data
     const status = (error as { response?: { status?: number } })?.response?.status
     if (status === 403) {
       saveError.value = 'Нет доступа: вы не являетесь исполнителем или проверяющим этого отчёта.'
+      saveErrorDetail.value = errorDetail(error)
     } else {
-      saveError.value = errData?.message || (error instanceof Error ? error.message : 'Не удалось сохранить причину')
+      saveError.value = errorText(error, 'Не удалось сохранить причину')
+      saveErrorDetail.value = errorDetail(error)
     }
   } finally {
     isSaving.value = false
@@ -145,12 +151,17 @@ onUnmounted(() => {
     </div>
 
     <!-- Ошибка загрузки -->
-    <B24Alert
-      v-if="loadError"
-      color="air-primary-alert"
-      title="Не удалось загрузить данные"
-      :description="loadError"
-    />
+    <div v-if="loadError" class="space-y-1">
+      <B24Alert
+        color="air-primary-alert"
+        title="Не удалось загрузить данные"
+        :description="loadError"
+      />
+      <details v-if="loadErrorDetail" class="list-none text-xs text-gray-400">
+        <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer hover:text-gray-600 select-none">Подробности</summary>
+        <p class="mt-1 font-mono break-all">{{ loadErrorDetail }}</p>
+      </details>
+    </div>
 
     <!-- Загрузка -->
     <div v-if="isLoading" class="text-center py-8 text-gray-400">Загрузка…</div>
@@ -202,12 +213,17 @@ onUnmounted(() => {
       </div>
 
       <!-- Ошибка сохранения -->
-      <B24Alert
-        v-if="saveError"
-        color="air-primary-alert"
-        title="Ошибка"
-        :description="saveError"
-      />
+      <div v-if="saveError" class="space-y-1">
+        <B24Alert
+          color="air-primary-alert"
+          title="Ошибка"
+          :description="saveError"
+        />
+        <details v-if="saveErrorDetail" class="list-none text-xs text-gray-400">
+          <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer hover:text-gray-600 select-none">Подробности</summary>
+          <p class="mt-1 font-mono break-all">{{ saveErrorDetail }}</p>
+        </details>
+      </div>
 
       <!-- Кнопка отправки — закреплена снизу -->
       <div class="sticky bottom-0 -mx-4 border-t border-(--ui-color-base-20) bg-(--ui-color-base-0)/95 p-3 backdrop-blur-sm">
