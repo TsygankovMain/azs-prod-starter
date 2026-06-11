@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTimeoutWatcher } from '../src/dispatch/timeoutWatcher.js';
+import { NOTIFY_FALLBACK_PREFIX } from '../src/notifications/notificationService.js';
 
 test('timeout watcher expires overdue reports and skips done/expired', async () => {
   const changed = [];
@@ -200,9 +201,14 @@ test('timeoutWatcher: expired без причины + BITRIX_APP_CODE → кно
 
     assert.equal(doborNotifyCalls.length, 1, 'добор должен быть отправлен');
     const { keyboard } = doborNotifyCalls[0];
+    // W1-1: flat {BOT_ID, BUTTONS} format
     assert.ok(keyboard !== null && keyboard !== undefined, 'keyboard должен присутствовать когда есть BITRIX_APP_CODE');
-    assert.ok(Array.isArray(keyboard) && keyboard.length > 0, 'keyboard должен быть непустым массивом');
-    const btn = keyboard[0][0];
+    assert.ok(typeof keyboard === 'object' && !Array.isArray(keyboard), 'keyboard должен быть объектом (не массивом)');
+    assert.ok(Array.isArray(keyboard.BUTTONS) && keyboard.BUTTONS.length > 0, 'keyboard.BUTTONS должен быть непустым');
+    for (const btn of keyboard.BUTTONS) {
+      assert.ok(!Array.isArray(btn), 'keyboard.BUTTONS элементы не должны быть массивами (плоский формат)');
+    }
+    const btn = keyboard.BUTTONS[0];
     assert.equal(btn.TEXT, 'Указать причину', 'текст кнопки должен быть «Указать причину»');
     assert.ok(typeof btn.LINK === 'string', 'кнопка должна иметь LINK');
     assert.match(btn.LINK, /\/marketplace\/view\//, 'ссылка должна содержать /marketplace/view/');
@@ -435,4 +441,67 @@ test('timeoutWatcher: after CRM recovers, next tick expires report and sends not
   assert.equal(setStatusCalls.length, 1, 'tick 2: setReportStatus called once');
   assert.deepEqual(setStatusCalls[0], { reportId: 56, status: 'expired' });
   assert.equal(notifications.length, 1, 'tick 2: notification sent after successful CRM+DB update');
+});
+
+// W1-2: timeout watcher dobor via notify fallback → NOTIFY_FALLBACK_PREFIX written to reportsStore
+test('W1-2: timeoutWatcher добор через notify fallback → appendErrorText с NOTIFY_FALLBACK_PREFIX', async () => {
+  const prevAppCode = process.env.BITRIX_APP_CODE;
+  const appendErrorTextCalls = [];
+  try {
+    process.env.BITRIX_APP_CODE = 'local.azs.test789';
+
+    const watcher = createTimeoutWatcher({
+      reportsStore: {
+        async listOverdueReports() {
+          return [
+            { id: 70, azsId: 'azs-7', adminUserId: 99, slotKey: '2026-06-01:1200', status: 'in_progress' }
+          ];
+        },
+        async setReportStatus() {},
+        async appendErrorText(payload) { appendErrorTextCalls.push(payload); }
+      },
+      bitrixClient: {
+        async updateReportItem() {}
+      },
+      notificationService: {
+        async notifyReportExpired() {},
+        async notify() {
+          // Simulate bot failure → notify fallback
+          return { delivered: true, channel: 'notify', result: { ok: true }, botError: 'PARAM_KEYBOARD_ERROR' };
+        }
+      },
+      settingsStore: {
+        async read() {
+          return {
+            report: {
+              entityTypeId: 163,
+              stages: { expired: 'DT163_1:EXPIRED' }
+            }
+          };
+        }
+      },
+      reasonStore: {
+        async getByReport() { return null; }
+      },
+      reviewerUserId: 0
+    });
+
+    const summary = await watcher.runOnce();
+    assert.equal(summary.expired, 1, 'отчёт должен быть просрочен');
+    assert.equal(appendErrorTextCalls.length, 1, 'appendErrorText должен быть вызван');
+    assert.ok(
+      appendErrorTextCalls[0].errorText.startsWith(NOTIFY_FALLBACK_PREFIX),
+      'errorText должен начинаться с NOTIFY_FALLBACK_PREFIX'
+    );
+    assert.ok(
+      appendErrorTextCalls[0].errorText.includes('PARAM_KEYBOARD_ERROR'),
+      'errorText должен содержать причину ошибки бота'
+    );
+  } finally {
+    if (prevAppCode === undefined) {
+      delete process.env.BITRIX_APP_CODE;
+    } else {
+      process.env.BITRIX_APP_CODE = prevAppCode;
+    }
+  }
 });

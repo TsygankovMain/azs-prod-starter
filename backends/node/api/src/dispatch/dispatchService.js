@@ -1,4 +1,5 @@
 import { buildRestAppUriLink } from '../notifications/reportLinks.js';
+import { NOTIFY_FALLBACK_PREFIX } from '../notifications/notificationService.js';
 
 const MINUTES_TO_MS = 60 * 1000;
 
@@ -112,6 +113,7 @@ export const createDispatchService = ({
   bitrixClient,
   notificationService,
   timeoutWatcher = null,
+  botId = Number(process.env.BITRIX_BOT_ID || 0),
   nowFn = () => new Date(),
   rng = Math.random,
   logger = console
@@ -222,16 +224,24 @@ export const createDispatchService = ({
             reasonParams.set('params[path]', reasonPath);
             const reasonDeepLink = `/marketplace/view/${encodeURIComponent(appCode)}/?${reasonParams.toString()}`;
 
+            const resolvedBotId = Number(notificationService?.botId || botId || process.env.BITRIX_BOT_ID || 0);
             const buttons = [];
             if (deepLink) buttons.push({ TEXT: 'Открыть приложение', LINK: deepLink });
-            if (reasonDeepLink) buttons.push({ TEXT: 'Не успеваю — указать причину', LINK: reasonDeepLink });
-            if (buttons.length) dispatchKeyboard = [buttons];
+            if (buttons.length && reasonDeepLink) {
+              buttons.push({ TYPE: 'NEWLINE' });
+              buttons.push({ TEXT: 'Не успеваю — указать причину', LINK: reasonDeepLink });
+            } else if (reasonDeepLink) {
+              buttons.push({ TEXT: 'Не успеваю — указать причину', LINK: reasonDeepLink });
+            }
+            if (buttons.length) {
+              dispatchKeyboard = { BOT_ID: resolvedBotId, BUTTONS: buttons };
+            }
           }
         } catch {
           // Defensive: skip keyboard if link building fails
         }
 
-        await notificationService.notifyDispatch({
+        const notifyResult = await notificationService.notifyDispatch({
           userId: Number(candidate.adminUserId),
           azsId: candidate.azsId,
           azsTitle,
@@ -240,6 +250,14 @@ export const createDispatchService = ({
           keyboard: dispatchKeyboard,
           context
         });
+
+        // W1-2: if delivered via notify fallback, annotate the dispatch log error_text
+        if (notifyResult?.channel === 'notify' && notifyResult?.botError) {
+          await dispatchLogStore.appendErrorText?.({
+            id: reserve.id,
+            errorText: `${NOTIFY_FALLBACK_PREFIX}${notifyResult.botError}`
+          });
+        }
       } catch (notifyError) {
         logger.warn('dispatchCandidate notification failed', {
           slotKey,

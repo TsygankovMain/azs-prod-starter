@@ -436,10 +436,17 @@ test('dispatchCandidate: клавиатура содержит кнопку пр
 
     assert.equal(notifyCalls.length, 1, 'notifyDispatch должен быть вызван');
     const keyboard = notifyCalls[0].keyboard;
-    assert.ok(Array.isArray(keyboard) && keyboard.length > 0, 'keyboard должна быть непустым массивом');
+    // W1-1: flat {BOT_ID, BUTTONS} format — no nested arrays
+    assert.ok(
+      keyboard !== null && keyboard !== undefined && typeof keyboard === 'object' && !Array.isArray(keyboard),
+      'keyboard должна быть объектом с BOT_ID и BUTTONS'
+    );
+    assert.ok(Array.isArray(keyboard.BUTTONS) && keyboard.BUTTONS.length > 0, 'keyboard.BUTTONS должна быть непустым массивом');
+    for (const btn of keyboard.BUTTONS) {
+      assert.ok(!Array.isArray(btn), 'keyboard.BUTTONS элементы не должны быть массивами (плоский формат)');
+    }
 
-    const allButtons = keyboard.flat();
-    const reasonButton = allButtons.find(b => b?.TEXT?.includes('Не успеваю') || b?.LINK?.includes('reason'));
+    const reasonButton = keyboard.BUTTONS.find((b) => b?.TEXT?.includes('Не успеваю') || b?.LINK?.includes('reason'));
     assert.ok(reasonButton, 'клавиатура должна содержать кнопку с reason-ссылкой');
     assert.ok(typeof reasonButton.LINK === 'string' && reasonButton.LINK.includes('test.app'), 'LINK кнопки должен содержать appCode');
   } finally {
