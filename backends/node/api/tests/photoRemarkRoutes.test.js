@@ -74,6 +74,10 @@ const createFakeService = (overrides = {}) => ({
       message: params.message, deliveryStatus: 'sent', deliveryError: null,
       photos: params.photos || [], createdAt: new Date().toISOString()
     };
+  },
+  async retryRemark(record) {
+    if (overrides.retryThrow) throw new Error(overrides.retryThrow);
+    return { ...record, deliveryStatus: 'sent', deliveryError: null };
   }
 });
 
@@ -90,7 +94,8 @@ const stubDeps = {
   remarkStore: createFakeRemarkStore(),
   photoRemarkService: createFakeService(),
   bitrixClient: fakeBitrixClient,
-  getAdminContext: async () => ({ authId: 'admin-token' })
+  getAdminContext: async () => ({ authId: 'admin-token' }),
+  reportsStore: null // no AZS guard in baseline tests
 };
 
 // ---------------------------------------------------------------------------
@@ -174,7 +179,7 @@ test('POST / returns 400 when recipientRole is invalid', async () => {
   assert.equal(res.statusCode, 400);
 });
 
-test('POST / returns 200 on successful send', async () => {
+test('POST / returns 200 on successful send with {item} contract', async () => {
   const router = createPhotoRemarkRouter({
     ...stubDeps,
     remarkStore: createFakeRemarkStore()
@@ -187,7 +192,8 @@ test('POST / returns 200 on successful send', async () => {
   const res = makeRes();
   await handler(req, res);
   assert.equal(res.statusCode, 200);
-  assert.ok(res._payload?.azsId);
+  assert.ok(res._payload?.item, 'response should have item key');
+  assert.ok(res._payload?.item?.azsId, 'item should have azsId');
 });
 
 test('POST / returns 422 on RECIPIENT_NOT_SET errorCode', async () => {
@@ -275,7 +281,7 @@ test('POST /:id/retry returns 403 without reviewer role', async () => {
   assert.equal(res.statusCode, 403);
 });
 
-test('POST /:id/retry succeeds for existing remark', async () => {
+test('POST /:id/retry succeeds for existing remark, returns {item}', async () => {
   const remarkStore = createFakeRemarkStore();
   const inserted = await remarkStore.insertRemark({
     azsId: '42', recipientRole: 'admin', message: 'test', photos: [{ reportId: 10, photoCode: 'front' }]
@@ -296,6 +302,85 @@ test('POST /:id/retry succeeds for existing remark', async () => {
   const res = makeRes();
   await retryHandler(req, res);
   assert.equal(res.statusCode, 200);
+  assert.ok(res._payload?.item, 'retry response should have item key');
+});
+
+test('POST /:id/retry uses stored recipientUserId (no re-resolve)', async () => {
+  const remarkStore = createFakeRemarkStore();
+  let retryCalledWith = null;
+  const fakeService = {
+    async sendRemark() { return {}; },
+    async retryRemark(record) {
+      retryCalledWith = record;
+      return { ...record, deliveryStatus: 'sent', deliveryError: null };
+    }
+  };
+  const inserted = await remarkStore.insertRemark({
+    azsId: '42', recipientRole: 'admin', message: 'test',
+    recipientUserId: 99, recipientName: 'Stored User',
+    photos: [{ reportId: 10, photoCode: 'front' }]
+  });
+  await remarkStore.markDelivery(inserted.id, 'failed', 'timeout');
+
+  const deps = { ...stubDeps, remarkStore, photoRemarkService: fakeService };
+  const router = createPhotoRemarkRouter(deps);
+  let retryHandler = null;
+  for (const layer of router.stack) {
+    if (layer.route?.path === '/:id/retry') {
+      const h = layer.route.stack.find((l) => l.method === 'post');
+      retryHandler = h?.handle || null;
+    }
+  }
+  if (!retryHandler) return;
+  const req = makeReq({ params: { id: String(inserted.id) } });
+  const res = makeRes();
+  await retryHandler(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.ok(retryCalledWith, 'retryRemark should have been called');
+  assert.equal(retryCalledWith.recipientUserId, 99, 'should pass stored recipientUserId');
+});
+
+// ---------------------------------------------------------------------------
+// I3 — Photos AZS mismatch guard
+// ---------------------------------------------------------------------------
+
+test('POST / returns 400 PHOTOS_AZS_MISMATCH when photo belongs to different AZS', async () => {
+  const fakeReportsStore = {
+    async getPhoto(reportId, photoCode) {
+      // Simulate photo belonging to azsId '99', not '42'
+      return { fileName: 'a.jpg', diskObjectId: 1, fileId: 1, azsId: '99' };
+    }
+  };
+  const deps = { ...stubDeps, reportsStore: fakeReportsStore, remarkStore: createFakeRemarkStore() };
+  const router = createPhotoRemarkRouter(deps);
+  const handler = findRoute(router, 'post', '/');
+  if (!handler) return;
+  const req = makeReq({
+    body: { azsId: '42', recipientRole: 'manager', message: 'test', photos: [{ reportId: 10, photoCode: 'front' }] }
+  });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 400);
+  assert.equal(res._payload?.errorCode, 'PHOTOS_AZS_MISMATCH');
+});
+
+test('POST / passes guard when photo azsId matches body azsId', async () => {
+  const fakeReportsStore = {
+    async getPhoto() {
+      return { fileName: 'a.jpg', diskObjectId: 1, fileId: 1, azsId: '42' };
+    }
+  };
+  const deps = { ...stubDeps, reportsStore: fakeReportsStore, remarkStore: createFakeRemarkStore() };
+  const router = createPhotoRemarkRouter(deps);
+  const handler = findRoute(router, 'post', '/');
+  if (!handler) return;
+  const req = makeReq({
+    body: { azsId: '42', recipientRole: 'manager', message: 'test', photos: [{ reportId: 10, photoCode: 'front' }] }
+  });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.ok(res._payload?.item, 'response should have item');
 });
 
 // ---------------------------------------------------------------------------

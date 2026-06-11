@@ -6,6 +6,7 @@
  * панель только отображает его и эмитит события.
  *
  * withPending-паттерн: кнопка «Отправить» заблокирована на время запроса через isSending prop.
+ * message и selectedRole управляются родителем через v-model (поднятый state, п.9).
  */
 
 export type RemarkRecipient = {
@@ -35,19 +36,22 @@ const props = defineProps<{
 const emit = defineEmits<{
   send: [payload: { recipientRole: 'manager' | 'admin'; message: string }]
   clear: []
+  'update:message': [value: string]
+  'update:selectedRole': [value: 'manager' | 'admin']
 }>()
 
 type RecipientRole = 'manager' | 'admin'
 
-const selectedRole = ref<RecipientRole>('manager')
-const message = ref('')
+// Управляемый state через defineModel (поднятый в родителя, п.9)
+const message = defineModel<string>('message', { default: '' })
+const selectedRole = defineModel<RecipientRole>('selectedRole', { default: 'manager' })
 
 // Авто-переключение на admin если manager null (С5)
 watch(
   () => props.manager,
   (mgr) => {
     if (!mgr && selectedRole.value === 'manager') {
-      selectedRole.value = 'admin'
+      selectedRole.value = props.admin ? 'admin' : 'manager'
     }
   },
   { immediate: true }
@@ -80,7 +84,7 @@ const handleSend = () => {
 
 const handleClear = () => {
   message.value = ''
-  selectedRole.value = 'manager'
+  selectedRole.value = props.manager ? 'manager' : 'admin'
   emit('clear')
 }
 
@@ -90,7 +94,7 @@ watch(
   (n) => {
     if (n === 0) {
       message.value = ''
-      selectedRole.value = 'manager'
+      selectedRole.value = props.manager ? 'manager' : 'admin'
     }
   }
 )

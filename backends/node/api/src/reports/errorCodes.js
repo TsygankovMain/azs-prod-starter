@@ -80,3 +80,12 @@ export const PHOTO_EXIF_TOO_OLD = 'PHOTO_EXIF_TOO_OLD';
  * meta: { missingCodes: string[] }
  */
 export const REPORT_PHOTOS_MISSING = 'REPORT_PHOTOS_MISSING';
+
+/**
+ * PHOTOS_AZS_MISMATCH
+ * One or more photos in the remark request belong to a different AZS than the
+ * one declared in azsId. Each photo's report must belong to the same AZS as
+ * the remark being sent.
+ * meta: { azsId: string, photoReportId: number, photoCode: string, actualAzsId: string }
+ */
+export const PHOTOS_AZS_MISMATCH = 'PHOTOS_AZS_MISMATCH';

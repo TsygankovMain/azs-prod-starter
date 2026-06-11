@@ -159,13 +159,14 @@ test('bot mode: 3 photos → 3 upload calls, text on first only', async () => {
   assert.equal(result.deliveryStatus, 'sent');
   assert.equal(uploadCalls.length, 3, 'should be 3 upload calls');
 
-  // Text only on first file
-  assert.ok(uploadCalls[0].fields.FILE.message, 'first upload should have message');
-  assert.ok(uploadCalls[0].fields.FILE.message.includes('АЗС Север'), 'message contains azsTitle');
-  assert.ok(uploadCalls[0].fields.FILE.message.includes('Проверяющий А.'), 'message contains sender name');
-  assert.ok(uploadCalls[0].fields.FILE.message.includes('Плохой порядок'), 'message contains text');
-  assert.equal(uploadCalls[1].fields.FILE.message, undefined, 'second upload should have no message');
-  assert.equal(uploadCalls[2].fields.FILE.message, undefined, 'third upload should have no message');
+  // Text only on first file — fields.message is a DIRECT child of fields
+  assert.ok(uploadCalls[0].fields.message, 'first upload should have message');
+  assert.ok(uploadCalls[0].fields.message.includes('АЗС Север'), 'message contains azsTitle');
+  assert.ok(uploadCalls[0].fields.message.includes('Проверяющий А.'), 'message contains sender name');
+  assert.ok(uploadCalls[0].fields.message.includes('Плохой порядок'), 'message contains text');
+  assert.ok(uploadCalls[0].fields.content, 'first upload should have base64 content');
+  assert.equal(uploadCalls[1].fields.message, undefined, 'second upload should have no message');
+  assert.equal(uploadCalls[2].fields.message, undefined, 'third upload should have no message');
 
   // Journal record
   const stored = remarkStore.records.get(result.id);
@@ -260,4 +261,32 @@ test('retry: re-sending a failed remark → markDelivery called with sent', asyn
   });
 
   assert.equal(retried.deliveryStatus, 'sent', 'retry should succeed');
+});
+
+test('retryRemark: sends to stored recipientUserId, no new insertRemark', async () => {
+  const uploadCalls = [];
+  const remarkStore = createFakeRemarkStore();
+  const bitrixClient = createFakeBitrixClient({ uploadCalls });
+  const { svc } = makeService({ remarkStore, bitrixClient });
+
+  // Create an initial record directly
+  const originalRecord = await remarkStore.insertRemark({
+    azsId: '42', azsTitle: 'АЗС Север', recipientRole: 'manager',
+    recipientUserId: 10, recipientName: 'Менеджер И.',
+    message: 'test msg', senderUserId: 3, senderName: 'Ревизор',
+    photos: [{ reportId: 10, photoCode: 'front' }]
+  });
+  await remarkStore.markDelivery(originalRecord.id, 'failed', 'timeout');
+
+  const countBefore = remarkStore.records.size;
+
+  // retryRemark uses stored recipient, no new record
+  const retried = await svc.retryRemark({ ...originalRecord, deliveryStatus: 'failed', photos: [{ reportId: 10, photoCode: 'front' }] });
+
+  assert.equal(retried.deliveryStatus, 'sent', 'retryRemark should succeed');
+  assert.equal(remarkStore.records.size, countBefore, 'no new insert on retry');
+
+  // Verify it sent to the stored recipientUserId (dialogId = '10')
+  assert.ok(uploadCalls.length > 0, 'should have upload calls');
+  assert.equal(uploadCalls[0].dialogId, '10', 'should send to stored recipient id');
 });

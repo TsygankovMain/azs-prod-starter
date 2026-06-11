@@ -13,7 +13,7 @@
  */
 
 import express from 'express';
-import { REMARK_NOT_FOUND } from './errorCodes.js';
+import { REMARK_NOT_FOUND, PHOTOS_AZS_MISMATCH } from './errorCodes.js';
 
 // ---------------------------------------------------------------------------
 // Guards — same pattern as photoFeedRoutes / analyticsRoutes
@@ -75,6 +75,7 @@ const resolveSenderName = async (bitrixClient, userId, adminContext) => {
 export const createPhotoRemarkRouter = ({
   remarkStore,
   photoRemarkService,
+  reportsStore,
   bitrixClient,
   getAdminContext
 }) => {
@@ -123,6 +124,8 @@ export const createPhotoRemarkRouter = ({
     if (!String(azsId || '').trim()) {
       return res.status(400).json({ error: 'validation_failed', message: 'azsId is required' });
     }
+    // azsTitle: optional, max 200 chars
+    const normalizedAzsTitle = azsTitle ? String(azsTitle).trim().slice(0, 200) || null : null;
 
     try {
       const senderUserId = Number(req.user?.user_id || req.user?.id || 0);
@@ -131,16 +134,30 @@ export const createPhotoRemarkRouter = ({
         ? await resolveSenderName(bitrixClient, senderUserId, adminContext)
         : null;
 
+      // I3: verify all photos belong to the claimed azsId
+      if (reportsStore) {
+        for (const ph of photos) {
+          const photoRow = await reportsStore.getPhoto(ph.reportId, ph.photoCode);
+          if (photoRow && photoRow.azsId !== undefined && String(photoRow.azsId) !== String(azsId)) {
+            return res.status(400).json({
+              error: 'validation_failed',
+              errorCode: PHOTOS_AZS_MISMATCH,
+              message: `Photo ${ph.photoCode} of report ${ph.reportId} belongs to AZS ${photoRow.azsId}, not ${azsId}`
+            });
+          }
+        }
+      }
+
       const record = await photoRemarkService.sendRemark({
         azsId: String(azsId),
-        azsTitle: azsTitle ? String(azsTitle) : null,
+        azsTitle: normalizedAzsTitle,
         recipientRole,
         message: String(message).trim(),
         photos,
         sender: { id: senderUserId, name: senderName }
       });
 
-      return res.json(record);
+      return res.json({ item: record });
     } catch (err) {
       if (err.errorCode) {
         return res.status(422).json({
@@ -194,21 +211,11 @@ export const createPhotoRemarkRouter = ({
         });
       }
 
-      // Re-send using the same parameters stored in the journal record
-      const record = await photoRemarkService.sendRemark({
-        azsId: existing.azsId,
-        azsTitle: existing.azsTitle,
-        recipientRole: existing.recipientRole,
-        message: existing.message,
-        photos: existing.photos || [],
-        sender: { id: existing.senderUserId, name: existing.senderName }
-      });
-
-      // Update the ORIGINAL record's delivery status
-      await remarkStore.markDelivery(id, record.deliveryStatus, record.deliveryError ?? null);
+      // Re-deliver to the STORED recipient — no new journal record created
+      const result = await photoRemarkService.retryRemark(existing);
 
       const updated = await remarkStore.getById(id);
-      return res.json(updated || record);
+      return res.json({ item: updated || result });
     } catch (err) {
       return res.status(500).json({ error: 'remark_retry_failed', message: err.message });
     }

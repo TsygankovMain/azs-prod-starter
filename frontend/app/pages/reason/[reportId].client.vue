@@ -99,6 +99,7 @@ async function submitReason() {
   if (!canSubmit.value) return
   isSaving.value = true
   saveError.value = ''
+  saveErrorDetail.value = ''
   try {
     await apiStore.submitReason(reportId.value, {
       reasonCode: selectedCode.value,

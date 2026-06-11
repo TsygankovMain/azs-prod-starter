@@ -480,6 +480,7 @@ export const useApiStore = defineStore(
 
     const sendPhotoRemark = async (payload: {
       azsId: string
+      azsTitle?: string | null
       recipientRole: 'manager' | 'admin'
       message: string
       photos: Array<{ reportId: number; photoCode: string }>
@@ -525,10 +526,11 @@ export const useApiStore = defineStore(
     }
 
     const retryPhotoRemark = async (id: number): Promise<PhotoRemarkJournalItem> => {
-      return await $api(`/api/photo-remarks/${id}/retry`, {
+      const resp = await $api<{ item: PhotoRemarkJournalItem }>(`/api/photo-remarks/${id}/retry`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${tokenJWT.value}` }
       })
+      return resp.item
     }
 
     const getPhotoPreviewObjectUrl = async (reportId: number, photoCode: string): Promise<string> => {

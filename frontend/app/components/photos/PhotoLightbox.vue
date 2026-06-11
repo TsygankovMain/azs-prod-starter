@@ -38,6 +38,10 @@ const props = defineProps<{
   draftIsSending: boolean
   /** true если есть ещё страницы */
   hasMore: boolean
+  /** Конфликт-промпт (С3) — item при наличии конфликта, null иначе */
+  conflictItem?: PhotoFeedItem | null
+  /** Текст конфликт-промпта */
+  conflictMessage?: string
 }>()
 
 const emit = defineEmits<{
@@ -46,6 +50,9 @@ const emit = defineEmits<{
   'need-more': []
   'draft-send': [payload: { recipientRole: 'manager' | 'admin'; message: string }]
   'draft-clear': []
+  'resolve-conflict-back': []
+  'resolve-conflict-clear': []
+  'resolve-conflict-cancel': []
 }>()
 
 const apiStore = useApiStore()
@@ -209,7 +216,11 @@ const isCurrentMarked = computed(() => {
 })
 
 // ── Панель черновика видна ────────────────────────────────────────────────
-const showDraftPanel = computed(() => props.draftCount > 0)
+const showDraftPanel = computed(() => props.draftCount > 0 && !props.conflictItem)
+
+// ── Управляемый state черновика (поднят в родителя, п.9) ─────────────────
+const draftMessage = defineModel<string>('draftMessage', { default: '' })
+const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'manager' })
 </script>
 
 <template>
@@ -316,12 +327,44 @@ const showDraftPanel = computed(() => props.draftCount > 0)
         </template>
       </div>
 
-      <!-- Панель черновика снизу (видна если draftCount > 0) -->
+      <!-- Конфликт-промпт С3 внутри лайтбокса (z-[220] над лайтбоксом z-[210]) -->
+      <div
+        v-if="conflictItem"
+        class="flex-shrink-0 bg-amber-50 border-t border-amber-300 shadow-lg px-4 py-4"
+      >
+        <p class="text-sm font-semibold text-amber-800 mb-3">
+          {{ conflictMessage }}
+        </p>
+        <div class="flex gap-2 flex-wrap">
+          <button
+            class="px-4 py-2 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 transition-colors"
+            @click="emit('resolve-conflict-back')"
+          >
+            Вернуться к черновику
+          </button>
+          <button
+            class="px-4 py-2 rounded-lg text-sm font-medium bg-white border border-amber-400 text-amber-800 hover:bg-amber-50 transition-colors"
+            @click="emit('resolve-conflict-clear')"
+          >
+            Очистить и начать с этого фото
+          </button>
+          <button
+            class="px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-100 transition-colors"
+            @click="emit('resolve-conflict-cancel')"
+          >
+            Отмена
+          </button>
+        </div>
+      </div>
+
+      <!-- Панель черновика снизу (видна если draftCount > 0 и нет конфликта) -->
       <div
         v-if="showDraftPanel"
         class="flex-shrink-0"
       >
         <RemarkDraftPanel
+          v-model:message="draftMessage"
+          v-model:selected-role="draftRole"
           :count="draftCount"
           :azs-id="draftAzsId"
           :azs-title="draftAzsTitle"

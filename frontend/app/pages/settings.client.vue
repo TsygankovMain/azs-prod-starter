@@ -1251,11 +1251,11 @@ onUnmounted(() => {
                   <div class="flex gap-2">
                     <B24Select
                       :items="fieldSelectItemsWithNone('report')"
-                      :model-value="form.report.fields.reason === '' ? NONE_SENTINEL : form.report.fields.reason"
+                      :model-value="getModuleFieldSelectValue('report', 'reason')"
                       :disabled="!isAdminReady || !form.report.entityTypeId"
                       placeholder="Не сопоставлено"
                       class="flex-1"
-                      @update:model-value="(v) => { form.report.fields.reason = String(v ?? '') === NONE_SENTINEL ? '' : String(v ?? '') }"
+                      @update:model-value="(v) => setModuleFieldSelectValue('report', 'reason', String(v ?? ''))"
                     />
                     <B24Button
                       size="sm"
@@ -1922,11 +1922,11 @@ onUnmounted(() => {
                 <div class="flex gap-2">
                   <B24Select
                     :items="fieldSelectItemsWithNone('report')"
-                    :model-value="form.report.fields.reason === '' ? NONE_SENTINEL : form.report.fields.reason"
+                    :model-value="getModuleFieldSelectValue('report', 'reason')"
                     :disabled="!isAdminReady || !form.report.entityTypeId"
                     placeholder="Не сопоставлено"
                     class="flex-1"
-                    @update:model-value="(v) => { form.report.fields.reason = String(v ?? '') === NONE_SENTINEL ? '' : String(v ?? '') }"
+                    @update:model-value="(v) => setModuleFieldSelectValue('report', 'reason', String(v ?? ''))"
                   />
                   <B24Button
                     size="sm"

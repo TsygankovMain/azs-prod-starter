@@ -415,8 +415,10 @@ const createPostgresStore = (pool) => ({
 
   async getPhoto(reportId, photoCode) {
     const result = await pool.query(
-      `SELECT file_name, disk_object_id, file_id FROM report_photo
-       WHERE report_id = $1 AND photo_code = $2 LIMIT 1`,
+      `SELECT rp.file_name, rp.disk_object_id, rp.file_id, d.azs_id
+       FROM report_photo rp
+       JOIN dispatch_log d ON d.id = rp.report_id
+       WHERE rp.report_id = $1 AND rp.photo_code = $2 LIMIT 1`,
       [reportId, photoCode]
     );
     if (!result.rows.length) return null;
@@ -424,7 +426,8 @@ const createPostgresStore = (pool) => ({
     return {
       fileName: row.file_name || null,
       diskObjectId: row.disk_object_id ? Number(row.disk_object_id) : null,
-      fileId: row.file_id ? Number(row.file_id) : null
+      fileId: row.file_id ? Number(row.file_id) : null,
+      azsId: row.azs_id ? String(row.azs_id) : null
     };
   }
 });
@@ -789,8 +792,10 @@ const createMysqlStore = (pool) => ({
 
   async getPhoto(reportId, photoCode) {
     const [rows] = await pool.execute(
-      `SELECT file_name, disk_object_id, file_id FROM report_photo
-       WHERE report_id = ? AND photo_code = ? LIMIT 1`,
+      `SELECT rp.file_name, rp.disk_object_id, rp.file_id, d.azs_id
+       FROM report_photo rp
+       JOIN dispatch_log d ON d.id = rp.report_id
+       WHERE rp.report_id = ? AND rp.photo_code = ? LIMIT 1`,
       [reportId, photoCode]
     );
     if (!rows.length) return null;
@@ -798,7 +803,8 @@ const createMysqlStore = (pool) => ({
     return {
       fileName: row.file_name || null,
       diskObjectId: row.disk_object_id ? Number(row.disk_object_id) : null,
-      fileId: row.file_id ? Number(row.file_id) : null
+      fileId: row.file_id ? Number(row.file_id) : null,
+      azsId: row.azs_id ? String(row.azs_id) : null
     };
   }
 });

@@ -11,6 +11,7 @@ const { initApp, processErrorGlobal } = useAppInit('PhotoFeedPage')
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
 const toast = useAppToast()
+const { errorText: useErrorTextFn } = useErrorText()
 
 let $b24: null | B24Frame = null
 
@@ -197,6 +198,10 @@ type MarkEntry = { reportId: number; photoCode: string; azsId: string; azsTitle:
 const marks = ref(new Map<string, MarkEntry>())
 const activeAzsId = ref<string>('')
 
+// Поднятый state черновика (п.9) — текст и роль живут в странице, не в панели
+const draftMessage = ref('')
+const draftRole = ref<'manager' | 'admin'>('manager')
+
 const markedKeys = computed(() => new Set(marks.value.keys()))
 
 const draftCount = computed(() => marks.value.size)
@@ -266,6 +271,7 @@ const handleSend = async ({ recipientRole, message }: { recipientRole: 'manager'
     const photos = [...marks.value.values()].map(m => ({ reportId: m.reportId, photoCode: m.photoCode }))
     const result = await apiStore.sendPhotoRemark({
       azsId: activeAzsId.value,
+      azsTitle: draftAzsTitle.value || null,
       recipientRole,
       message,
       photos
@@ -288,17 +294,18 @@ const handleSend = async ({ recipientRole, message }: { recipientRole: 'manager'
     }
     const n = marks.value.size
     toast.success(`Отправлено: ${rec.recipientName} (АЗС ${rec.azsId}) — ${n} фото`)
+    // Закрыть лайтбокс если открыт (тост невидим под z-[210])
+    if (lightboxOpen.value) {
+      lightboxIndex.value = -1
+    }
     marks.value = new Map()
     activeAzsId.value = ''
     draftManager.value = null
     draftAdmin.value = null
+    draftMessage.value = ''
+    draftRole.value = 'manager'
   } catch (e: unknown) {
-    const errData = (e as { data?: { errorCode?: string; message?: string } })?.data
-    if (errData?.errorCode === 'RECIPIENT_NOT_SET') {
-      toast.error('У АЗС не указан получатель — выберите администратора')
-    } else {
-      toast.error(errData?.message || (e instanceof Error ? e.message : 'Не удалось отправить замечание'))
-    }
+    toast.error(useErrorTextFn(e, 'Не удалось отправить замечание'))
     // Черновик НЕ теряем при ошибке
   } finally {
     isSending.value = false
@@ -310,6 +317,8 @@ const handleDraftClear = () => {
   activeAzsId.value = ''
   draftManager.value = null
   draftAdmin.value = null
+  draftMessage.value = ''
+  draftRole.value = 'manager'
 }
 
 // ── Inline-конфликт АЗС (С3) ─────────────────────────────────────────────
@@ -690,7 +699,7 @@ const goBack = () => {
                   class="px-4 py-2 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 transition-colors"
                   @click="resolveConflictSendCurrentThenMark"
                 >
-                  Отправить текущее
+                  Вернуться к черновику
                 </button>
                 <button
                   class="px-4 py-2 rounded-lg text-sm font-medium bg-white border border-amber-400 text-amber-800 hover:bg-amber-50 transition-colors"
@@ -707,12 +716,14 @@ const goBack = () => {
               </div>
             </div>
 
-            <!-- Панель черновика sticky снизу (при draftCount > 0, нет конфликта) -->
+            <!-- Панель черновика sticky снизу (при draftCount > 0, нет конфликта, лайтбокс закрыт) -->
             <div
-              v-else-if="draftCount > 0"
+              v-else-if="draftCount > 0 && !lightboxOpen"
               class="fixed bottom-0 left-0 right-0 z-[90]"
             >
               <RemarkDraftPanel
+                v-model:message="draftMessage"
+                v-model:selected-role="draftRole"
                 :count="draftCount"
                 :azs-id="activeAzsId"
                 :azs-title="draftAzsTitle"
@@ -735,6 +746,8 @@ const goBack = () => {
     <!-- Полноэкранный лайтбокс -->
     <PhotoLightbox
       v-if="lightboxOpen"
+      v-model:draft-message="draftMessage"
+      v-model:draft-role="draftRole"
       :items="items"
       :start-index="lightboxIndex"
       :marked-keys="markedKeys"
@@ -747,11 +760,16 @@ const goBack = () => {
       :draft-templates="remarkTemplates"
       :draft-is-sending="isSending"
       :has-more="Boolean(nextCursor)"
+      :conflict-item="conflictItem"
+      :conflict-message="conflictMessage"
       @close="handleLightboxClose"
       @toggle-mark="handleLightboxToggleMark"
       @need-more="handleLightboxNeedMore"
       @draft-send="handleSend"
       @draft-clear="handleDraftClear"
+      @resolve-conflict-back="resolveConflictSendCurrentThenMark"
+      @resolve-conflict-clear="resolveConflictClearAndMark"
+      @resolve-conflict-cancel="conflictItem = null"
     />
   </div>
 </template>
