@@ -129,6 +129,7 @@ const openAdminReport = async () => {
 }
 
 const recheckAdminReport = async () => {
+  if (isLoading.value) return
   homeNotice.value = ''
   isAzsAdminWaiting.value = false
   isLoading.value = true

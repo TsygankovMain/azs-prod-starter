@@ -54,6 +54,7 @@ const { locales: localesI18n, setLocale } = useI18n()
 const { initApp, processErrorGlobal } = useAppInit('ReviewerPage')
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
+const toast = useAppToast()
 
 let $b24: null | B24Frame = null
 
@@ -558,7 +559,7 @@ const requestReportAgain = async (event: FeedEvent) => {
         slotHHmm
       })
 
-      toast.success('Повторный запрос отправлен АЗС')
+      toast.success('Повторный запрос создан')
       await loadAll()
     } catch (error) {
       console.error('requestReportAgain failed', error)
@@ -692,8 +693,6 @@ const runTimeout = async () => {
 
 // ── Pending-state helper (S2-02) ────────────────────────────────────────────
 // Prevents double-click duplicates and gives visual feedback on any action key.
-const toast = useAppToast()
-
 const pendingActions = ref<Set<string>>(new Set())
 
 async function withPending(key: string, fn: () => Promise<void>): Promise<void> {
@@ -1074,7 +1073,7 @@ onMounted(async () => {
                             :class="[
                               'px-3 py-1 text-xs rounded-md transition-colors',
                               btn.action === 'request-again'
-                                ? 'bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50'
+                                ? 'min-w-36 bg-white border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50'
                                 : 'text-gray-600 hover:bg-gray-50 disabled:opacity-50'
                             ]"
                             @click="handleFeedAction(event, btn.action)"
@@ -1087,7 +1086,7 @@ onMounted(async () => {
                         <button
                           v-if="event.reportRow.id"
                           :disabled="resyncingIds.has(event.reportRow.id)"
-                          class="px-3 py-1 text-xs rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                          class="min-w-36 px-3 py-1 text-xs rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-50 transition-colors"
                           @click="resyncReport(event.reportRow.id)"
                         >
                           {{ resyncingIds.has(event.reportRow.id) ? 'Синхронизация…' : 'Пересинхронизировать' }}
