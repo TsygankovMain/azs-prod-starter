@@ -12,6 +12,13 @@ export default defineNuxtConfig({
 
   ssr: false,
 
+  // Components in nested dirs (reports/, photos/, help/) are referenced by bare
+  // filename across the app; Nuxt's default path-prefixed names (ReportsR1Summary)
+  // silently render nothing in production builds.
+  components: [
+    { path: '~/components', pathPrefix: false }
+  ],
+
   devtools: { enabled: false },
 
   runtimeConfig: {
