@@ -6,6 +6,20 @@
 
 ---
 
+## Фикс-спринт 5 «Канал бота + добивание смоука» — 2026-06-11 (ветка feature/sprints-stability-ux)
+
+Спека: `docs/superpowers/specs/2026-06-11-fix-sprint-5-design.md`, план: `…/2026-06-11-fix-sprint-5-execution.md`, бэклог: BUG-009…018 — все закрыты (`…/2026-06-11-bug-backlog.md`). Конвейер Sonnet/Opus/Haiku; верификация: 508/508 бэк-тестов ×2, lint 0 новых, build чистый, финальное интеграционное Opus-ревью — READY_FOR_RELEASE.
+
+- **Канал бота восстановлен (BUG-018/009):** плоский формат keyboard по доке (`{BOT_ID, BUTTONS, {TYPE:'NEWLINE'}}` — корень PARAM_KEYBOARD_ERROR устранён); fallback в пуш стал видимым (warn `bot_channel_degraded`, пометка `delivered via notify fallback:` в dispatch_log.error_text, синий бейдж «Пуш» в тех-таблице); self-heal BOT_NOT_FOUND→ensureBot→retry; ручка `POST /api/admin/bot/reregister` + кнопка в настройках (обновляет живой процесс: setBotId + env).
+- **Зависшие слоты:** reserve() пишет zone-correct scheduled_at (buildZonedDatetime, таймзона портала); просроченные «Запланирован» исполняются или честно закрываются `skipped: no auth context…`; будущие manual-слоты защищены от досрочной отправки; ручная рассылка без auth-контекста → 503 `BOT_UNAVAILABLE` без создания слота.
+- **Превью (BUG-013):** скачивание с Диска переведено на admin-контекст; `downloadFileContent` получил 401→refresh→retry (once, не для webhook); тайлы со сбоем превью показывают «Не удалось / Нажмите для повтора» (грид/лайтбокс/журнал).
+- **Карточка АЗС (BUG-014):** list() фильтрует по `updated_at` вместо `created_at` (+регресс-тесты). ⚠️ Поведенческий сдвиг: тех-таблица проверяющего теперь датируется по последнему изменению статуса — строки, разосланные до окна, но завершённые внутри окна, стали видимы (это осознанно). Прод-корень 0/0 подтверждается смоуком (Network-развилка в бэклоге).
+- **Человеческие ошибки рассылки (BUG-011):** `dispatchErrorReasons.classifyDispatchError` (7 кодов) + errorReason/deliveredViaFallback в GET /api/reports + тексты/«Подробности» в тех-таблице и ленте событий.
+- **Гигиена логов (BUG-017):** maskSecret/maskAuthFields на install/getToken (токены — префикс 6 симв.); throttledLogger — повторяющиеся фоновые ошибки логируются 1 раз/5 мин со счётчиком (шторм wrong_client 2108 строк больше невозможен).
+- **Скорость выборок (BUG-010):** listCrmItems в режиме huge-data (`start=-1`, ORDER BY ID, курсор `>id`), legacy-фоллбек при кастомном order; сигнатура неизменна — crmSync/справочники/кандидаты прозрачно ускорены.
+- **Мелочи:** названия категорий и АЗС в подписях ленты/журнала (BUG-012, admin-контекст для azsTitle в /feed); кнопка «Назад» в отчётах и на странице причины (BUG-016); удалены отладочные чипы «источник:» (BUG-015).
+- **Вне кода (продакт):** перевбить CLIENT_ID/CLIENT_SECRET в панели Timeweb (лечит шторм `wrong_client`; критерий — час простоя без него в логах).
+
 ## Спринт «Фотолента + фикс-пакет» — 2026-06-11 (ветка feature/sprints-stability-ux)
 
 План: `docs/superpowers/plans/2026-06-11-sprint-4-photo-feed-and-fixes.md`, спека фичи: `docs/superpowers/specs/2026-06-11-photo-feed-design.md`. Выполнен агентским конвейером (Sonnet/Opus/Haiku) волнами; два Opus-ревью поймали блокеры до релиза (структура fields imbot.v2.File.upload; контракт ответа POST → дубли). Итог верификации: 400/400 бэк-тестов, сборка фронта чистая, финальное интеграционное ревью — READY_FOR_SMOKE. Гейты: смоук-чеклист (15 сценариев) с продактом → команда на релиз (merge в master = автодеплой).
