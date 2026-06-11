@@ -10,7 +10,7 @@
  */
 import { nextTick, watch } from 'vue'
 
-const { state, answer } = useConfirm()
+const { state, answer } = useConfirmDialogState()
 
 const isOpen = computed(() => state.value !== null)
 
@@ -41,12 +41,10 @@ function onUpdateOpen(val: boolean) {
     :title="state?.title"
     :description="state?.text"
     :dismissible="true"
-    role="dialog"
-    :aria-modal="true"
     @update:open="onUpdateOpen"
   >
     <template #footer="{ close: modalClose }">
-      <div class="flex justify-end gap-2 pt-2">
+      <div class="flex flex-wrap justify-end gap-2 pt-2">
         <B24Button
           ref="cancelButtonRef"
           color="air-secondary-no-accent"

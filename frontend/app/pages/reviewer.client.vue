@@ -498,6 +498,7 @@ const toggleAzsSelection = (value: string) => {
 }
 
 const sendManualRequest = async () => {
+  if (pendingActions.value.has('manual-send')) return
   manualError.value = ''
   manualSuccess.value = ''
 
@@ -509,11 +510,12 @@ const sendManualRequest = async () => {
   const count = manualRequest.azsIds.length
   const ok = await confirm({
     title: 'Отправить запрос отчёта?',
-    text: `Push-уведомление получат ${count} АЗС. Отменить рассылку будет нельзя.`,
+    text: `Push-уведомление будет отправлено ${count} АЗС сразу.`,
     confirmLabel: `Отправить (${count})`,
   })
   if (!ok) return
 
+  pendingActions.value = new Set(pendingActions.value).add('manual-send')
   try {
     const now = new Date()
     const to2 = (n: number) => String(n).padStart(2, '0')
@@ -544,6 +546,10 @@ const sendManualRequest = async () => {
     await loadAll()
   } catch (error) {
     manualError.value = extractApiError(error, 'Ошибка при отправке задания')
+  } finally {
+    const next = new Set(pendingActions.value)
+    next.delete('manual-send')
+    pendingActions.value = next
   }
 }
 
@@ -702,15 +708,17 @@ const runTimeout = async () => {
   })
   if (!ok) return
 
-  timeoutMessage.value = ''
-  try {
-    const result = await apiStore.runTimeoutWatcher(200)
-    const summaryResult = result.summary as Record<string, unknown>
-    timeoutMessage.value = `Просрочки обработаны: total=${String(summaryResult.total || 0)}, expired=${String(summaryResult.expired || 0)}`
-    await loadAll()
-  } catch (error) {
-    timeoutMessage.value = error instanceof Error ? error.message : 'Ошибка'
-  }
+  await withPending('run-timeout', async () => {
+    timeoutMessage.value = ''
+    try {
+      const result = await apiStore.runTimeoutWatcher(200)
+      const summaryResult = result.summary as Record<string, unknown>
+      timeoutMessage.value = `Просрочки обработаны: total=${String(summaryResult.total || 0)}, expired=${String(summaryResult.expired || 0)}`
+      await loadAll()
+    } catch (error) {
+      timeoutMessage.value = error instanceof Error ? error.message : 'Ошибка'
+    }
+  })
 }
 
 // ── Pending-state helper (S2-02) ────────────────────────────────────────────
@@ -1364,10 +1372,10 @@ onMounted(async () => {
 
                 <button
                   class="w-full px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-medium"
-                  :disabled="manualRequest.azsIds.length === 0"
+                  :disabled="manualRequest.azsIds.length === 0 || pendingActions.has('manual-send')"
                   @click="sendManualRequest"
                 >
-                  {{ manualRequest.azsIds.length > 0 ? `Запросить у ${manualRequest.azsIds.length} АЗС` : 'Выберите АЗС' }}
+                  {{ pendingActions.has('manual-send') ? 'Отправка…' : manualRequest.azsIds.length > 0 ? `Запросить у ${manualRequest.azsIds.length} АЗС` : 'Выберите АЗС' }}
                 </button>
 
                 <B24Alert
@@ -1511,10 +1519,11 @@ onMounted(async () => {
               </table>
             </div>
             <button
-              class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium"
+              class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium"
+              :disabled="pendingActions.has('run-timeout')"
               @click="runTimeout"
             >
-              Проверить просрочки
+              {{ pendingActions.has('run-timeout') ? 'Проверка…' : 'Проверить просрочки' }}
             </button>
             <B24Alert
               v-if="timeoutMessage"
