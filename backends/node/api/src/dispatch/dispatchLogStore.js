@@ -53,6 +53,26 @@ const createPostgresStore = (pool) => {
       return { reserved: true, id: Number(result.rows[0].id) };
     },
 
+    /**
+     * List dispatch_log rows whose status is still 'reserved' (planned/not yet
+     * executed) and whose created_at is older than `staleBefore`. Used by the
+     * stale-slot finisher in dispatchScheduler to retry or fail hanging entries.
+     *
+     * @param {{ staleBefore: Date }} args
+     * @returns {Promise<Array<{id, slot_key, azs_id, admin_user_id, status, created_at}>>}
+     */
+    async listStalePlanned({ staleBefore }) {
+      const result = await query(
+        `SELECT id, slot_key, azs_id, admin_user_id, status, created_at
+         FROM dispatch_log
+         WHERE status = $1
+           AND created_at < $2
+         ORDER BY created_at ASC`,
+        ['reserved', staleBefore]
+      );
+      return result.rows || [];
+    },
+
     async markDone({ id, reportItemId, jitterMinutes, scheduledAt, deadlineAt }) {
       await query(
         `UPDATE dispatch_log
@@ -116,6 +136,26 @@ const createMysqlStore = (pool) => {
       }
 
       return { reserved: true, id: Number(result.insertId) || null };
+    },
+
+    /**
+     * List dispatch_log rows whose status is still 'reserved' (planned/not yet
+     * executed) and whose created_at is older than `staleBefore`. Used by the
+     * stale-slot finisher in dispatchScheduler to retry or fail hanging entries.
+     *
+     * @param {{ staleBefore: Date }} args
+     * @returns {Promise<Array<{id, slot_key, azs_id, admin_user_id, status, created_at}>>}
+     */
+    async listStalePlanned({ staleBefore }) {
+      const [rows] = await query(
+        `SELECT id, slot_key, azs_id, admin_user_id, status, created_at
+         FROM dispatch_log
+         WHERE status = ?
+           AND created_at < ?
+         ORDER BY created_at ASC`,
+        ['reserved', serializeDate(staleBefore)]
+      );
+      return rows || [];
     },
 
     async markDone({ id, reportItemId, jitterMinutes, scheduledAt, deadlineAt }) {

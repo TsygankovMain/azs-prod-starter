@@ -5,6 +5,7 @@ import { ensureRootFolder, isSupportedPhotoUpload, uploadPhoto } from '../disk/d
 import { updateReportCrmItem } from './reportCrmSync.js';
 import { generateDailyPlan } from '../dispatch/dispatchPlanGenerator.js';
 import { createAnalyticsRouter } from './analyticsRoutes.js';
+import { assertDispatchAvailable } from '../dispatch/dispatchScheduler.js';
 
 import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from '../shared/transientErrors.js';
 import {
@@ -15,6 +16,7 @@ import {
   PHOTO_CODE_NOT_REQUIRED,
   PHOTO_EXIF_TOO_OLD,
   REPORT_PHOTOS_MISSING,
+  BOT_UNAVAILABLE,
 } from './errorCodes.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -1217,6 +1219,18 @@ export const createReportsRouter = ({
     }
 
     try {
+      // Guard: refuse to create a manual dispatch slot when no auth context is
+      // available. Without a live context the slot would be created and then
+      // immediately hang in 'reserved' status (the BUG-009 root cause).
+      // assertDispatchAvailable throws { code: 'BOT_UNAVAILABLE', statusCode: 503 }
+      // when neither admin-session nor webhook context is usable.
+      await assertDispatchAvailable({
+        getRuntimeContext: async () => {
+          const entry = await authContextStore.getLastAdminContext();
+          return entry?.context ? { key: entry.key, ...entry.context } : {};
+        }
+      });
+
       const settings = await settingsStore.read();
       const { candidates, failedItems } = await resolveManualCandidates({
         payload: req.body || {},
@@ -1251,6 +1265,8 @@ export const createReportsRouter = ({
       const statusCode = Number(error?.statusCode || 500);
       return res.status(statusCode).json({
         error: error?.code || 'manual_report_failed',
+        // Propagate typed errorCode for BOT_UNAVAILABLE and similar typed errors
+        ...(error?.code === BOT_UNAVAILABLE ? { errorCode: BOT_UNAVAILABLE } : {}),
         message: error.message,
         details: error?.details || undefined
       });

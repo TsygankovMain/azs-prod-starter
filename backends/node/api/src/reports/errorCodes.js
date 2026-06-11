@@ -89,3 +89,18 @@ export const REPORT_PHOTOS_MISSING = 'REPORT_PHOTOS_MISSING';
  * meta: { azsId: string, photoReportId: number, photoCode: string, actualAzsId: string }
  */
 export const PHOTOS_AZS_MISMATCH = 'PHOTOS_AZS_MISMATCH';
+
+/**
+ * BOT_UNAVAILABLE
+ * The manual dispatch was rejected because no active Bitrix24 auth context is
+ * available — the administrator session has expired and no webhook fallback is
+ * configured. The request is aborted WITHOUT creating a slot (so it cannot hang
+ * in 'reserved' status forever).
+ *
+ * What the user sees (useErrorText):
+ *   'Рассылка сейчас недоступна: нет связи с Битрикс24. Попробуйте позже или
+ *    переоткройте приложение.'
+ *
+ * HTTP status: 503 Service Unavailable.
+ */
+export const BOT_UNAVAILABLE = 'BOT_UNAVAILABLE';

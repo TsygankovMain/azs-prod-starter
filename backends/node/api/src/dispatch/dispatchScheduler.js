@@ -1,5 +1,45 @@
 import { createGuardedTick } from '../shared/guardedTick.js';
 
+/**
+ * Stale-planned slot threshold in minutes (default 30).
+ * Slots whose status is still 'reserved' more than this many minutes after
+ * they were created are considered stale and get finished (executed or failed).
+ * Override with DISPATCH_STALE_PLANNED_MINUTES env variable.
+ */
+const STALE_PLANNED_MINUTES_DEFAULT = 30;
+
+/**
+ * assertDispatchAvailable — guard helper for callers that need a live auth/dispatch
+ * context before creating a manual dispatch slot.
+ *
+ * Throws a typed error (code 'BOT_UNAVAILABLE', statusCode 503) when no usable
+ * context is available. Callers in the service layer should invoke this before
+ * initiating a manual dispatch. If the entry point is in server.js (which is
+ * owned by another agent), wire the helper call in the service layer instead of
+ * the route handler — see the comment in W1-3 spec.
+ *
+ * @param {{ getRuntimeContext: () => Promise<object>, getBackgroundContext?: () => Promise<object> }} opts
+ * @throws {{ message: string, code: 'BOT_UNAVAILABLE', statusCode: 503 }}
+ */
+export const assertDispatchAvailable = async ({ getRuntimeContext, getBackgroundContext = null }) => {
+  // Inline helper — mirror of hasUsableContext inside createDispatchScheduler
+  const isUsable = (ctx) => Boolean(ctx && (ctx.isWebhook || String(ctx.authId || '').trim()));
+
+  let ctx = null;
+  if (typeof getBackgroundContext === 'function') {
+    ctx = await getBackgroundContext().catch(() => null);
+    if (isUsable(ctx)) return; // webhook context is live
+  }
+
+  ctx = await getRuntimeContext().catch(() => null);
+  if (isUsable(ctx)) return; // admin session context is live
+
+  const err = new Error('Dispatch context unavailable — no active Bitrix24 session');
+  err.code = 'BOT_UNAVAILABLE';
+  err.statusCode = 503;
+  throw err;
+};
+
 export const createDispatchScheduler = ({
   dispatchService,
   getCandidates,
@@ -21,6 +61,11 @@ export const createDispatchScheduler = ({
   planModeEnabled = String(process.env.DISPATCH_PLAN_MODE_ENABLED ?? 'true').trim().toLowerCase() !== 'false',
   planGenerationCron = process.env.DISPATCH_PLAN_GENERATION_CRON || '1 0 * * *',
   executeBatchLimit = Number(process.env.DISPATCH_EXECUTE_BATCH_LIMIT || 20),
+  // Stale planned-slot finisher: slots with status 'reserved' older than this
+  // threshold are retried (context live) or marked failed (context dead).
+  stalePlannedMinutes = Number(process.env.DISPATCH_STALE_PLANNED_MINUTES || STALE_PLANNED_MINUTES_DEFAULT),
+  // dispatchLogStore: optional, needed for stale-slot finisher
+  dispatchLogStore = null,
   // Resilience deps (all optional, backward-compatible):
   //  - getBackgroundContext: a context for background tasks (generation +
   //    execution) that does NOT depend on a per-user OAuth session — typically
@@ -416,11 +461,139 @@ export const createDispatchScheduler = ({
     return executeDuePlans();
   };
 
+  // ---------------------------------------------------------------------------
+  // Stale-planned finisher (BUG-009)
+  // ---------------------------------------------------------------------------
+  // At each tick, look for dispatch_log rows that are still 'reserved' but were
+  // created more than `stalePlannedMinutes` minutes ago. These are slots whose
+  // original send-time tick was missed (e.g. no auth context available at the
+  // moment of the scheduled send). Depending on the current context:
+  //   - context live  → dispatch via dispatchService (normal send path)
+  //   - context dead  → mark failed with 'skipped: no auth context at send time'
+  //
+  // Idempotent: once a row is failed/done it no longer matches the WHERE clause.
+  // ---------------------------------------------------------------------------
+  const finishStalePlannedSlots = async () => {
+    if (!dispatchLogStore || typeof dispatchLogStore.listStalePlanned !== 'function') {
+      return { stale: 0, executed: 0, failed: 0 };
+    }
+
+    const staleBefore = new Date(nowFn().getTime() - stalePlannedMinutes * 60 * 1000);
+    let rows;
+    try {
+      rows = await dispatchLogStore.listStalePlanned({ staleBefore });
+    } catch (error) {
+      logger.warn('dispatchScheduler: finishStalePlannedSlots: listStalePlanned failed', { message: error.message });
+      return { stale: 0, executed: 0, failed: 0 };
+    }
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return { stale: 0, executed: 0, failed: 0 };
+    }
+
+    logger.warn('dispatchScheduler: stale planned slots found', {
+      count: rows.length,
+      stalePlannedMinutes,
+      staleBefore: staleBefore.toISOString()
+    });
+
+    const context = await resolveBackgroundContext();
+    const contextUsable = hasUsableContext(context);
+
+    let executed = 0;
+    let failed = 0;
+
+    for (const row of rows) {
+      if (!contextUsable) {
+        try {
+          await dispatchLogStore.markFailed({
+            id: row.id,
+            errorText: 'skipped: no auth context at send time'
+          });
+          failed += 1;
+          logger.warn('dispatchScheduler: stale slot marked failed — no auth context', {
+            id: row.id,
+            slotKey: row.slot_key,
+            azsId: row.azs_id
+          });
+        } catch (markError) {
+          logger.warn('dispatchScheduler: stale slot markFailed error', { id: row.id, message: markError.message });
+        }
+        continue;
+      }
+
+      // Context is live — attempt dispatch through the normal service path.
+      // Extract slotDate + slotHHmm from the stored slot_key so the slot is
+      // reproduced correctly (key format: [manual:]YYYY-MM-DD:HHmm).
+      try {
+        const rawKey = String(row.slot_key || '');
+        const keyParts = rawKey.split(':');
+        // strip optional 'manual' prefix
+        const dateHhmmParts = keyParts[0].toLowerCase() === 'manual' ? keyParts.slice(1) : keyParts;
+        const slotDate = dateHhmmParts[0] || '';
+        const slotHHmm = dateHhmmParts[1] || '';
+
+        const result = await dispatchService.dispatchBatch({
+          candidates: [{
+            azsId: String(row.azs_id),
+            adminUserId: Number(row.admin_user_id),
+            slotDate,
+            slotHHmm
+          }],
+          trigger: rawKey.toLowerCase().startsWith('manual:') ? 'manual' : 'auto',
+          context
+        });
+
+        const item = result?.items?.[0];
+        if (item?.ok || item?.duplicate) {
+          executed += 1;
+          logger.info('dispatchScheduler: stale slot executed', {
+            id: row.id,
+            slotKey: row.slot_key,
+            azsId: row.azs_id,
+            duplicate: Boolean(item.duplicate)
+          });
+        } else {
+          // dispatchBatch already marked the slot failed internally; count it
+          failed += 1;
+          logger.warn('dispatchScheduler: stale slot dispatch returned not-ok', {
+            id: row.id,
+            slotKey: row.slot_key,
+            azsId: row.azs_id,
+            error: item?.error
+          });
+        }
+      } catch (dispatchError) {
+        // Best-effort: try to mark failed if possible
+        try {
+          await dispatchLogStore.markFailed({
+            id: row.id,
+            errorText: `stale dispatch error: ${dispatchError.message || String(dispatchError)}`
+          });
+        } catch { /* ignore secondary error */ }
+        failed += 1;
+        logger.warn('dispatchScheduler: stale slot dispatch threw', {
+          id: row.id,
+          slotKey: row.slot_key,
+          azsId: row.azs_id,
+          message: dispatchError.message
+        });
+      }
+    }
+
+    return { stale: rows.length, executed, failed };
+  };
+
   const runOnce = async () => {
     // Safety switch: when plan mode is ON, ensure today's plan then execute due
     // rows instead of the old slot-matching behavior. The old body below is untouched.
     if (planModeEnabled) {
-      return ensurePlanThenExecute();
+      const staleResult = await finishStalePlannedSlots().catch((err) => {
+        logger.warn('dispatchScheduler: finishStalePlannedSlots threw', { message: err.message });
+        return { stale: 0, executed: 0, failed: 0 };
+      });
+      const planResult = await ensurePlanThenExecute();
+      return { ...planResult, stale: staleResult };
     }
 
     const settings = settingsStore ? await settingsStore.read() : {};
@@ -513,6 +686,10 @@ export const createDispatchScheduler = ({
       };
     }
     lastSlotKey = slotKey;
+    // Also finish any stale reserved slots (best-effort, does not block)
+    finishStalePlannedSlots().catch((err) => {
+      logger.warn('dispatchScheduler: finishStalePlannedSlots threw (legacy path)', { message: err.message });
+    });
     return dispatchService.dispatchBatch({ candidates, trigger: 'auto', context });
   };
 
@@ -641,7 +818,9 @@ export const createDispatchScheduler = ({
     stop,
     // Exposed for direct invocation (tests, boot bootstrap, manual trigger).
     // The guarded variant is used so the public interface is also overlap-safe.
-    runOnce: guardedDispatchTick
+    runOnce: guardedDispatchTick,
+    // Exposed for tests and manual invocation.
+    finishStalePlannedSlots
   };
 };
 
