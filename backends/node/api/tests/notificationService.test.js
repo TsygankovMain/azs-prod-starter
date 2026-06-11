@@ -124,6 +124,94 @@ test('notifyDispatch resolves bot id dynamically when env bot id is empty', asyn
   assert.equal(botCalls[0].payload.botId, 88);
 });
 
+test('notifyDispatch in bot-mode forwards keyboard to imbot.v2.Chat.Message.send', async () => {
+  const botCalls = [];
+
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod(method, payload) {
+        botCalls.push({ method, payload });
+        return { id: 6001 };
+      },
+      async notifyUser() {
+        throw new Error('notify fallback should not be called');
+      }
+    },
+    mode: 'bot',
+    botId: 77
+  });
+
+  const keyboard = [[{ TEXT: 'Открыть приложение', LINK: '/marketplace/view/local.app/?params%5BreportId%5D=99' }]];
+
+  const result = await service.notifyDispatch({
+    userId: 22,
+    azsId: 'azs-kb-1',
+    deadlineAt: '2026-06-01T09:00:00.000Z',
+    timezone: 'Europe/Moscow',
+    keyboard
+  });
+
+  assert.equal(result.channel, 'bot');
+  assert.equal(botCalls.length, 1);
+  assert.deepEqual(botCalls[0].payload.fields.keyboard, keyboard, 'keyboard must be forwarded as-is to imbot.v2.Chat.Message.send');
+});
+
+test('notify in bot-mode with keyboard forwards keyboard to API call', async () => {
+  const botCalls = [];
+
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod(method, payload) {
+        botCalls.push({ method, payload });
+        return { id: 6002 };
+      }
+    },
+    mode: 'bot',
+    botId: 88
+  });
+
+  const keyboard = [[{ TEXT: 'Указать причину', LINK: '/marketplace/view/local.app/?params%5BreportId%5D=10' }]];
+
+  const result = await service.notify({
+    userId: 33,
+    message: 'Отчёт просрочен. Пожалуйста, укажите причину.',
+    keyboard
+  });
+
+  assert.equal(result.channel, 'bot');
+  assert.equal(botCalls.length, 1);
+  assert.deepEqual(botCalls[0].payload.fields.keyboard, keyboard, 'keyboard must be passed through in bot mode');
+});
+
+test('notify in notify-mode ignores keyboard — no keyboard field in notifyUser call', async () => {
+  const notifyCalls = [];
+
+  const service = createNotificationService({
+    bitrixClient: {
+      async notifyUser(payload) {
+        notifyCalls.push(payload);
+        return { ok: true };
+      }
+    },
+    mode: 'notify'
+  });
+
+  const keyboard = [[{ TEXT: 'Открыть приложение', LINK: '/marketplace/view/local.app/?params%5BreportId%5D=99' }]];
+
+  const result = await service.notifyDispatch({
+    userId: 44,
+    azsId: 'azs-notify-1',
+    deadlineAt: '2026-06-01T09:00:00.000Z',
+    timezone: 'Europe/Moscow',
+    keyboard
+  });
+
+  assert.equal(result.channel, 'notify', 'must use notify channel');
+  assert.equal(notifyCalls.length, 1, 'notifyUser must be called once');
+  // keyboard is not part of the notifyUser contract — no keyboard field expected
+  assert.equal(notifyCalls[0].keyboard, undefined, 'keyboard must NOT be forwarded in notify mode');
+});
+
 test('bitrix client auth id can be updated at runtime', async () => {
   const calls = [];
   const fetchOriginal = globalThis.fetch;
