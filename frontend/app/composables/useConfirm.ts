@@ -23,6 +23,7 @@ const state = ref<ConfirmState | null>(null)
 
 export function useConfirm() {
   function confirm(options: ConfirmOptions): Promise<boolean> {
+    state.value?.resolve(false); // защита от зависшего await при перезаписи диалога
     return new Promise((resolve) => {
       state.value = { ...options, resolve }
     })

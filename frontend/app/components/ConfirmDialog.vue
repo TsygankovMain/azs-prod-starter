@@ -15,12 +15,14 @@ const { state, answer } = useConfirm()
 const isOpen = computed(() => state.value !== null)
 
 // Focus the cancel button when the dialog opens for keyboard accessibility
-const cancelButtonRef = ref<HTMLButtonElement | null>(null)
+const cancelButtonRef = ref<{ $el?: HTMLElement } | null>(null)
 
 watch(isOpen, (val) => {
   if (val) {
     nextTick(() => {
-      cancelButtonRef.value?.focus()
+      const el = cancelButtonRef.value?.$el
+      const target = el && el.tagName === 'BUTTON' ? el : el?.querySelector?.('button')
+      ;(target as HTMLElement | null | undefined)?.focus?.()
     })
   }
 })
