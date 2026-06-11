@@ -417,6 +417,54 @@ export const useApiStore = defineStore(
       })
     }
 
+    type PhotoFeedItem = {
+      reportId: number
+      azsId: string
+      azsTitle?: string | null
+      photoCode: string
+      exifAt: string | null
+      uploadedAt: string | null
+      remark: { dt: string; recipientName: string; message: string; senderName: string } | null
+    }
+
+    type PhotoCategory = {
+      code: string
+      title: string
+    }
+
+    type PhotoRecipients = {
+      manager: { id: number; name: string } | null
+      admin: { id: number; name: string } | null
+    }
+
+    const getPhotoFeed = async (params: {
+      dateFrom?: string
+      dateTo?: string
+      azsId?: string[]
+      photoCode?: string[]
+      remarks?: 'all' | 'with' | 'without'
+      limit?: number
+      cursor?: string
+    } = {}): Promise<{ items: PhotoFeedItem[]; nextCursor: string | null }> => {
+      return await $api('/api/reports/photos/feed', {
+        query: params,
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const getPhotoCategories = async (): Promise<{ items: PhotoCategory[] }> => {
+      return await $api('/api/reports/photos/categories', {
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const getPhotoRecipients = async (azsId: string): Promise<PhotoRecipients> => {
+      return await $api('/api/reports/photos/recipients', {
+        query: { azsId },
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
     const getPhotoPreviewObjectUrl = async (reportId: number, photoCode: string): Promise<string> => {
       const blob = await $fetch(`${apiUrl}/api/reports/photos/${reportId}/${encodeURIComponent(photoCode)}/preview`, {
         headers: { Authorization: `Bearer ${tokenJWT.value}` },
@@ -493,7 +541,10 @@ export const useApiStore = defineStore(
       getDayPhotos,
       getPhotoPreviewObjectUrl,
       submitReason,
-      getReasonCounts
+      getReasonCounts,
+      getPhotoFeed,
+      getPhotoCategories,
+      getPhotoRecipients
     }
   }
 )
