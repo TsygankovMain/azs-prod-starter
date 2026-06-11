@@ -77,7 +77,7 @@ watch(period, load)
       <!-- 6 строк рейтинга -->
       <div v-for="n in 6" :key="n" class="flex gap-2 items-center px-3 py-2.5 border-b border-gray-50">
         <SkeletonBlock height="1rem" width="4%" />
-        <div class="flex flex-col gap-1" style="width:22%">
+        <div class="flex flex-col gap-1 w-[22%]">
           <SkeletonBlock height="0.875rem" width="80%" />
           <SkeletonBlock height="0.75rem" width="50%" />
         </div>
