@@ -50,7 +50,6 @@ watch(period, load)
         <h1 class="text-[21px] font-semibold">Рейтинг дисциплины АЗС</h1>
         <p class="text-sm text-gray-500 mt-0.5">Кто стабильно держит порядок, а кому нужна поддержка</p>
       </div>
-      <span class="text-[11.5px] text-gray-400 bg-white border border-gray-200 px-2 py-1 rounded-full">источник: агрегация dispatch_log по АЗС</span>
     </div>
 
     <div class="flex gap-2.5 mb-4 flex-wrap">

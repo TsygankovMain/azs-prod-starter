@@ -13,6 +13,8 @@ type ReportRow = {
   scheduledAt: string | null
   deadlineAt: string | null
   errorText: string | null
+  errorReason: string | null
+  deliveredViaFallback: boolean
   diskFolderId: number | null
   createdAt: string | null
   updatedAt: string | null
@@ -290,6 +292,9 @@ const deriveEvents = (): FeedEvent[] => {
         reportRow: report
       })
     } else if (report.status === 'failed' && report.updatedAt) {
+      const reasonLabel = report.errorReason
+        ? dispatchReasonText(report.errorReason)
+        : (report.errorText ? 'Не удалось отправить' : undefined)
       events.push({
         id: `failed-${report.id}`,
         type: 'failed',
@@ -297,7 +302,7 @@ const deriveEvents = (): FeedEvent[] => {
         azsId: report.azsId,
         azsTitle,
         reportRow: report,
-        subtitle: report.errorText ? `Причина: ${report.errorText}` : undefined
+        subtitle: reasonLabel ? `Причина: ${reasonLabel}` : undefined
       })
     }
   }
@@ -1491,6 +1496,7 @@ onMounted(async () => {
                     <th class="py-2 pr-3">Время рассылки</th>
                     <th class="py-2 pr-3">Срок сдачи</th>
                     <th class="py-2 pr-3">Статус</th>
+                    <th class="py-2 pr-3">Ошибка / канал</th>
                     <th class="py-2 pr-3">Папка фото</th>
                     <th class="py-2 pr-3">Действия</th>
                   </tr>
@@ -1513,6 +1519,36 @@ onMounted(async () => {
                           'Запланирован'
                         }}
                       </B24Badge>
+                    </td>
+                    <!-- Error reason / fallback channel column -->
+                    <td class="py-2 pr-3 max-w-[200px]">
+                      <!-- Fallback badge for successfully delivered via notify -->
+                      <template v-if="item.deliveredViaFallback && item.status !== 'failed'">
+                        <span
+                          class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 text-xs font-medium"
+                          :title="dispatchReasonText('NOTIFY_FALLBACK')"
+                        >
+                          Пуш
+                        </span>
+                      </template>
+                      <!-- Error reason for failed items -->
+                      <template v-else-if="item.errorReason">
+                        <div class="flex flex-col gap-1">
+                          <span
+                            class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 text-red-700 text-xs font-medium"
+                            :title="dispatchReasonText(item.errorReason)"
+                          >
+                            {{ dispatchReasonText(item.errorReason) }}
+                          </span>
+                          <details v-if="item.errorText" class="text-xs text-gray-400">
+                            <summary class="[&::-webkit-details-marker]:hidden list-none cursor-pointer hover:text-gray-600 select-none">Подробности</summary>
+                            <p class="mt-0.5 font-mono break-all text-xs text-gray-500">{{ item.errorText }}</p>
+                          </details>
+                        </div>
+                      </template>
+                      <template v-else>
+                        <span class="text-gray-300">—</span>
+                      </template>
                     </td>
                     <td class="py-2 pr-3">{{ item.diskFolderId || '—' }}</td>
                     <td class="py-2 pr-3">

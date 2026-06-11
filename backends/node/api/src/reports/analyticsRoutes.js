@@ -10,7 +10,7 @@ const canReview = (req) => (
   Boolean(req.accessContext?.capabilities?.settings)
 );
 
-export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClient, settingsStore, diskApi }) => {
+export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClient, settingsStore, diskApi, getAdminContext = null }) => {
   if (!analyticsStore) throw new Error('analyticsStore is required');
   const router = express.Router();
 
@@ -100,8 +100,19 @@ export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClie
         return res.status(501).json({ error: 'preview_not_supported', message: 'diskApi.downloadFileContent is not available' });
       }
 
-      const context = req.bitrixContext || {};
-      const { base64, name } = await diskApi.downloadFileContent(photo.diskObjectId, context);
+      // Use admin context for disk downloads: user tokens expire quickly and
+      // may not have disk read permissions. Fall back to request context when
+      // admin context is unavailable (e.g. no authId stored).
+      let diskContext = req.bitrixContext || {};
+      if (typeof getAdminContext === 'function') {
+        try {
+          const adminCtx = await getAdminContext();
+          if (adminCtx && String(adminCtx.authId || '').trim()) {
+            diskContext = adminCtx;
+          }
+        } catch { /* best-effort — fall back to request context */ }
+      }
+      const { base64, name } = await diskApi.downloadFileContent(photo.diskObjectId, diskContext);
       const buffer = Buffer.from(String(base64 || ''), 'base64');
       const ext = String(name || '').toLowerCase().split('.').pop();
       const contentType = ext === 'png' ? 'image/png'

@@ -41,6 +41,7 @@ import createReasonForwardingService from './src/notifications/reasonForwardingS
 import { validateRequiredEnv } from './utils/validateEnv.js';
 import { resolvePgSslConfig } from './utils/dbSsl.js';
 import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from './src/shared/transientErrors.js';
+import { maskAuthFields } from './utils/maskSecret.js';
 
 try {
   validateRequiredEnv();
@@ -293,10 +294,16 @@ const notificationService = createNotificationService({
     }
     const registration = await botRegistryService.ensureBot({ authId, context });
     return registration.botId;
+  },
+  ensureBot: async (context = {}) => {
+    const authId = String(context?.authId || '').trim();
+    if (!authId) return { botId: 0 };
+    return botRegistryService.ensureBot({ authId, context });
   }
 });
 const timeoutWatcher = createTimeoutWatcher({
   reportsStore,
+  dispatchLogStore,
   bitrixClient,
   settingsStore,
   notificationService,
@@ -421,6 +428,44 @@ app.post('/api/admin/bot/refresh-avatar', verifyToken, attachAccessContext, asyn
   }
 });
 
+app.post('/api/admin/bot/reregister', verifyToken, attachAccessContext, async (req, res) => {
+  if (!req.accessContext?.capabilities?.settings) {
+    return res.status(403).json({
+      error: 'forbidden',
+      message: 'Admin access required'
+    });
+  }
+  const authId = String(req.bitrixContext?.authId || req.bitrixContext?.auth_id || '').trim();
+  if (!authId) {
+    return res.status(400).json({
+      error: 'auth_id_missing',
+      message: 'Bitrix auth id is required to reregister bot'
+    });
+  }
+  try {
+    const registration = await botRegistryService.ensureBot({
+      authId,
+      context: req.bitrixContext || {},
+      force: true
+    });
+    process.env.BITRIX_BOT_ID = String(registration.botId);
+    if (typeof notificationService.setBotId === 'function') {
+      notificationService.setBotId(registration.botId);
+    }
+    return res.json({
+      ok: true,
+      botId: registration.botId,
+      registered: Boolean(registration.registered),
+      reused: Boolean(registration.reused)
+    });
+  } catch (error) {
+    return res.status(502).json({
+      error: 'bot_reregister_failed',
+      message: error.message
+    });
+  }
+});
+
 app.use('/api/settings', verifyToken, attachAccessContext, createSettingsRouter({ store: settingsStore }));
 app.use('/api/jobs', verifyToken, attachAccessContext, createDispatchRouter({ dispatchService }));
 app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
@@ -437,6 +482,14 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
   diskApi: bitrixClient.diskApi,
   reasonStore,
   reasonForwardingService,
+  getAdminContext,
+  getBackgroundContext: async () => {
+    if (webhookBackgroundContext) {
+      return webhookBackgroundContext;
+    }
+    const entry = await authContextStore.getLastAdminContext();
+    return entry?.context ? { key: entry.key, ...entry.context } : {};
+  },
 }));
 
 app.use('/api/reports/photos', verifyToken, attachAccessContext, createPhotoFeedRouter({
@@ -456,7 +509,7 @@ app.use('/api/photo-remarks', verifyToken, attachAccessContext, createPhotoRemar
 
 app.post('/api/install', async (req, res) => {
   try {
-    console.log('/api/install', req.body);
+    console.log('/api/install', maskAuthFields(req.body));
     const botMode = String(process.env.BITRIX_BOT_MODE || 'notify').trim().toLowerCase();
     const authId = String(req.body?.AUTH_ID || '').trim();
     const refreshToken = String(req.body?.REFRESH_TOKEN || req.body?.REFRESH_ID || '').trim();
@@ -567,7 +620,7 @@ app.post('/api/install', async (req, res) => {
 
 app.post('/api/getToken', async (req, res) => {
   try {
-    console.log('/api/getToken', req.body);
+    console.log('/api/getToken', maskAuthFields(req.body));
     const authId = String(req.body?.AUTH_ID || '').trim();
     const refreshToken = String(req.body?.REFRESH_TOKEN || req.body?.REFRESH_ID || '').trim();
     const domain = String(req.body?.DOMAIN || '').trim().toLowerCase();

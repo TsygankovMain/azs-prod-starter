@@ -478,3 +478,73 @@ test('GET /feed items have azsTitle resolved from bitrix', async () => {
   assert.ok(res._payload?.items[0]?.azsTitle, 'azsTitle should be non-empty');
   assert.equal(res._payload.items[0].azsTitle, 'АЗС Север');
 });
+
+test('GET /feed uses admin context for azsTitle resolver when getAdminContext is provided', async () => {
+  // Verify that getCrmItem is called with the admin context, not the request context
+  let capturedContext;
+  const deps = {
+    ...stubDeps,
+    reportsStore: {
+      async listPhotosFeed() {
+        return {
+          items: [{ reportId: 10, azsId: '42', azsTitle: null, photoCode: 'front', exifAt: null, uploadedAt: '2026-06-11T10:00:00.000Z', photoRowId: 1, remark: null }],
+          nextCursor: null
+        };
+      }
+    },
+    bitrixClient: {
+      ...stubDeps.bitrixClient,
+      async getCrmItem({ id, context }) {
+        capturedContext = context;
+        if (id === 42) return { id: 42, title: 'АЗС Тест' };
+        return null;
+      }
+    },
+    getAdminContext: async () => ({ authId: 'admin-token-123', domain: 'test.bitrix24.ru' })
+  };
+  const router = createPhotoFeedRouter(deps);
+  const handler = getHandler(router, 'get', '/feed');
+  if (!handler) return;
+  // Request context is different from admin context
+  const req = makeReq({ bitrixContext: { authId: 'user-token', domain: 'test.bitrix24.ru' } });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res._payload.items[0].azsTitle, 'АЗС Тест', 'title should be resolved');
+  // Admin context must have been used (not the user request context)
+  assert.equal(capturedContext?.authId, 'admin-token-123', 'resolver must use admin context, not user context');
+});
+
+test('GET /feed falls back to request context when getAdminContext fails', async () => {
+  let capturedContext;
+  const deps = {
+    ...stubDeps,
+    reportsStore: {
+      async listPhotosFeed() {
+        return {
+          items: [{ reportId: 10, azsId: '42', azsTitle: null, photoCode: 'front', exifAt: null, uploadedAt: '2026-06-11T10:00:00.000Z', photoRowId: 1, remark: null }],
+          nextCursor: null
+        };
+      }
+    },
+    bitrixClient: {
+      ...stubDeps.bitrixClient,
+      async getCrmItem({ id, context }) {
+        capturedContext = context;
+        if (id === 42) return { id: 42, title: 'АЗС Фоллбек' };
+        return null;
+      }
+    },
+    getAdminContext: async () => { throw new Error('admin context unavailable'); }
+  };
+  const router = createPhotoFeedRouter(deps);
+  const handler = getHandler(router, 'get', '/feed');
+  if (!handler) return;
+  const req = makeReq({ bitrixContext: { authId: 'user-token-fallback', domain: 'test.bitrix24.ru' } });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res._payload.items[0].azsTitle, 'АЗС Фоллбек', 'title should still be resolved via fallback');
+  // Should have used the request context as fallback
+  assert.equal(capturedContext?.authId, 'user-token-fallback', 'should fall back to request context when admin ctx fails');
+});

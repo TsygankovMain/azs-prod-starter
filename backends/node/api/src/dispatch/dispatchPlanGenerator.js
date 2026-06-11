@@ -84,7 +84,7 @@ const tzOffsetMs = (date, timeZone) => {
  * @param {string|undefined} timeZone IANA tz or falsy for UTC legacy
  * @returns {Date}
  */
-const buildZonedDatetime = (planDate, hhmm, timeZone) => {
+export const buildZonedDatetime = (planDate, hhmm, timeZone) => {
   const h = Number(String(hhmm).slice(0, 2));
   const m = Number(String(hhmm).slice(2, 4));
   const utcGuess = new Date(`${planDate}T00:00:00.000Z`);
@@ -269,4 +269,4 @@ export const generateDailyPlan = async ({
   };
 };
 
-export default { computeExecuteAt, normalizeBaseTimes, generateDailyPlan };
+export default { computeExecuteAt, normalizeBaseTimes, generateDailyPlan, buildZonedDatetime };

@@ -36,9 +36,38 @@ const ERROR_MESSAGES: Record<string, string> = {
   RECIPIENT_NOT_SET: 'У АЗС не указан получатель. Выберите администратора.',
   REMARK_NOT_FOUND: 'Замечание не найдено.',
   PHOTOS_AZS_MISMATCH: 'Часть выбранных фото относится к другой АЗС. Обновите страницу и попробуйте снова.',
+  BOT_UNAVAILABLE: 'Рассылка сейчас недоступна: нет связи с Битрикс24. Попробуйте позже или переоткройте приложение.',
 }
 
 const DEFAULT_FALLBACK = 'Не получилось. Попробуйте ещё раз или сообщите администратору.'
+
+/**
+ * Human-readable RU texts for dispatch error reason codes returned by the backend
+ * in the `errorReason` field of report items (GET /api/reports).
+ *
+ * These codes are produced by `classifyDispatchError()` on the server
+ * (src/reports/dispatchErrorReasons.js).
+ */
+const DISPATCH_REASON_MESSAGES: Record<string, string> = {
+  NOTIFY_FALLBACK: 'Доставлено пуш-уведомлением (бот был недоступен)',
+  NO_AUTH_CONTEXT: 'В момент отправки не было доступа к Битрикс24',
+  OAUTH_REFRESH_FAILED: 'Сбой авторизации приложения (проверьте CLIENT_ID/SECRET)',
+  KEYBOARD_REJECTED: 'Битрикс отклонил кнопки сообщения',
+  BOT_MISSING: 'Бот не найден на портале',
+  BITRIX_5XX: 'Битрикс24 временно недоступен',
+  UNKNOWN: 'Не удалось отправить',
+}
+
+/**
+ * Returns a human-readable RU description for a dispatch error reason code.
+ * Falls back to UNKNOWN text when the code is unrecognised.
+ *
+ * @param reasonCode - Value of `item.errorReason` from GET /api/reports response
+ */
+export const dispatchReasonText = (reasonCode: string | null | undefined): string => {
+  const code = String(reasonCode ?? '').trim()
+  return DISPATCH_REASON_MESSAGES[code] ?? DISPATCH_REASON_MESSAGES.UNKNOWN
+}
 
 function extractData(err: unknown): FetchErrorData {
   if (!err || typeof err !== 'object') return {}

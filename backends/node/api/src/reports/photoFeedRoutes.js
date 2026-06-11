@@ -122,10 +122,21 @@ export const createPhotoFeedRouter = ({
       let items = result.items;
       if (pageAzsIds.length > 0) {
         const settings = await settingsStore.read();
+        // Use admin context for CRM reads (mirrors /categories and /recipients).
+        // Falls back to req.bitrixContext so the route still works in dev without admin context.
+        let resolverContext = req.bitrixContext || {};
+        if (typeof getAdminContext === 'function') {
+          try {
+            const adminCtx = await getAdminContext();
+            if (adminCtx) resolverContext = adminCtx;
+          } catch {
+            // best-effort — fall back to request context
+          }
+        }
         const resolveAzsTitle = createAzsTitleResolver({
           bitrixClient,
           settings,
-          context: req.bitrixContext || {}
+          context: resolverContext
         });
         const titleMap = new Map();
         await Promise.all(pageAzsIds.map(async (id) => {

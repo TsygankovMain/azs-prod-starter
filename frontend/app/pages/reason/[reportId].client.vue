@@ -134,6 +134,14 @@ onMounted(async () => {
   }
 })
 
+const goBack = () => {
+  if (window.history.length > 1) {
+    window.history.back()
+  } else {
+    void navigateTo('/')
+  }
+}
+
 onUnmounted(() => {
   if (b24Helper.value) destroyB24Helper()
 })
@@ -144,7 +152,16 @@ onUnmounted(() => {
 
     <!-- Заголовок -->
     <div>
-      <ProseH2 class="mb-1">Причина просрочки</ProseH2>
+      <div class="flex items-center gap-2 mb-1">
+        <button
+          aria-label="Назад"
+          class="inline-flex items-center justify-center w-8 h-8 rounded-full text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
+          @click="goBack"
+        >
+          ←
+        </button>
+        <ProseH2 class="mb-0">Причина просрочки</ProseH2>
+      </div>
       <ProseP v-if="report" class="mb-0 text-sm text-(--ui-color-base-70)">
         АЗС: {{ report.azsTitle }}
       </ProseP>

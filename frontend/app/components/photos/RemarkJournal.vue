@@ -34,6 +34,8 @@ type RemarkItem = {
 
 const props = defineProps<{
   azsOptions: AzsOption[]
+  /** Map от photoCode → человеческое название категории */
+  categoryTitles?: Map<string, string>
 }>()
 
 const emit = defineEmits<{
@@ -294,6 +296,10 @@ const grouped = computed<AzsGroup[]>(() => {
 })
 
 const GRAD = 'linear-gradient(135deg,#6a8caf,#34506b)'
+
+const getCategoryTitle = (code: string): string => {
+  return props.categoryTitles?.get(code) ?? code
+}
 </script>
 
 <template>
@@ -489,20 +495,20 @@ const GRAD = 'linear-gradient(135deg,#6a8caf,#34506b)'
               :key="thumbKey(ph)"
               class="relative w-16 h-12 rounded-lg overflow-hidden border border-black/10 flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-blue-400"
               :style="`background:${GRAD}`"
-              :title="`${ph.photoCode} — открыть в ленте`"
+              :title="`${getCategoryTitle(ph.photoCode)} — открыть в ленте`"
               @click="handleThumbClick(item, ph)"
             >
               <img
                 v-if="previewUrls.get(thumbKey(ph))"
                 :src="previewUrls.get(thumbKey(ph))!"
                 class="absolute inset-0 w-full h-full object-cover"
-                :alt="ph.photoCode"
+                :alt="getCategoryTitle(ph.photoCode)"
               >
               <div
                 v-else
-                class="absolute inset-0 flex items-center justify-center text-white/50 text-[10px]"
+                class="absolute inset-0 flex items-center justify-center text-white/50 text-[10px] text-center px-0.5 leading-tight"
               >
-                {{ ph.photoCode }}
+                {{ getCategoryTitle(ph.photoCode) }}
               </div>
             </button>
             <span v-if="item.photos.length > 4" class="text-xs text-gray-400 self-center">
@@ -567,17 +573,17 @@ const GRAD = 'linear-gradient(135deg,#6a8caf,#34506b)'
                   :key="thumbKey(ph)"
                   class="relative w-16 h-12 rounded-lg overflow-hidden border border-black/10 flex-shrink-0"
                   :style="`background:${GRAD}`"
-                  :title="`${ph.photoCode} — открыть в ленте`"
+                  :title="`${getCategoryTitle(ph.photoCode)} — открыть в ленте`"
                   @click="handleThumbClick(item, ph)"
                 >
                   <img
                     v-if="previewUrls.get(thumbKey(ph))"
                     :src="previewUrls.get(thumbKey(ph))!"
                     class="absolute inset-0 w-full h-full object-cover"
-                    :alt="ph.photoCode"
+                    :alt="getCategoryTitle(ph.photoCode)"
                   >
-                  <div v-else class="absolute inset-0 flex items-center justify-center text-white/50 text-[10px]">
-                    {{ ph.photoCode }}
+                  <div v-else class="absolute inset-0 flex items-center justify-center text-white/50 text-[10px] text-center px-0.5 leading-tight">
+                    {{ getCategoryTitle(ph.photoCode) }}
                   </div>
                 </button>
                 <span v-if="item.photos.length > 4" class="text-xs text-gray-400 self-center">+{{ item.photos.length - 4 }}</span>

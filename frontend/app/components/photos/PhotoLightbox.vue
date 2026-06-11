@@ -24,6 +24,8 @@ const props = defineProps<{
   items: PhotoFeedItem[]
   startIndex: number
   markedKeys: Set<string>
+  /** Map от photoCode → человеческое название категории */
+  categoryTitles?: Map<string, string>
   /** Кол-во отмеченных фото в черновике */
   draftCount: number
   /** AZS id черновика */
@@ -71,10 +73,11 @@ const previewKey = (item: PhotoFeedItem) => `${item.reportId}:${item.photoCode}`
 // ── Blob-кэш ─────────────────────────────────────────────────────────────
 const blobUrls = ref(new Map<string, string>())
 const loadingSet = ref(new Set<string>())
+const errorSet = ref(new Set<string>())
 
 const loadBlob = async (item: PhotoFeedItem) => {
   const key = previewKey(item)
-  if (blobUrls.value.has(key) || loadingSet.value.has(key)) return
+  if (blobUrls.value.has(key) || loadingSet.value.has(key) || errorSet.value.has(key)) return
   const nextLoading = new Set(loadingSet.value)
   nextLoading.add(key)
   loadingSet.value = nextLoading
@@ -84,12 +87,25 @@ const loadBlob = async (item: PhotoFeedItem) => {
     next.set(key, url)
     blobUrls.value = next
   } catch {
-    // silent — отображается placeholder
+    const nextErr = new Set(errorSet.value)
+    nextErr.add(key)
+    errorSet.value = nextErr
   } finally {
     const next = new Set(loadingSet.value)
     next.delete(key)
     loadingSet.value = next
   }
+}
+
+const retryCurrentBlob = () => {
+  if (!current.value) return
+  const key = previewKey(current.value)
+  if (errorSet.value.has(key)) {
+    const next = new Set(errorSet.value)
+    next.delete(key)
+    errorSet.value = next
+  }
+  void loadBlob(current.value)
 }
 
 // Предзагрузка n±1, revoke вне n±3
@@ -210,6 +226,16 @@ const isCurrentLoading = computed(() => {
   return loadingSet.value.has(previewKey(current.value))
 })
 
+const isCurrentError = computed(() => {
+  if (!current.value) return false
+  return errorSet.value.has(previewKey(current.value))
+})
+
+// ── Маппинг категорий ─────────────────────────────────────────────────────
+const getCategoryTitle = (code: string): string => {
+  return props.categoryTitles?.get(code) ?? code
+}
+
 const isCurrentMarked = computed(() => {
   if (!current.value) return false
   return props.markedKeys.has(previewKey(current.value))
@@ -278,7 +304,22 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
           :alt="current?.photoCode"
         >
 
-        <!-- Placeholder если нет blob -->
+        <!-- Ошибка загрузки с кнопкой «Повторить» -->
+        <div
+          v-else-if="isCurrentError"
+          class="flex flex-col items-center justify-center gap-3 text-white/70"
+        >
+          <span class="text-4xl opacity-60">⚠</span>
+          <p class="text-sm font-medium">Не удалось загрузить фото</p>
+          <button
+            class="px-5 py-2 rounded-full bg-white/15 hover:bg-white/25 text-white text-sm font-semibold transition-colors"
+            @click.stop="retryCurrentBlob"
+          >
+            ↻ Повторить
+          </button>
+        </div>
+
+        <!-- Placeholder если нет blob и нет ошибки -->
         <div
           v-else-if="!isCurrentLoading"
           class="text-white/30 text-sm"
@@ -314,7 +355,7 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
       >
         <span class="font-semibold">{{ current.azsTitle || `АЗС ${current.azsId}` }}</span>
         <span class="opacity-50">·</span>
-        <span>{{ current.photoCode }}</span>
+        <span>{{ getCategoryTitle(current.photoCode) }}</span>
         <span class="opacity-50">·</span>
         <span class="tabular-nums">{{ fmtDateTime(current.exifAt || current.uploadedAt) }}</span>
 

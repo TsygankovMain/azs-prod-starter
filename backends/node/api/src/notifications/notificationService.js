@@ -1,7 +1,12 @@
+export const NOTIFY_FALLBACK_PREFIX = 'delivered via notify fallback: ';
+
 const normalizeMode = (value) => {
   const mode = String(value || '').trim().toLowerCase();
   return mode === 'bot' ? 'bot' : 'notify';
 };
+
+// Error codes that indicate the bot registration is stale / missing — self-heal applies
+const BOT_NOT_FOUND_PATTERN = /BOT_ID|BOT_NOT_FOUND|bot not found/i;
 
 const formatLocalTime = (iso, timezone) => {
   if (!iso) {
@@ -52,7 +57,7 @@ const sendViaBot = async ({ bitrixClient, botId, userId, message, keyboard = nul
     dialogId: String(Number(userId)),
     fields: {
       message,
-      ...(keyboard ? { keyboard } : {}),
+      ...(keyboard != null ? { keyboard } : {}),
       urlPreview: true
     }
   }, context);
@@ -76,6 +81,7 @@ export const createNotificationService = ({
   appCode = process.env.BITRIX_APP_CODE || '',
   publicBaseUrl = process.env.APP_PUBLIC_BASE_URL || process.env.VIRTUAL_HOST || '',
   resolveBotId = null,
+  ensureBot = null,
   logger = console
 }) => {
   if (!bitrixClient) {
@@ -111,31 +117,67 @@ export const createNotificationService = ({
     }
 
     if (resolvedMode === 'bot') {
+      let botError = null;
       try {
         const runtimeBotId = await ensureBotId(context);
         if (!runtimeBotId) {
           throw new Error('BITRIX_BOT_ID is required when BITRIX_BOT_MODE=bot');
         }
-        const result = await sendViaBot({
+
+        const trySend = async (bid) => sendViaBot({
           bitrixClient,
-          botId: runtimeBotId,
+          botId: bid,
           userId,
           message,
           keyboard,
           context
         });
+
+        let result;
+        try {
+          result = await trySend(runtimeBotId);
+        } catch (firstError) {
+          const reason = firstError?.message || String(firstError);
+          // Self-heal: only for BOT_ID / BOT_NOT_FOUND errors, never for PARAM_* errors
+          if (BOT_NOT_FOUND_PATTERN.test(reason) && typeof ensureBot === 'function') {
+            logger.warn('bot_self_heal_triggered', { reason, userId });
+            const healed = await ensureBot(context);
+            const healedBotId = Number(healed?.botId || 0);
+            if (healedBotId) {
+              currentBotId = healedBotId;
+              result = await trySend(healedBotId);
+            } else {
+              throw firstError;
+            }
+          } else {
+            throw firstError;
+          }
+        }
+
         return {
           channel: 'bot',
-          result
+          result,
+          delivered: true
         };
       } catch (error) {
-        logger.warn('Bot notification failed, fallback to im.notify.personal.add', {
-          error: error.message
+        botError = error?.message || String(error);
+        logger.warn('bot_channel_degraded', {
+          reason: botError,
+          dialogId: String(Number(userId))
         });
         if (!fallbackToNotify) {
           throw error;
         }
       }
+
+      // Fallback path — bot failed
+      const notifyResult = await sendViaNotify({ bitrixClient, userId, message, context });
+      return {
+        delivered: true,
+        channel: 'notify',
+        result: notifyResult,
+        botError
+      };
     }
 
     const result = await sendViaNotify({ bitrixClient, userId, message, context });
@@ -200,7 +242,7 @@ export const createNotificationService = ({
 
   return {
     mode: resolvedMode,
-    botId: currentBotId || null,
+    get botId() { return currentBotId || null; },
     setBotId(nextBotId) {
       const parsed = Number(nextBotId);
       if (Number.isFinite(parsed) && parsed > 0) {

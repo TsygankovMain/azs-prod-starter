@@ -1,4 +1,6 @@
 import { buildRestAppUriLink } from '../notifications/reportLinks.js';
+import { NOTIFY_FALLBACK_PREFIX } from '../notifications/notificationService.js';
+import { buildZonedDatetime } from './dispatchPlanGenerator.js';
 
 const MINUTES_TO_MS = 60 * 1000;
 
@@ -112,6 +114,7 @@ export const createDispatchService = ({
   bitrixClient,
   notificationService,
   timeoutWatcher = null,
+  botId = Number(process.env.BITRIX_BOT_ID || 0),
   nowFn = () => new Date(),
   rng = Math.random,
   logger = console
@@ -136,11 +139,25 @@ export const createDispatchService = ({
     const slotKey = buildSlotKey({ slotDate: plannedDate, slotHHmm });
     const reserveSlotKey = buildReserveSlotKey({ slotKey, trigger });
 
+    // Compute the timezone-correct slot instant so reserve() stores an accurate
+    // scheduled_at.  settings.timezone is the portal timezone (e.g. 'Europe/Moscow');
+    // without it parseSlotDateTimeUtc would treat HHmm as UTC, causing stale-detect
+    // to fire 3 h late on UTC+3 portals.  If buildZonedDatetime throws (bad date)
+    // we fall back to null; reserve() will then use parseSlotDateTimeUtc as before.
+    let reserveScheduledAt = null;
+    try {
+      const tz = String(settings?.timezone || '').trim();
+      reserveScheduledAt = buildZonedDatetime(plannedDate, slotHHmm, tz);
+    } catch {
+      // keep null — reserve() falls back to parseSlotDateTimeUtc(slotKey)
+    }
+
     const reserve = await dispatchLogStore.reserve({
       slotKey: reserveSlotKey,
       azsId: String(candidate.azsId),
       adminUserId: Number(candidate.adminUserId),
-      status: 'reserved'
+      status: 'reserved',
+      scheduledAt: reserveScheduledAt
     });
 
     if (!reserve.reserved) {
@@ -222,16 +239,24 @@ export const createDispatchService = ({
             reasonParams.set('params[path]', reasonPath);
             const reasonDeepLink = `/marketplace/view/${encodeURIComponent(appCode)}/?${reasonParams.toString()}`;
 
+            const resolvedBotId = Number(notificationService?.botId || botId || process.env.BITRIX_BOT_ID || 0);
             const buttons = [];
             if (deepLink) buttons.push({ TEXT: 'Открыть приложение', LINK: deepLink });
-            if (reasonDeepLink) buttons.push({ TEXT: 'Не успеваю — указать причину', LINK: reasonDeepLink });
-            if (buttons.length) dispatchKeyboard = [buttons];
+            if (buttons.length && reasonDeepLink) {
+              buttons.push({ TYPE: 'NEWLINE' });
+              buttons.push({ TEXT: 'Не успеваю — указать причину', LINK: reasonDeepLink });
+            } else if (reasonDeepLink) {
+              buttons.push({ TEXT: 'Не успеваю — указать причину', LINK: reasonDeepLink });
+            }
+            if (buttons.length) {
+              dispatchKeyboard = { BOT_ID: resolvedBotId, BUTTONS: buttons };
+            }
           }
         } catch {
           // Defensive: skip keyboard if link building fails
         }
 
-        await notificationService.notifyDispatch({
+        const notifyResult = await notificationService.notifyDispatch({
           userId: Number(candidate.adminUserId),
           azsId: candidate.azsId,
           azsTitle,
@@ -240,6 +265,14 @@ export const createDispatchService = ({
           keyboard: dispatchKeyboard,
           context
         });
+
+        // W1-2: if delivered via notify fallback, annotate the dispatch log error_text
+        if (notifyResult?.channel === 'notify' && notifyResult?.botError) {
+          await dispatchLogStore.appendErrorText?.({
+            id: reserve.id,
+            errorText: `${NOTIFY_FALLBACK_PREFIX}${notifyResult.botError}`
+          });
+        }
       } catch (notifyError) {
         logger.warn('dispatchCandidate notification failed', {
           slotKey,

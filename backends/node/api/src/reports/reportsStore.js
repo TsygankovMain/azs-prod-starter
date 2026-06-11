@@ -101,13 +101,17 @@ const createPostgresStore = (pool) => ({
     const params = [];
     let idx = 1;
 
+    // BUG-014 fix: filter by updated_at (last status-change time) instead of
+    // created_at (dispatch creation time).  R4Card asks "what happened in the
+    // last 29 days"; a report is logically "in period" when it was completed /
+    // expired within that window, not when the push was originally sent.
     if (dateFrom) {
-      where.push(`created_at >= $${idx}`);
+      where.push(`updated_at >= $${idx}`);
       params.push(new Date(`${dateFrom}T00:00:00.000Z`));
       idx += 1;
     }
     if (dateTo) {
-      where.push(`created_at <= $${idx}`);
+      where.push(`updated_at <= $${idx}`);
       params.push(new Date(`${dateTo}T23:59:59.999Z`));
       idx += 1;
     }
@@ -469,12 +473,16 @@ const createMysqlStore = (pool) => ({
     const where = [];
     const params = [];
 
+    // BUG-014 fix: filter by updated_at (last status-change time) instead of
+    // created_at (dispatch creation time).  R4Card asks "what happened in the
+    // last 29 days"; a report is logically "in period" when it was completed /
+    // expired within that window, not when the push was originally sent.
     if (dateFrom) {
-      where.push('created_at >= ?');
+      where.push('updated_at >= ?');
       params.push(`${dateFrom} 00:00:00`);
     }
     if (dateTo) {
-      where.push('created_at <= ?');
+      where.push('updated_at <= ?');
       params.push(`${dateTo} 23:59:59`);
     }
     if (status) {

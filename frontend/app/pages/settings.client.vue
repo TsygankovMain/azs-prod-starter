@@ -115,6 +115,7 @@ const { $logger, initApp, b24Helper, destroyB24Helper, processErrorGlobal } = us
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
 const userStore = useUserStore()
+const { confirm } = useConfirm()
 
 let $b24: null | B24Frame = null
 
@@ -122,6 +123,7 @@ const isLoading = ref(false)
 const isSaving = ref(false)
 const isLoaded = ref(false)
 const isRefreshingBotAvatar = ref(false)
+const isReregisteringBot = ref(false)
 const loadError = ref('')
 const saveError = ref('')
 const saveSuccess = ref('')
@@ -925,6 +927,34 @@ async function refreshBotAvatar() {
   }
 }
 
+async function reregisterBot() {
+  if (isReregisteringBot.value) {
+    return
+  }
+  const ok = await confirm({
+    title: 'Перерегистрировать бота?',
+    text: 'Бот будет заново привязан к порталу. Чаты и история сохранятся.',
+    confirmLabel: 'Перерегистрировать',
+  })
+  if (!ok) {
+    return
+  }
+  isReregisteringBot.value = true
+  saveError.value = ''
+  saveSuccess.value = ''
+  try {
+    const result = await apiStore.reregisterBot()
+    saveSuccess.value = result?.botId
+      ? `Бот перерегистрирован (ID ${result.botId})`
+      : 'Бот перерегистрирован'
+  } catch (error) {
+    const data = (error as { data?: { message?: string; error?: string } })?.data
+    saveError.value = data?.message || data?.error || (error instanceof Error ? error.message : 'Не удалось перерегистрировать бота')
+  } finally {
+    isReregisteringBot.value = false
+  }
+}
+
 // ─── Редактор каталога причин ─────────────────────────────────────────────────
 const DEFAULT_REASONS_SEED = [
   { code: 'fuel_truck', label: 'Приёмка топлива / бензовоз' },
@@ -1633,6 +1663,13 @@ onUnmounted(() => {
                     loading-auto
                     :disabled="!isAdminReady || isRefreshingBotAvatar"
                     @click="refreshBotAvatar"
+                  />
+                  <B24Button
+                    color="air-tertiary"
+                    label="Перерегистрировать бота"
+                    loading-auto
+                    :disabled="!isAdminReady || isReregisteringBot"
+                    @click="reregisterBot"
                   />
                   <B24Button
                     color="air-secondary"
@@ -2410,6 +2447,13 @@ onUnmounted(() => {
                   loading-auto
                   :disabled="!isAdminReady || isRefreshingBotAvatar"
                   @click="refreshBotAvatar"
+                />
+                <B24Button
+                  color="air-tertiary"
+                  label="Перерегистрировать бота"
+                  loading-auto
+                  :disabled="!isAdminReady || isReregisteringBot"
+                  @click="reregisterBot"
                 />
                 <B24Button
                   color="air-secondary"

@@ -324,43 +324,44 @@ test('diskApi.uploadFile falls back to disk.file.get when FILE_ID is missing', a
   }
 });
 
-test('listCrmItems paginates past 50 items using top-level next cursor', async () => {
+// ---------------------------------------------------------------------------
+// listCrmItems — huge-data pagination (BUG-010 / W4-1)
+// ---------------------------------------------------------------------------
+
+test('listCrmItems huge-data: two pages, second shorter than 50 → stops; start=-1 on all calls; >id cursor advances', async () => {
   const originalFetch = global.fetch;
   const calls = [];
 
   global.fetch = async (url, options = {}) => {
     const body = JSON.parse(options.body || '{}');
-    calls.push({ url: String(url), start: body.start ?? 0 });
+    calls.push({ url: String(url), body });
 
-    if ((body.start ?? 0) === 0) {
+    const idCursor = Number(body.filter?.['>id'] ?? 0);
+
+    if (idCursor === 0) {
+      // First page: full 50 records, ids 1..50
       const page1 = Array.from({ length: 50 }, (_, i) => ({ id: i + 1 }));
-      return createJsonResponse({
-        result: { items: page1 },
-        next: 50,
-        total: 73,
-        time: {}
-      });
+      return createJsonResponse({ result: { items: page1 }, time: {} });
     }
-    if (body.start === 50) {
+    if (idCursor === 50) {
+      // Second page: 23 records (shorter than 50 → signals end)
       const page2 = Array.from({ length: 23 }, (_, i) => ({ id: i + 51 }));
-      return createJsonResponse({
-        result: { items: page2 },
-        total: 73,
-        time: {}
-      });
+      return createJsonResponse({ result: { items: page2 }, time: {} });
     }
-    return createJsonResponse({ result: { items: [] }, total: 73, time: {} });
+    // Should not be reached
+    return createJsonResponse({ result: { items: [] }, time: {} });
   };
 
   try {
     const client = createBitrixRestClient({
       endpoint: 'https://b24-example.bitrix24.ru/rest',
       authId: 'access-token',
-      logger: { info() {}, error() {} }
+      logger: { info() {}, error() {}, debug() {} }
     });
 
     const items = await client.listCrmItems({
       entityTypeId: 1234,
+      filter: { 'STATUS': 'active' },
       limit: 500,
       context: {
         domain: 'b24-example.bitrix24.ru',
@@ -368,14 +369,143 @@ test('listCrmItems paginates past 50 items using top-level next cursor', async (
       }
     });
 
+    // Results
     assert.equal(items.length, 73);
     assert.equal(items[0].id, 1);
     assert.equal(items[49].id, 50);
     assert.equal(items[50].id, 51);
     assert.equal(items[72].id, 73);
+
+    // Two HTTP calls made
     assert.equal(calls.length, 2);
-    assert.equal(calls[0].start, 0);
-    assert.equal(calls[1].start, 50);
+
+    // Both calls use start=-1 (huge-data mode)
+    assert.equal(calls[0].body.start, -1, 'first call must use start=-1');
+    assert.equal(calls[1].body.start, -1, 'second call must use start=-1');
+
+    // First call has no >id filter (caller filter only)
+    assert.equal(calls[0].body.filter?.STATUS, 'active', 'caller filter must be preserved');
+    assert.equal(calls[0].body.filter?.['>id'], undefined, 'first call must not have >id filter');
+
+    // Second call has >id=50 (max id of first page) + caller filter
+    assert.equal(calls[1].body.filter?.['>id'], 50, 'second call must have >id=50 cursor');
+    assert.equal(calls[1].body.filter?.STATUS, 'active', 'caller filter must be preserved in second call');
+
+    // Order is ID ASC on both calls
+    assert.deepEqual(calls[0].body.order, { id: 'ASC' });
+    assert.deepEqual(calls[1].body.order, { id: 'ASC' });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('listCrmItems huge-data: empty first page returns [] immediately', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+
+  global.fetch = async (url, options = {}) => {
+    const body = JSON.parse(options.body || '{}');
+    calls.push(body);
+    return createJsonResponse({ result: { items: [] }, time: {} });
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://b24-example.bitrix24.ru/rest',
+      authId: 'token',
+      logger: { info() {}, error() {}, debug() {} }
+    });
+
+    const items = await client.listCrmItems({ entityTypeId: 99 });
+
+    assert.equal(items.length, 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].start, -1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('listCrmItems legacy fallback: custom order → uses start-based pagination, not huge-data', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+
+  global.fetch = async (url, options = {}) => {
+    const body = JSON.parse(options.body || '{}');
+    calls.push(body);
+
+    if ((body.start ?? 0) === 0) {
+      const page1 = Array.from({ length: 50 }, (_, i) => ({ id: i + 1 }));
+      return createJsonResponse({ result: { items: page1 }, next: 50, time: {} });
+    }
+    if (body.start === 50) {
+      const page2 = Array.from({ length: 10 }, (_, i) => ({ id: i + 51 }));
+      return createJsonResponse({ result: { items: page2 }, time: {} });
+    }
+    return createJsonResponse({ result: { items: [] }, time: {} });
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://b24-example.bitrix24.ru/rest',
+      authId: 'token',
+      logger: { info() {}, error() {}, debug() {} }
+    });
+
+    const items = await client.listCrmItems({
+      entityTypeId: 1234,
+      order: { title: 'DESC' }, // non-default order → legacy path
+      limit: 500
+    });
+
+    assert.equal(items.length, 60);
+
+    // Legacy path: start 0 then 50 (from `next` cursor in response)
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].start, 0, 'legacy path first call must use start=0');
+    assert.equal(calls[1].start, 50, 'legacy path second call must use start=50 from next');
+
+    // No >id cursor injected
+    assert.equal(calls[0].filter?.['>id'], undefined, 'legacy path must not inject >id filter');
+    assert.equal(calls[1].filter?.['>id'], undefined, 'legacy path must not inject >id filter on second call');
+
+    // Order preserved as-is
+    assert.deepEqual(calls[0].order, { title: 'DESC' });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('listCrmItems legacy fallback: caller filter already has >id → uses start-based pagination', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+
+  global.fetch = async (url, options = {}) => {
+    const body = JSON.parse(options.body || '{}');
+    calls.push(body);
+    const items = Array.from({ length: 5 }, (_, i) => ({ id: i + 100 }));
+    return createJsonResponse({ result: { items }, time: {} });
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://b24-example.bitrix24.ru/rest',
+      authId: 'token',
+      logger: { info() {}, error() {}, debug() {} }
+    });
+
+    const items = await client.listCrmItems({
+      entityTypeId: 1234,
+      filter: { '>id': 99 }, // caller already has >id cursor
+      limit: 50
+    });
+
+    assert.equal(items.length, 5);
+    assert.equal(calls.length, 1);
+    // Legacy path uses start=0, not start=-1
+    assert.equal(calls[0].start, 0, 'legacy path must use start=0 when caller has >id');
+    // Caller filter preserved as-is
+    assert.equal(calls[0].filter?.['>id'], 99);
   } finally {
     global.fetch = originalFetch;
   }
@@ -616,6 +746,173 @@ test('bitrix client treats AbortError (timeout) as transient and retries', async
     const result = await client.callMethod('app.info', {});
     assert.equal(result.status, 'L');
     assert.equal(attempt, 2, 'TimeoutError must trigger a retry');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+// ── downloadFileContent: 401 → refresh → retry ────────────────────────────────
+
+test('diskApi.downloadFileContent: 401 from file server → refreshes token → retries once → 200', async () => {
+  const originalFetch = global.fetch;
+  const fileGetCalls = [];
+  const downloadCalls = [];
+  const oauthCalls = [];
+  let fileGetCallCount = 0;
+
+  global.fetch = async (url, options = {}) => {
+    const urlStr = String(url);
+
+    if (urlStr.includes('/disk.file.get.json')) {
+      fileGetCallCount += 1;
+      fileGetCalls.push({ url: urlStr, fileGetCallCount });
+      const auth = JSON.parse(options.body || '{}')?.auth;
+      const downloadUrl = `https://cdn.bitrix24.ru/download/file_42?auth=${auth}`;
+      return createJsonResponse({
+        result: {
+          ID: '42',
+          NAME: 'photo.jpg',
+          DOWNLOAD_URL: downloadUrl
+        }
+      });
+    }
+
+    if (urlStr.includes('/download/file_42')) {
+      downloadCalls.push(urlStr);
+      // First download attempt returns 401 (expired user token)
+      if (downloadCalls.length === 1) {
+        return { ok: false, status: 401, arrayBuffer: async () => new ArrayBuffer(0) };
+      }
+      // Second attempt (after refresh) succeeds
+      const fakeBytes = Buffer.from('FAKEPNG');
+      return {
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => fakeBytes.buffer.slice(fakeBytes.byteOffset, fakeBytes.byteOffset + fakeBytes.byteLength)
+      };
+    }
+
+    if (urlStr.includes('/oauth/token/')) {
+      oauthCalls.push(urlStr);
+      return createJsonResponse({
+        access_token: 'refreshed-token',
+        refresh_token: 'new-refresh',
+        domain: 'test.bitrix24.ru',
+        client_endpoint: 'https://test.bitrix24.ru/rest/'
+      });
+    }
+
+    throw new Error(`Unexpected URL in downloadFileContent test: ${urlStr}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://test.bitrix24.ru/rest',
+      authId: 'expired-user-token',
+      refreshToken: 'user-refresh-token',
+      oauthDomain: 'test.bitrix24.ru',
+      clientId: 'local.test',
+      clientSecret: 'secret',
+      retryBackoffMs: [0],
+      logger: { info() {}, warn() {}, error() {} }
+    });
+
+    const result = await client.diskApi.downloadFileContent(42, {});
+    assert.ok(typeof result.base64 === 'string' && result.base64.length > 0, 'should return base64 data');
+    assert.equal(result.name, 'photo.jpg', 'should return file name');
+
+    assert.equal(oauthCalls.length, 1, 'OAuth refresh must be called exactly once');
+    assert.equal(fileGetCalls.length, 2, 'disk.file.get must be called twice (initial + after refresh)');
+    assert.equal(downloadCalls.length, 2, 'download must be attempted twice (401 + retry)');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('diskApi.downloadFileContent: 401 → refresh throws → propagates error', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async (url) => {
+    const urlStr = String(url);
+    if (urlStr.includes('/disk.file.get.json')) {
+      return createJsonResponse({
+        result: { ID: '99', NAME: 'file.jpg', DOWNLOAD_URL: 'https://cdn.bitrix24.ru/dl/99' }
+      });
+    }
+    if (urlStr.includes('/dl/99')) {
+      return { ok: false, status: 401, arrayBuffer: async () => new ArrayBuffer(0) };
+    }
+    if (urlStr.includes('/oauth/token/')) {
+      return createJsonResponse({ error: 'invalid_client', error_description: 'bad credentials' });
+    }
+    throw new Error(`Unexpected URL: ${urlStr}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://test.bitrix24.ru/rest',
+      authId: 'expired-token',
+      refreshToken: 'refresh-token',
+      oauthDomain: 'test.bitrix24.ru',
+      clientId: 'bad-id',
+      clientSecret: 'bad-secret',
+      retryBackoffMs: [0],
+      logger: { info() {}, warn() {}, error() {} }
+    });
+
+    await assert.rejects(
+      () => client.diskApi.downloadFileContent(99, {}),
+      /Bitrix OAuth refresh failed/,
+      'should propagate refresh failure'
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('diskApi.downloadFileContent: webhook context — does NOT attempt token refresh on 401', async () => {
+  const originalFetch = global.fetch;
+  let oauthAttempts = 0;
+
+  global.fetch = async (url) => {
+    const urlStr = String(url);
+    if (urlStr.includes('/disk.file.get.json')) {
+      return createJsonResponse({
+        result: { ID: '77', NAME: 'img.jpg', DOWNLOAD_URL: 'https://cdn.bitrix24.ru/dl/77' }
+      });
+    }
+    if (urlStr.includes('/dl/77')) {
+      return { ok: false, status: 401, arrayBuffer: async () => new ArrayBuffer(0) };
+    }
+    if (urlStr.includes('/oauth/token/')) {
+      oauthAttempts += 1;
+      return createJsonResponse({ access_token: 'new', refresh_token: 'new', domain: 'wh.bitrix24.ru' });
+    }
+    throw new Error(`Unexpected URL: ${urlStr}`);
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: '',
+      authId: '',
+      refreshToken: 'refresh',
+      clientId: 'local.test',
+      clientSecret: 'secret',
+      retryBackoffMs: [0],
+      logger: { info() {}, warn() {}, error() {} }
+    });
+
+    const webhookContext = {
+      isWebhook: true,
+      endpoint: 'https://wh.bitrix24.ru/rest/1/abcdef'
+    };
+
+    await assert.rejects(
+      () => client.diskApi.downloadFileContent(77, webhookContext),
+      /Disk download failed HTTP 401/,
+      'should throw without refresh for webhook context'
+    );
+    assert.equal(oauthAttempts, 0, 'OAuth refresh must NOT be called for webhook context');
   } finally {
     global.fetch = originalFetch;
   }

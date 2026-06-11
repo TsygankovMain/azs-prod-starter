@@ -4,6 +4,29 @@ const trimErrorText = (value) => String(value || '').slice(0, MAX_ERROR_TEXT_LEN
 
 const isMysql = (dbType) => String(dbType || '').toLowerCase() === 'mysql';
 
+/**
+ * Parse a slot_key (format YYYY-MM-DD:HHmm or manual:YYYY-MM-DD:HHmm) into a UTC Date.
+ * Returns null when the key cannot be parsed.
+ */
+export const parseSlotDateTimeUtc = (slotKey) => {
+  const raw = String(slotKey || '').trim();
+  const parts = raw.split(':');
+  // strip 'manual' prefix if present
+  const dateParts = String(parts[0] || '').toLowerCase() === 'manual' ? parts.slice(1) : parts;
+  const dateStr = String(dateParts[0] || '').trim();
+  const hhmmStr = String(dateParts[1] || '').replace(/[^0-9]/g, '').slice(0, 4);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr) || hhmmStr.length !== 4) {
+    return null;
+  }
+  const hours = Number(hhmmStr.slice(0, 2));
+  const minutes = Number(hhmmStr.slice(2, 4));
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+  const dt = new Date(`${dateStr}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00.000Z`);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+};
+
 const serializeDate = (value) => {
   if (!value) {
     return null;
@@ -39,18 +62,50 @@ const createPostgresStore = (pool) => {
       `);
     },
 
-    async reserve({ slotKey, azsId, adminUserId, status }) {
+    /**
+     * @param {{ slotKey, azsId, adminUserId, status, scheduledAt?: Date|null }} args
+     *   scheduledAt — zone-correct slot instant (portal timezone) supplied by the
+     *   caller.  When absent, falls back to parseSlotDateTimeUtc(slotKey) which
+     *   treats HHmm as UTC — accurate only for UTC portals.
+     */
+    async reserve({ slotKey, azsId, adminUserId, status, scheduledAt: callerScheduledAt }) {
+      const scheduledAt = callerScheduledAt instanceof Date
+        ? callerScheduledAt
+        : parseSlotDateTimeUtc(slotKey);
       const result = await query(
-        `INSERT INTO dispatch_log(slot_key, azs_id, admin_user_id, status)
-         VALUES($1, $2, $3, $4)
+        `INSERT INTO dispatch_log(slot_key, azs_id, admin_user_id, status, scheduled_at)
+         VALUES($1, $2, $3, $4, $5)
          ON CONFLICT(slot_key, azs_id) DO NOTHING
          RETURNING id`,
-        [slotKey, azsId, adminUserId, status]
+        [slotKey, azsId, adminUserId, status, scheduledAt]
       );
       if (!result.rows.length) {
         return { reserved: false, id: null };
       }
       return { reserved: true, id: Number(result.rows[0].id) };
+    },
+
+    /**
+     * List dispatch_log rows whose status is still 'reserved' (planned/not yet
+     * executed) and whose created_at is older than `staleBefore`. Used by the
+     * stale-slot finisher in dispatchScheduler to retry or fail hanging entries.
+     *
+     * @param {{ staleBefore: Date }} args
+     * @returns {Promise<Array<{id, slot_key, azs_id, admin_user_id, status, created_at}>>}
+     */
+    async listStalePlanned({ staleBefore }) {
+      const result = await query(
+        `SELECT id, slot_key, azs_id, admin_user_id, status, created_at, scheduled_at
+         FROM dispatch_log
+         WHERE status = $1
+           AND (
+             (scheduled_at IS NOT NULL AND scheduled_at < $2)
+             OR (scheduled_at IS NULL AND created_at < $2)
+           )
+         ORDER BY created_at ASC`,
+        ['reserved', staleBefore]
+      );
+      return result.rows || [];
     },
 
     async markDone({ id, reportItemId, jitterMinutes, scheduledAt, deadlineAt }) {
@@ -75,6 +130,25 @@ const createPostgresStore = (pool) => {
              updated_at = NOW()
          WHERE id = $3`,
         ['failed', trimErrorText(errorText), id]
+      );
+    },
+
+    async appendErrorText({ id, reportId, errorText }) {
+      const rowId = id ?? reportId;
+      if (!rowId || !String(errorText || '').trim()) return;
+      const text = String(errorText).trim();
+      await query(
+        `UPDATE dispatch_log
+         SET error_text = LEFT(
+           CASE WHEN error_text IS NULL OR error_text = ''
+             THEN $1
+             ELSE error_text || ' | ' || $1
+           END,
+           ${MAX_ERROR_TEXT_LEN}
+         ),
+         updated_at = NOW()
+         WHERE id = $2`,
+        [text, rowId]
       );
     }
   };
@@ -104,11 +178,20 @@ const createMysqlStore = (pool) => {
       `);
     },
 
-    async reserve({ slotKey, azsId, adminUserId, status }) {
+    /**
+     * @param {{ slotKey, azsId, adminUserId, status, scheduledAt?: Date|null }} args
+     *   scheduledAt — zone-correct slot instant (portal timezone) supplied by the
+     *   caller.  When absent, falls back to parseSlotDateTimeUtc(slotKey) which
+     *   treats HHmm as UTC — accurate only for UTC portals.
+     */
+    async reserve({ slotKey, azsId, adminUserId, status, scheduledAt: callerScheduledAt }) {
+      const scheduledAt = callerScheduledAt instanceof Date
+        ? callerScheduledAt
+        : parseSlotDateTimeUtc(slotKey);
       const [result] = await query(
-        `INSERT IGNORE INTO dispatch_log(slot_key, azs_id, admin_user_id, status)
-         VALUES(?, ?, ?, ?)`,
-        [slotKey, azsId, adminUserId, status]
+        `INSERT IGNORE INTO dispatch_log(slot_key, azs_id, admin_user_id, status, scheduled_at)
+         VALUES(?, ?, ?, ?, ?)`,
+        [slotKey, azsId, adminUserId, status, serializeDate(scheduledAt)]
       );
 
       if (!result.affectedRows) {
@@ -116,6 +199,30 @@ const createMysqlStore = (pool) => {
       }
 
       return { reserved: true, id: Number(result.insertId) || null };
+    },
+
+    /**
+     * List dispatch_log rows whose status is still 'reserved' (planned/not yet
+     * executed) and whose created_at is older than `staleBefore`. Used by the
+     * stale-slot finisher in dispatchScheduler to retry or fail hanging entries.
+     *
+     * @param {{ staleBefore: Date }} args
+     * @returns {Promise<Array<{id, slot_key, azs_id, admin_user_id, status, created_at}>>}
+     */
+    async listStalePlanned({ staleBefore }) {
+      const threshold = serializeDate(staleBefore);
+      const [rows] = await query(
+        `SELECT id, slot_key, azs_id, admin_user_id, status, created_at, scheduled_at
+         FROM dispatch_log
+         WHERE status = ?
+           AND (
+             (scheduled_at IS NOT NULL AND scheduled_at < ?)
+             OR (scheduled_at IS NULL AND created_at < ?)
+           )
+         ORDER BY created_at ASC`,
+        ['reserved', threshold, threshold]
+      );
+      return rows || [];
     },
 
     async markDone({ id, reportItemId, jitterMinutes, scheduledAt, deadlineAt }) {
@@ -138,6 +245,24 @@ const createMysqlStore = (pool) => {
              error_text = ?
          WHERE id = ?`,
         ['failed', trimErrorText(errorText), id]
+      );
+    },
+
+    async appendErrorText({ id, reportId, errorText }) {
+      const rowId = id ?? reportId;
+      if (!rowId || !String(errorText || '').trim()) return;
+      const text = String(errorText).trim();
+      await query(
+        `UPDATE dispatch_log
+         SET error_text = LEFT(
+           CASE WHEN error_text IS NULL OR error_text = ''
+             THEN ?
+             ELSE CONCAT(error_text, ' | ', ?)
+           END,
+           ${MAX_ERROR_TEXT_LEN}
+         )
+         WHERE id = ?`,
+        [text, text, rowId]
       );
     }
   };

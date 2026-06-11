@@ -1,4 +1,5 @@
 import { updateReportCrmItem } from '../reports/reportCrmSync.js';
+import { NOTIFY_FALLBACK_PREFIX } from '../notifications/notificationService.js';
 
 const normalizeLimit = (value) => {
   const n = Number(value);
@@ -20,11 +21,13 @@ const parseCrmItemId = (value) => {
 
 export const createTimeoutWatcher = ({
   reportsStore,
+  dispatchLogStore = null,
   bitrixClient,
   notificationService,
   settingsStore = null,
   reasonStore = null,
   reviewerUserId = Number(process.env.REPORT_REVIEWER_USER_ID || 0),
+  botId = Number(process.env.BITRIX_BOT_ID || 0),
   nowFn = () => new Date(),
   logger = console
 }) => {
@@ -107,17 +110,33 @@ export const createTimeoutWatcher = ({
                 reasonParams.set('params[path]', reasonPath);
                 reasonLink = `/marketplace/view/${encodeURIComponent(appCode)}/?${reasonParams.toString()}`;
               }
+              const resolvedBotId = Number(notificationService?.botId || botId || process.env.BITRIX_BOT_ID || 0);
               const reasonKeyboard = reasonLink
-                ? [[{ TEXT: 'Указать причину', LINK: reasonLink }]]
+                ? { BOT_ID: resolvedBotId, BUTTONS: [{ TEXT: 'Указать причину', LINK: reasonLink }] }
                 : null;
               const azsTitle = await resolveAzsTitle(report.azsId);
-              await notificationService.notify({
+              const doborResult = await notificationService.notify({
                 userId: Number(report.adminUserId),
                 message: `Отчёт по АЗС ${azsTitle} просрочен. Пожалуйста, укажите причину.`,
                 keyboard: reasonKeyboard,
                 context,
                 fallbackToNotify: true
               });
+
+              // W1-2: annotate report if delivered via notify fallback.
+              // Use dispatchLogStore.appendErrorText (canonical); reportsStore
+              // duplicate has been removed (I-1 dedup).
+              if (doborResult?.channel === 'notify' && doborResult?.botError) {
+                const appendFn = dispatchLogStore?.appendErrorText
+                  ? dispatchLogStore.appendErrorText.bind(dispatchLogStore)
+                  : null;
+                if (appendFn) {
+                  await appendFn({
+                    id: report.id,
+                    errorText: `${NOTIFY_FALLBACK_PREFIX}${doborResult.botError}`
+                  }).catch(() => {});
+                }
+              }
             }
           } catch (doborError) {
             logger.warn('reason_dobor_failed', {

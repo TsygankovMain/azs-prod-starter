@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDispatchScheduler } from '../src/dispatch/dispatchScheduler.js';
+import { createDispatchScheduler, assertDispatchAvailable } from '../src/dispatch/dispatchScheduler.js';
 
 test('dispatch scheduler runs only on configured slot and maps slotDate/slotHHmm', async () => {
   const calls = [];
@@ -681,4 +681,310 @@ test('dispatch.tick_skipped_overlap: guard released after first tick; third tick
   // Second (sequential) tick after guard is released — must also run
   await scheduler.runOnce();
   assert.equal(listDueCallCount, 2, 'after guard released, subsequent sequential tick must run normally');
+});
+
+// ---------------------------------------------------------------------------
+// W1-3: stale-planned slot finisher (BUG-009)
+// ---------------------------------------------------------------------------
+
+test('W1-3: stale planned slot + live context → executed via dispatchBatch', async () => {
+  const now = new Date('2026-06-11T16:00:00.000Z');
+  // Slot was created 60 min ago (> default 30 min threshold)
+  const staleCreatedAt = new Date(now.getTime() - 60 * 60 * 1000);
+
+  const markFailedCalls = [];
+  const dispatchCalls = [];
+
+  const fakeDispatchLogStore = {
+    async listStalePlanned() {
+      return [{
+        id: 42,
+        slot_key: '2026-06-11:1320',
+        azs_id: 'azs-7',
+        admin_user_id: 5,
+        status: 'reserved',
+        created_at: staleCreatedAt
+      }];
+    },
+    async markFailed(args) { markFailedCalls.push(args); }
+  };
+
+  const fakeDispatchService = {
+    async dispatchBatch(payload) {
+      dispatchCalls.push(payload);
+      return {
+        summary: { total: 1, created: 1, duplicates: 0, failed: 0 },
+        items: [{ ok: true, duplicate: false, reportItemId: 777 }]
+      };
+    }
+  };
+
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: false,
+    dispatchLogStore: fakeDispatchLogStore,
+    dispatchService: fakeDispatchService,
+    stalePlannedMinutes: 30,
+    getCandidates: async () => [],
+    settingsStore: { async read() { return { report: { dispatchTimes: [] }, timezone: 'UTC' }; } },
+    getRuntimeContext: async () => ({ authId: 'live-token', domain: 'd', memberId: 'm', userId: 1 }),
+    nowFn: () => now,
+    logger: { info() {}, warn() {}, error() {} }
+  });
+
+  const result = await scheduler.finishStalePlannedSlots();
+
+  assert.equal(result.stale, 1, 'one stale slot found');
+  assert.equal(result.executed, 1, 'stale slot executed via dispatchBatch');
+  assert.equal(result.failed, 0, 'no failures');
+  assert.equal(markFailedCalls.length, 0, 'markFailed not called when context live');
+  assert.equal(dispatchCalls.length, 1);
+  assert.equal(dispatchCalls[0].candidates[0].azsId, 'azs-7');
+  assert.equal(dispatchCalls[0].candidates[0].adminUserId, 5);
+});
+
+test('W1-3: stale planned slot + dead context → marked failed with exact error_text', async () => {
+  const now = new Date('2026-06-11T16:00:00.000Z');
+  const staleCreatedAt = new Date(now.getTime() - 60 * 60 * 1000);
+
+  const markFailedCalls = [];
+  const dispatchCalls = [];
+
+  const fakeDispatchLogStore = {
+    async listStalePlanned() {
+      return [{
+        id: 99,
+        slot_key: 'manual:2026-06-11:1320',
+        azs_id: 'azs-3',
+        admin_user_id: 7,
+        status: 'reserved',
+        created_at: staleCreatedAt
+      }];
+    },
+    async markFailed(args) { markFailedCalls.push(args); }
+  };
+
+  const fakeDispatchService = {
+    async dispatchBatch() {
+      dispatchCalls.push(true);
+      throw new Error('dispatchBatch must not be called with dead context');
+    }
+  };
+
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: false,
+    dispatchLogStore: fakeDispatchLogStore,
+    dispatchService: fakeDispatchService,
+    stalePlannedMinutes: 30,
+    getCandidates: async () => [],
+    settingsStore: { async read() { return { report: { dispatchTimes: [] }, timezone: 'UTC' }; } },
+    getRuntimeContext: async () => ({}), // no authId → dead context
+    nowFn: () => now,
+    logger: { info() {}, warn() {}, error() {} }
+  });
+
+  const result = await scheduler.finishStalePlannedSlots();
+
+  assert.equal(result.stale, 1, 'one stale slot found');
+  assert.equal(result.executed, 0, 'not executed — dead context');
+  assert.equal(result.failed, 1, 'marked failed');
+  assert.equal(dispatchCalls.length, 0, 'dispatchBatch not called');
+  assert.equal(markFailedCalls.length, 1);
+  assert.equal(markFailedCalls[0].id, 99);
+  assert.equal(markFailedCalls[0].errorText, 'skipped: no auth context at send time',
+    'error_text must match exact spec string');
+});
+
+test('W1-3: fresh reserved slot (within threshold) → not touched', async () => {
+  const now = new Date('2026-06-11T16:00:00.000Z');
+  // Created only 5 minutes ago — within 30-min threshold
+  const freshCreatedAt = new Date(now.getTime() - 5 * 60 * 1000);
+
+  const markFailedCalls = [];
+  const dispatchCalls = [];
+
+  const fakeDispatchLogStore = {
+    // Simulate DB returning no rows (because freshCreatedAt > staleBefore)
+    async listStalePlanned({ staleBefore }) {
+      // The query filters created_at < staleBefore; fresh row is NOT included
+      if (freshCreatedAt < staleBefore) {
+        return [{ id: 1, slot_key: '2026-06-11:1555', azs_id: 'azs-1', admin_user_id: 1, status: 'reserved', created_at: freshCreatedAt }];
+      }
+      return [];
+    },
+    async markFailed(args) { markFailedCalls.push(args); }
+  };
+
+  const fakeDispatchService = {
+    async dispatchBatch() { dispatchCalls.push(true); return { summary: {}, items: [{ ok: true }] }; }
+  };
+
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: false,
+    dispatchLogStore: fakeDispatchLogStore,
+    dispatchService: fakeDispatchService,
+    stalePlannedMinutes: 30,
+    getCandidates: async () => [],
+    settingsStore: { async read() { return { report: { dispatchTimes: [] }, timezone: 'UTC' }; } },
+    getRuntimeContext: async () => ({ authId: 'live', domain: 'd', memberId: 'm', userId: 1 }),
+    nowFn: () => now,
+    logger: { info() {}, warn() {}, error() {} }
+  });
+
+  const result = await scheduler.finishStalePlannedSlots();
+
+  assert.equal(result.stale, 0, 'fresh slot is below threshold → listStalePlanned returns empty');
+  assert.equal(result.executed, 0);
+  assert.equal(result.failed, 0);
+  assert.equal(markFailedCalls.length, 0);
+  assert.equal(dispatchCalls.length, 0);
+});
+
+test('W1-3: idempotent — second call on already-processed slot does nothing', async () => {
+  const now = new Date('2026-06-11T16:00:00.000Z');
+
+  let callCount = 0;
+  const markFailedCalls = [];
+
+  const fakeDispatchLogStore = {
+    // First call returns stale row; second returns nothing (row is done/failed)
+    async listStalePlanned() {
+      callCount += 1;
+      if (callCount === 1) {
+        return [{
+          id: 55,
+          slot_key: '2026-06-11:1200',
+          azs_id: 'azs-5',
+          admin_user_id: 3,
+          status: 'reserved',
+          created_at: new Date(now.getTime() - 60 * 60 * 1000)
+        }];
+      }
+      return []; // second call: row is already processed
+    },
+    async markFailed(args) { markFailedCalls.push(args); }
+  };
+
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: false,
+    dispatchLogStore: fakeDispatchLogStore,
+    dispatchService: {
+      async dispatchBatch() { return { summary: {}, items: [{ ok: false, error: 'gone' }] }; }
+    },
+    stalePlannedMinutes: 30,
+    getCandidates: async () => [],
+    settingsStore: { async read() { return { report: { dispatchTimes: [] }, timezone: 'UTC' }; } },
+    getRuntimeContext: async () => ({}), // dead context → markFailed on first call
+    nowFn: () => now,
+    logger: { info() {}, warn() {}, error() {} }
+  });
+
+  const first = await scheduler.finishStalePlannedSlots();
+  const second = await scheduler.finishStalePlannedSlots();
+
+  assert.equal(first.stale, 1, 'first call found the row');
+  assert.equal(first.failed, 1);
+  assert.equal(second.stale, 0, 'second call: row no longer in stale list');
+  assert.equal(second.failed, 0);
+  assert.equal(markFailedCalls.length, 1, 'markFailed called exactly once (idempotent)');
+});
+
+// ---------------------------------------------------------------------------
+// W1-3: assertDispatchAvailable — manual dispatch guard
+// ---------------------------------------------------------------------------
+
+test('W1-3: assertDispatchAvailable resolves when admin session context is live', async () => {
+  await assert.doesNotReject(
+    () => assertDispatchAvailable({
+      getRuntimeContext: async () => ({ authId: 'live-tok', domain: 'x.bitrix24.ru' })
+    }),
+    'should not throw when authId is set'
+  );
+});
+
+test('W1-3: assertDispatchAvailable resolves when webhook background context is live', async () => {
+  await assert.doesNotReject(
+    () => assertDispatchAvailable({
+      getRuntimeContext: async () => ({}), // no admin session
+      getBackgroundContext: async () => ({ isWebhook: true, endpoint: 'https://p.b24.ru/rest/1/hook' })
+    }),
+    'should not throw when webhook context is available'
+  );
+});
+
+test('W1-3: assertDispatchAvailable throws BOT_UNAVAILABLE when no context', async () => {
+  let err;
+  try {
+    await assertDispatchAvailable({
+      getRuntimeContext: async () => ({}),
+      getBackgroundContext: async () => ({})
+    });
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, 'should throw');
+  assert.equal(err.code, 'BOT_UNAVAILABLE');
+  assert.equal(err.statusCode, 503);
+});
+
+test('W1-3: assertDispatchAvailable throws BOT_UNAVAILABLE when getRuntimeContext returns null', async () => {
+  let err;
+  try {
+    await assertDispatchAvailable({
+      getRuntimeContext: async () => null
+    });
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, 'should throw when context is null');
+  assert.equal(err.code, 'BOT_UNAVAILABLE');
+  assert.equal(err.statusCode, 503);
+});
+
+test('W1-3: assertDispatchAvailable — no slot created when context unavailable (route-level integration)', async () => {
+  // Simulates the reportsRoutes /manual handler: when assertDispatchAvailable
+  // throws, the try/catch in the route must propagate 503 BOT_UNAVAILABLE
+  // and dispatchBatch must NOT be called.
+  let dispatchCalled = false;
+
+  const simulateManualRoute = async ({ getLastAdminContext }) => {
+    try {
+      await assertDispatchAvailable({
+        getRuntimeContext: async () => {
+          const entry = await getLastAdminContext();
+          return entry?.context ?? {};
+        }
+      });
+      // If we reach here context is live — dispatch would happen
+      dispatchCalled = true;
+      return { status: 200, body: { summary: { created: 1 } } };
+    } catch (error) {
+      return {
+        status: error.statusCode || 500,
+        body: {
+          error: error.code || 'manual_report_failed',
+          errorCode: error.code === 'BOT_UNAVAILABLE' ? 'BOT_UNAVAILABLE' : undefined,
+          message: error.message
+        }
+      };
+    }
+  };
+
+  // Case 1: unavailable context → 503, no dispatch
+  const unavailableRes = await simulateManualRoute({
+    getLastAdminContext: async () => null
+  });
+  assert.equal(unavailableRes.status, 503, '503 returned when context unavailable');
+  assert.equal(unavailableRes.body.errorCode, 'BOT_UNAVAILABLE');
+  assert.equal(dispatchCalled, false, 'dispatch must NOT be called when context unavailable');
+
+  // Case 2: available context → 200, dispatch happens
+  const availableRes = await simulateManualRoute({
+    getLastAdminContext: async () => ({ key: 'k', context: { authId: 'live-tok', domain: 'd' } })
+  });
+  assert.equal(availableRes.status, 200, '200 returned when context available');
+  assert.equal(dispatchCalled, true, 'dispatch was called when context available');
 });

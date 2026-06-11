@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createNotificationService } from '../src/notifications/notificationService.js';
+import { createNotificationService, NOTIFY_FALLBACK_PREFIX } from '../src/notifications/notificationService.js';
 import { buildReportLinks } from '../src/notifications/reportLinks.js';
 
 test('buildReportLinks returns REST_APP_URI and public fallback links', () => {
@@ -124,7 +124,8 @@ test('notifyDispatch resolves bot id dynamically when env bot id is empty', asyn
   assert.equal(botCalls[0].payload.botId, 88);
 });
 
-test('notifyDispatch in bot-mode forwards keyboard to imbot.v2.Chat.Message.send', async () => {
+// W1-1: flat {BOT_ID, BUTTONS} keyboard format
+test('notifyDispatch in bot-mode forwards flat keyboard {BOT_ID, BUTTONS} to imbot.v2.Chat.Message.send', async () => {
   const botCalls = [];
 
   const service = createNotificationService({
@@ -141,7 +142,15 @@ test('notifyDispatch in bot-mode forwards keyboard to imbot.v2.Chat.Message.send
     botId: 77
   });
 
-  const keyboard = [[{ TEXT: 'Открыть приложение', LINK: '/marketplace/view/local.app/?params%5BreportId%5D=99' }]];
+  // W1-1: flat {BOT_ID, BUTTONS} format — no nested arrays
+  const keyboard = {
+    BOT_ID: 77,
+    BUTTONS: [
+      { TEXT: 'Открыть приложение', LINK: '/marketplace/view/local.app/?params%5BreportId%5D=99' },
+      { TYPE: 'NEWLINE' },
+      { TEXT: 'Не успеваю — указать причину', LINK: '/marketplace/view/local.app/?params%5BreportId%5D=99&reason=1' }
+    ]
+  };
 
   const result = await service.notifyDispatch({
     userId: 22,
@@ -154,9 +163,13 @@ test('notifyDispatch in bot-mode forwards keyboard to imbot.v2.Chat.Message.send
   assert.equal(result.channel, 'bot');
   assert.equal(botCalls.length, 1);
   assert.deepEqual(botCalls[0].payload.fields.keyboard, keyboard, 'keyboard must be forwarded as-is to imbot.v2.Chat.Message.send');
+  // Verify no nested arrays in BUTTONS
+  for (const btn of keyboard.BUTTONS) {
+    assert.ok(!Array.isArray(btn), 'keyboard.BUTTONS elements must NOT be nested arrays (flat format)');
+  }
 });
 
-test('notify in bot-mode with keyboard forwards keyboard to API call', async () => {
+test('notify in bot-mode with flat keyboard forwards keyboard to API call', async () => {
   const botCalls = [];
 
   const service = createNotificationService({
@@ -170,7 +183,11 @@ test('notify in bot-mode with keyboard forwards keyboard to API call', async () 
     botId: 88
   });
 
-  const keyboard = [[{ TEXT: 'Указать причину', LINK: '/marketplace/view/local.app/?params%5BreportId%5D=10' }]];
+  // W1-1: flat {BOT_ID, BUTTONS} format
+  const keyboard = {
+    BOT_ID: 88,
+    BUTTONS: [{ TEXT: 'Указать причину', LINK: '/marketplace/view/local.app/?params%5BreportId%5D=10' }]
+  };
 
   const result = await service.notify({
     userId: 33,
@@ -196,7 +213,11 @@ test('notify in notify-mode ignores keyboard — no keyboard field in notifyUser
     mode: 'notify'
   });
 
-  const keyboard = [[{ TEXT: 'Открыть приложение', LINK: '/marketplace/view/local.app/?params%5BreportId%5D=99' }]];
+  // W1-1: flat {BOT_ID, BUTTONS} format (should be dropped in notify mode)
+  const keyboard = {
+    BOT_ID: 0,
+    BUTTONS: [{ TEXT: 'Открыть приложение', LINK: '/marketplace/view/local.app/?params%5BreportId%5D=99' }]
+  };
 
   const result = await service.notifyDispatch({
     userId: 44,
@@ -210,6 +231,127 @@ test('notify in notify-mode ignores keyboard — no keyboard field in notifyUser
   assert.equal(notifyCalls.length, 1, 'notifyUser must be called once');
   // keyboard is not part of the notifyUser contract — no keyboard field expected
   assert.equal(notifyCalls[0].keyboard, undefined, 'keyboard must NOT be forwarded in notify mode');
+});
+
+// W1-2: NOTIFY_FALLBACK_PREFIX exported and correct
+test('W1-2: NOTIFY_FALLBACK_PREFIX is exported with correct format', () => {
+  assert.ok(typeof NOTIFY_FALLBACK_PREFIX === 'string', 'NOTIFY_FALLBACK_PREFIX must be a string');
+  assert.ok(NOTIFY_FALLBACK_PREFIX.startsWith('delivered via notify fallback'), 'must start with expected prefix');
+});
+
+// W1-2: bot fails → fallback → return {delivered, channel:'notify', botError}; warn logged
+test('W1-2: bot failure → notify fallback returns {delivered:true, channel:notify, botError}; bot_channel_degraded warn logged', async () => {
+  const warnCalls = [];
+
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod() {
+        throw new Error('PARAM_KEYBOARD_ERROR');
+      },
+      async notifyUser() {
+        return { ok: true };
+      }
+    },
+    mode: 'bot',
+    botId: 77,
+    logger: {
+      warn(event, meta) { warnCalls.push({ event, meta }); },
+      info() {},
+      error() {}
+    }
+  });
+
+  const result = await service.notify({
+    userId: 55,
+    message: 'Тест деградации'
+  });
+
+  assert.equal(result.delivered, true, 'delivered must be true');
+  assert.equal(result.channel, 'notify', 'channel must be notify');
+  assert.ok(typeof result.botError === 'string' && result.botError.length > 0, 'botError must be non-empty string');
+  assert.ok(result.botError.includes('PARAM_KEYBOARD_ERROR'), 'botError must contain original error reason');
+
+  const degradedWarn = warnCalls.find((w) => w.event === 'bot_channel_degraded');
+  assert.ok(degradedWarn, 'bot_channel_degraded warn must be logged');
+  assert.ok(
+    typeof degradedWarn.meta.reason === 'string' && degradedWarn.meta.reason.length > 0,
+    'warn reason must be informative'
+  );
+  assert.equal(degradedWarn.meta.dialogId, '55', 'warn dialogId must match userId');
+});
+
+// Self-heal: BOT_NOT_FOUND → ensureBot called once → retry succeeds
+test('self-heal: BOT_NOT_FOUND → ensureBot called 1x → retry succeeds, no notify fallback', async () => {
+  const ensureBotCalls = [];
+  const sendAttempts = [];
+  let callCount = 0;
+
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod(method, payload) {
+        sendAttempts.push(payload);
+        callCount += 1;
+        if (callCount === 1) {
+          throw new Error('BOT_NOT_FOUND');
+        }
+        return { id: 9001 };
+      },
+      async notifyUser() {
+        throw new Error('should not fallback on self-heal success');
+      }
+    },
+    mode: 'bot',
+    botId: 77,
+    ensureBot: async (ctx) => {
+      ensureBotCalls.push(ctx);
+      return { botId: 99 };
+    },
+    logger: { warn() {}, info() {}, error() {} }
+  });
+
+  const result = await service.notify({
+    userId: 11,
+    message: 'Self-heal test'
+  });
+
+  assert.equal(result.channel, 'bot', 'must succeed via bot after self-heal');
+  assert.equal(ensureBotCalls.length, 1, 'ensureBot must be called exactly once');
+  assert.equal(sendAttempts.length, 2, 'must have 2 send attempts (original + retry)');
+  assert.equal(sendAttempts[1].botId, 99, 'retry must use healed botId');
+});
+
+// Self-heal: PARAM_KEYBOARD_ERROR → ensureBot NOT called
+test('self-heal: PARAM_KEYBOARD_ERROR → ensureBot NOT called → goes directly to notify fallback', async () => {
+  const ensureBotCalls = [];
+  const notifyCalls = [];
+
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod() {
+        throw new Error('PARAM_KEYBOARD_ERROR');
+      },
+      async notifyUser(payload) {
+        notifyCalls.push(payload);
+        return { ok: true };
+      }
+    },
+    mode: 'bot',
+    botId: 77,
+    ensureBot: async (ctx) => {
+      ensureBotCalls.push(ctx);
+      return { botId: 99 };
+    },
+    logger: { warn() {}, info() {}, error() {} }
+  });
+
+  const result = await service.notify({
+    userId: 22,
+    message: 'PARAM error test'
+  });
+
+  assert.equal(ensureBotCalls.length, 0, 'ensureBot must NOT be called for PARAM_* errors');
+  assert.equal(result.channel, 'notify', 'must fallback to notify');
+  assert.equal(notifyCalls.length, 1, 'notify must be called once');
 });
 
 test('bitrix client auth id can be updated at runtime', async () => {
