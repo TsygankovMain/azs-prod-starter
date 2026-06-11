@@ -545,35 +545,100 @@ export const createBitrixRestClient = ({
       }
 
       const maxItems = Math.min(Math.max(Number(limit) || 200, 1), 2000);
+
+      // Huge-data mode is incompatible with:
+      //   (a) a custom sort order supplied by the caller — sorting other than
+      //       ID ASC means the cursor (>id) would skip/duplicate records;
+      //   (b) a caller-supplied '>id' filter — we can't safely compose cursors.
+      // In those cases we fall back to the classic start-based pagination.
+      const orderKeys = Object.keys(order || {});
+      const isDefaultOrder =
+        orderKeys.length === 1 &&
+        (orderKeys[0] === 'id' || orderKeys[0] === 'ID') &&
+        String(Object.values(order)[0]).toUpperCase() === 'ASC';
+      const callerUsesIdCursor = Object.keys(filter || {}).some(
+        (k) => k === '>id' || k === '>ID'
+      );
+
+      if (!isDefaultOrder || callerUsesIdCursor) {
+        // ── Legacy path (classic start-based pagination) ──────────────────
+        if (typeof logger?.debug === 'function') {
+          logger.debug('listCrmItems_legacy_fallback', {
+            entityTypeId,
+            reason: callerUsesIdCursor ? 'caller_filter_has_id_cursor' : 'custom_order'
+          });
+        }
+        const items = [];
+        let start = 0;
+        while (items.length < maxItems) {
+          const response = await callRaw('crm.item.list', {
+            entityTypeId: Number(entityTypeId),
+            select,
+            filter,
+            order,
+            start,
+            useOriginalUfNames
+          }, context);
+          const resultData = response.result || {};
+          const rows = Array.isArray(resultData) ? resultData : (Array.isArray(resultData.items) ? resultData.items : []);
+          const next = Number(response.next ?? -1);
+          const nextCursor = Number.isFinite(next) && next >= 0 ? next : null;
+          for (const row of rows) {
+            items.push(row);
+            if (items.length >= maxItems) break;
+          }
+          if (nextCursor === null || rows.length === 0) break;
+          start = nextCursor;
+        }
+        return items;
+      }
+
+      // ── Huge-data path (start=-1, ID ASC cursor) ─────────────────────────
+      // Guarantee 'id' is present in select so we can read lastId from rows.
+      const selectWithId =
+        select.includes('id') || select.includes('ID') || select.includes('*')
+          ? select
+          : [...select, 'id'];
+
       const items = [];
-      let start = 0;
+      let lastId = 0; // no '>id' filter on the first page
 
       while (items.length < maxItems) {
+        const pageFilter = lastId > 0
+          ? { ...filter, '>id': lastId }
+          : { ...filter };
+
         const response = await callRaw('crm.item.list', {
           entityTypeId: Number(entityTypeId),
-          select,
-          filter,
-          order,
-          start,
+          select: selectWithId,
+          filter: pageFilter,
+          order: { id: 'ASC' },
+          start: -1,
           useOriginalUfNames
         }, context);
 
         const resultData = response.result || {};
         const rows = Array.isArray(resultData) ? resultData : (Array.isArray(resultData.items) ? resultData.items : []);
-        const next = Number(response.next ?? -1);
-        const nextCursor = Number.isFinite(next) && next >= 0 ? next : null;
+
+        if (rows.length === 0) break;
 
         for (const row of rows) {
           items.push(row);
-          if (items.length >= maxItems) {
-            break;
-          }
+          if (items.length >= maxItems) break;
         }
 
-        if (nextCursor === null || rows.length === 0) {
-          break;
-        }
-        start = nextCursor;
+        // Stop when the page is shorter than a full Bitrix page (50 records) —
+        // that means there are no more records, matching the huge-data guide.
+        // We also stop if the page came back empty (handled above).
+        if (rows.length < 50) break;
+
+        // Advance cursor to the max id in this page.
+        const pageMaxId = rows.reduce((max, row) => {
+          const rowId = Number(row.id ?? row.ID ?? 0);
+          return rowId > max ? rowId : max;
+        }, 0);
+        if (pageMaxId <= 0) break; // safety: no readable id → stop
+        lastId = pageMaxId;
       }
 
       return items;

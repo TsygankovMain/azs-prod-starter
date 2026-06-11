@@ -324,43 +324,44 @@ test('diskApi.uploadFile falls back to disk.file.get when FILE_ID is missing', a
   }
 });
 
-test('listCrmItems paginates past 50 items using top-level next cursor', async () => {
+// ---------------------------------------------------------------------------
+// listCrmItems — huge-data pagination (BUG-010 / W4-1)
+// ---------------------------------------------------------------------------
+
+test('listCrmItems huge-data: two pages, second shorter than 50 → stops; start=-1 on all calls; >id cursor advances', async () => {
   const originalFetch = global.fetch;
   const calls = [];
 
   global.fetch = async (url, options = {}) => {
     const body = JSON.parse(options.body || '{}');
-    calls.push({ url: String(url), start: body.start ?? 0 });
+    calls.push({ url: String(url), body });
 
-    if ((body.start ?? 0) === 0) {
+    const idCursor = Number(body.filter?.['>id'] ?? 0);
+
+    if (idCursor === 0) {
+      // First page: full 50 records, ids 1..50
       const page1 = Array.from({ length: 50 }, (_, i) => ({ id: i + 1 }));
-      return createJsonResponse({
-        result: { items: page1 },
-        next: 50,
-        total: 73,
-        time: {}
-      });
+      return createJsonResponse({ result: { items: page1 }, time: {} });
     }
-    if (body.start === 50) {
+    if (idCursor === 50) {
+      // Second page: 23 records (shorter than 50 → signals end)
       const page2 = Array.from({ length: 23 }, (_, i) => ({ id: i + 51 }));
-      return createJsonResponse({
-        result: { items: page2 },
-        total: 73,
-        time: {}
-      });
+      return createJsonResponse({ result: { items: page2 }, time: {} });
     }
-    return createJsonResponse({ result: { items: [] }, total: 73, time: {} });
+    // Should not be reached
+    return createJsonResponse({ result: { items: [] }, time: {} });
   };
 
   try {
     const client = createBitrixRestClient({
       endpoint: 'https://b24-example.bitrix24.ru/rest',
       authId: 'access-token',
-      logger: { info() {}, error() {} }
+      logger: { info() {}, error() {}, debug() {} }
     });
 
     const items = await client.listCrmItems({
       entityTypeId: 1234,
+      filter: { 'STATUS': 'active' },
       limit: 500,
       context: {
         domain: 'b24-example.bitrix24.ru',
@@ -368,14 +369,143 @@ test('listCrmItems paginates past 50 items using top-level next cursor', async (
       }
     });
 
+    // Results
     assert.equal(items.length, 73);
     assert.equal(items[0].id, 1);
     assert.equal(items[49].id, 50);
     assert.equal(items[50].id, 51);
     assert.equal(items[72].id, 73);
+
+    // Two HTTP calls made
     assert.equal(calls.length, 2);
-    assert.equal(calls[0].start, 0);
-    assert.equal(calls[1].start, 50);
+
+    // Both calls use start=-1 (huge-data mode)
+    assert.equal(calls[0].body.start, -1, 'first call must use start=-1');
+    assert.equal(calls[1].body.start, -1, 'second call must use start=-1');
+
+    // First call has no >id filter (caller filter only)
+    assert.equal(calls[0].body.filter?.STATUS, 'active', 'caller filter must be preserved');
+    assert.equal(calls[0].body.filter?.['>id'], undefined, 'first call must not have >id filter');
+
+    // Second call has >id=50 (max id of first page) + caller filter
+    assert.equal(calls[1].body.filter?.['>id'], 50, 'second call must have >id=50 cursor');
+    assert.equal(calls[1].body.filter?.STATUS, 'active', 'caller filter must be preserved in second call');
+
+    // Order is ID ASC on both calls
+    assert.deepEqual(calls[0].body.order, { id: 'ASC' });
+    assert.deepEqual(calls[1].body.order, { id: 'ASC' });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('listCrmItems huge-data: empty first page returns [] immediately', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+
+  global.fetch = async (url, options = {}) => {
+    const body = JSON.parse(options.body || '{}');
+    calls.push(body);
+    return createJsonResponse({ result: { items: [] }, time: {} });
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://b24-example.bitrix24.ru/rest',
+      authId: 'token',
+      logger: { info() {}, error() {}, debug() {} }
+    });
+
+    const items = await client.listCrmItems({ entityTypeId: 99 });
+
+    assert.equal(items.length, 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].start, -1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('listCrmItems legacy fallback: custom order → uses start-based pagination, not huge-data', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+
+  global.fetch = async (url, options = {}) => {
+    const body = JSON.parse(options.body || '{}');
+    calls.push(body);
+
+    if ((body.start ?? 0) === 0) {
+      const page1 = Array.from({ length: 50 }, (_, i) => ({ id: i + 1 }));
+      return createJsonResponse({ result: { items: page1 }, next: 50, time: {} });
+    }
+    if (body.start === 50) {
+      const page2 = Array.from({ length: 10 }, (_, i) => ({ id: i + 51 }));
+      return createJsonResponse({ result: { items: page2 }, time: {} });
+    }
+    return createJsonResponse({ result: { items: [] }, time: {} });
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://b24-example.bitrix24.ru/rest',
+      authId: 'token',
+      logger: { info() {}, error() {}, debug() {} }
+    });
+
+    const items = await client.listCrmItems({
+      entityTypeId: 1234,
+      order: { title: 'DESC' }, // non-default order → legacy path
+      limit: 500
+    });
+
+    assert.equal(items.length, 60);
+
+    // Legacy path: start 0 then 50 (from `next` cursor in response)
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].start, 0, 'legacy path first call must use start=0');
+    assert.equal(calls[1].start, 50, 'legacy path second call must use start=50 from next');
+
+    // No >id cursor injected
+    assert.equal(calls[0].filter?.['>id'], undefined, 'legacy path must not inject >id filter');
+    assert.equal(calls[1].filter?.['>id'], undefined, 'legacy path must not inject >id filter on second call');
+
+    // Order preserved as-is
+    assert.deepEqual(calls[0].order, { title: 'DESC' });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('listCrmItems legacy fallback: caller filter already has >id → uses start-based pagination', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+
+  global.fetch = async (url, options = {}) => {
+    const body = JSON.parse(options.body || '{}');
+    calls.push(body);
+    const items = Array.from({ length: 5 }, (_, i) => ({ id: i + 100 }));
+    return createJsonResponse({ result: { items }, time: {} });
+  };
+
+  try {
+    const client = createBitrixRestClient({
+      endpoint: 'https://b24-example.bitrix24.ru/rest',
+      authId: 'token',
+      logger: { info() {}, error() {}, debug() {} }
+    });
+
+    const items = await client.listCrmItems({
+      entityTypeId: 1234,
+      filter: { '>id': 99 }, // caller already has >id cursor
+      limit: 50
+    });
+
+    assert.equal(items.length, 5);
+    assert.equal(calls.length, 1);
+    // Legacy path uses start=0, not start=-1
+    assert.equal(calls[0].start, 0, 'legacy path must use start=0 when caller has >id');
+    // Caller filter preserved as-is
+    assert.equal(calls[0].filter?.['>id'], 99);
   } finally {
     global.fetch = originalFetch;
   }
