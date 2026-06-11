@@ -15,6 +15,7 @@ type SettingsTree = {
       reviewers: string
       photoSet: string
       enabled: string
+      manager: string
     }
   }
   photoType: {
@@ -52,6 +53,9 @@ type SettingsTree = {
     reviewerUserIds: number[]
     azsAdminUserIds: number[]
   }
+  photoFeed: {
+    remarkTemplates: string[]
+  }
 }
 
 type JsonObject = Record<string, unknown>
@@ -67,6 +71,7 @@ type FieldMapKey =
   | 'reviewers'
   | 'photoSet'
   | 'enabled'
+  | 'manager'
   | 'azs'
   | 'trigger'
   | 'folderId'
@@ -139,7 +144,7 @@ const roleCapabilities = ref<AppCapabilities>({
 })
 
 // ─── Section navigation state ────────────────────────────────────────────────
-type SectionId = 'azs' | 'photo-type' | 'report' | 'reasons' | 'stages' | 'disk' | 'access' | 'manage'
+type SectionId = 'azs' | 'photo-type' | 'report' | 'reasons' | 'stages' | 'disk' | 'access' | 'manage' | 'photo-feed'
 const activeSection = ref<SectionId>('azs')
 const mobileOpenSection = ref<SectionId | ''>('azs')
 
@@ -168,7 +173,8 @@ const azsFieldRequirements: FieldRequirement[] = [
   { key: 'admin', label: 'Администратор АЗС', type: 'Пользователь', createType: 'employee', createPostfix: 'ADMIN' },
   { key: 'reviewers', label: 'Проверяющие', type: 'Пользователь, множественное', multiple: true, createType: 'employee', createPostfix: 'REVIEWERS' },
   { key: 'photoSet', label: 'Набор обязательных фото', type: 'Привязка к СП Типы фото, множественное', multiple: true, createType: 'crm', createPostfix: 'PHOTO_SET' },
-  { key: 'enabled', label: 'Активна', type: 'Да/Нет', createType: 'boolean', createPostfix: 'ENABLED' }
+  { key: 'enabled', label: 'Активна', type: 'Да/Нет', createType: 'boolean', createPostfix: 'ENABLED' },
+  { key: 'manager', label: 'Управляющий', type: 'Пользователь', createType: 'employee', createPostfix: 'MANAGER' }
 ]
 
 const reportFieldRequirements: FieldRequirement[] = [
@@ -187,7 +193,8 @@ function makeEmptySettings(): SettingsTree {
         admin: '',
         reviewers: '',
         photoSet: '',
-        enabled: ''
+        enabled: '',
+        manager: ''
       }
     },
     photoType: {
@@ -224,6 +231,9 @@ function makeEmptySettings(): SettingsTree {
       adminUserIds: [],
       reviewerUserIds: [],
       azsAdminUserIds: []
+    },
+    photoFeed: {
+      remarkTemplates: []
     }
   }
 }
@@ -365,6 +375,11 @@ function normalizeSettings(
     reviewerUserIds: normalizeUserIdList(normalized.access?.reviewerUserIds),
     azsAdminUserIds: normalizeUserIdList(normalized.access?.azsAdminUserIds)
   }
+  normalized.photoFeed = {
+    remarkTemplates: Array.isArray(normalized.photoFeed?.remarkTemplates)
+      ? normalized.photoFeed.remarkTemplates.map((t: unknown) => String(t || '').trim()).filter(Boolean)
+      : []
+  }
 
   return normalized
 }
@@ -404,6 +419,10 @@ function applySettings(nextSettings: SettingsTree) {
     reviewerUserIds: [...nextSettings.access.reviewerUserIds],
     azsAdminUserIds: [...nextSettings.access.azsAdminUserIds]
   })
+  // photoFeed
+  form.photoFeed.remarkTemplates = Array.isArray(nextSettings.photoFeed?.remarkTemplates)
+    ? [...nextSettings.photoFeed.remarkTemplates]
+    : []
 }
 
 function readSettings(): SettingsTree {
@@ -414,7 +433,8 @@ function readSettings(): SettingsTree {
         admin: form.azs.fields.admin,
         reviewers: form.azs.fields.reviewers,
         photoSet: form.azs.fields.photoSet,
-        enabled: form.azs.fields.enabled
+        enabled: form.azs.fields.enabled,
+        manager: form.azs.fields.manager
       }
     },
     photoType: {
@@ -454,6 +474,11 @@ function readSettings(): SettingsTree {
       adminUserIds: normalizeUserIdList(form.access.adminUserIds),
       reviewerUserIds: normalizeUserIdList(form.access.reviewerUserIds),
       azsAdminUserIds: normalizeUserIdList(form.access.azsAdminUserIds)
+    },
+    photoFeed: {
+      remarkTemplates: form.photoFeed.remarkTemplates
+        .map((t) => String(t || '').trim())
+        .filter(Boolean)
     }
   })
 }
@@ -530,7 +555,8 @@ const sectionComplete = computed(() => ({
   ),
   disk: Boolean(form.disk.rootFolderId && form.disk.folderNameTemplate && form.timezone),
   access: Boolean(form.access.adminUserIds.length),
-  manage: true
+  manage: true,
+  photoFeed: Boolean(form.photoFeed.remarkTemplates.length)
 }))
 
 // ─── Smart-process select items (for B24Select) ───────────────────────────────
@@ -547,6 +573,7 @@ const navSections = computed(() => [
   { id: 'stages' as SectionId, label: 'Сроки и этапы', complete: sectionComplete.value.stages },
   { id: 'disk' as SectionId, label: 'Диск и часовой пояс', complete: sectionComplete.value.disk },
   { id: 'access' as SectionId, label: 'Роли доступа', complete: sectionComplete.value.access },
+  { id: 'photo-feed' as SectionId, label: 'Фотолента', complete: sectionComplete.value.photoFeed },
   { id: 'manage' as SectionId, label: 'Управление', complete: true }
 ])
 
@@ -1551,6 +1578,51 @@ onUnmounted(() => {
               </div>
             </template>
 
+            <!-- Фотолента section slot -->
+            <template #photo-feed-body>
+              <div class="space-y-3 p-4">
+                <B24FormField label="Шаблоны быстрых сообщений">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Шаблоны быстрых сообщений
+                      <B24Tooltip text="Готовые тексты замечаний, которые оператор может отправить в один клик при просмотре фото. Не более 10 шаблонов, каждый до 200 символов.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <div class="space-y-2">
+                    <div
+                      v-for="(_, idx) in form.photoFeed.remarkTemplates"
+                      :key="idx"
+                      class="flex items-center gap-2"
+                    >
+                      <B24Input
+                        v-model="form.photoFeed.remarkTemplates[idx]"
+                        class="flex-1"
+                        :placeholder="`Шаблон ${idx + 1}`"
+                        :disabled="!isAdminReady"
+                      />
+                      <B24Button
+                        size="sm"
+                        color="air-primary-alert"
+                        label="✕"
+                        :disabled="!isAdminReady"
+                        @click="form.photoFeed.remarkTemplates.splice(idx, 1)"
+                      />
+                    </div>
+                    <B24Button
+                      v-if="form.photoFeed.remarkTemplates.length < 10"
+                      size="sm"
+                      color="air-secondary"
+                      label="Добавить шаблон"
+                      :disabled="!isAdminReady"
+                      @click="form.photoFeed.remarkTemplates.push('')"
+                    />
+                  </div>
+                </B24FormField>
+              </div>
+            </template>
+
             <!-- Управление section slot -->
             <template #manage-body>
               <div class="space-y-3 p-4">
@@ -2246,6 +2318,75 @@ onUnmounted(() => {
               <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
                 Пользователь вне списков получает роль Администратор АЗС. Администратор портала по умолчанию получает роль Администратор.
               </ProseP>
+            </div>
+          </B24Card>
+
+          <!-- Фотолента -->
+          <B24Card
+            id="section-photo-feed"
+            variant="outline"
+            :b24ui="{ body: 'p-4 sm:p-5', header: 'p-4 sm:p-5' }"
+          >
+            <template #header>
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="mb-1 flex items-center gap-2">
+                    <ProseH3 class="mb-0">Фотолента</ProseH3>
+                    <B24Badge
+                      rounded
+                      size="sm"
+                      :color="sectionComplete.photoFeed ? 'air-primary-success' : 'air-secondary'"
+                      inverted
+                      :label="sectionComplete.photoFeed ? 'готово' : 'заполнить'"
+                    />
+                  </div>
+                  <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                    Настройки быстрых замечаний при проверке фото.
+                  </ProseP>
+                </div>
+              </div>
+            </template>
+
+            <div class="space-y-3">
+              <B24FormField label="Шаблоны быстрых сообщений">
+                <template #label>
+                  <span class="inline-flex items-center gap-1">
+                    Шаблоны быстрых сообщений
+                    <B24Tooltip text="Готовые тексты замечаний, которые оператор может отправить в один клик при просмотре фото. Не более 10 шаблонов, каждый до 200 символов.">
+                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                    </B24Tooltip>
+                  </span>
+                </template>
+                <div class="space-y-2">
+                  <div
+                    v-for="(_, idx) in form.photoFeed.remarkTemplates"
+                    :key="idx"
+                    class="flex items-center gap-2"
+                  >
+                    <B24Input
+                      v-model="form.photoFeed.remarkTemplates[idx]"
+                      class="flex-1"
+                      :placeholder="`Шаблон ${idx + 1}`"
+                      :disabled="!isAdminReady"
+                    />
+                    <B24Button
+                      size="sm"
+                      color="air-primary-alert"
+                      label="✕"
+                      :disabled="!isAdminReady"
+                      @click="form.photoFeed.remarkTemplates.splice(idx, 1)"
+                    />
+                  </div>
+                  <B24Button
+                    v-if="form.photoFeed.remarkTemplates.length < 10"
+                    size="sm"
+                    color="air-secondary"
+                    label="Добавить шаблон"
+                    :disabled="!isAdminReady"
+                    @click="form.photoFeed.remarkTemplates.push('')"
+                  />
+                </div>
+              </B24FormField>
             </div>
           </B24Card>
 
