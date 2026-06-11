@@ -33,6 +33,7 @@ import { resolveAccessContext } from './src/access/roleResolver.js';
 import createReasonStore from './src/reports/reasonStore.js';
 import createReasonForwardingService from './src/notifications/reasonForwardingService.js';
 import { validateRequiredEnv } from './utils/validateEnv.js';
+import { resolvePgSslConfig } from './utils/dbSsl.js';
 import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from './src/shared/transientErrors.js';
 
 try {
@@ -75,7 +76,12 @@ const pool = dbType === 'mysql'
     // Waiting for a free connection must not be infinite: if the pool is
     // saturated a new request fails after 3 s with an error (→ 500) instead
     // of blocking forever and piling up in memory.
-    connectionTimeoutMillis: 3000
+    connectionTimeoutMillis: 3000,
+    // TLS: resolved from DB_SSL / DB_SSL_CA_CONTENT / DB_SSL_CA env vars.
+    // undefined = no TLS (dev default); see utils/dbSsl.js for details.
+    ...(resolvePgSslConfig(process.env) !== undefined
+      ? { ssl: resolvePgSslConfig(process.env) }
+      : {})
   });
 
 // pg Pool emits 'error' for idle connection drops — without a listener it becomes
