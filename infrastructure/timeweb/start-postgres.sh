@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# When EMBEDDED_POSTGRES=false the container relies on an external managed DB.
+# Exit immediately with success so supervisord considers this program done and
+# moves on to starting the api program (priority 30). init-db.sh does the same.
+EMBEDDED_POSTGRES="${EMBEDDED_POSTGRES:-true}"
+if [ "${EMBEDDED_POSTGRES}" = "false" ]; then
+  echo "[postgres] EMBEDDED_POSTGRES=false — skipping embedded PostgreSQL"
+  exit 0
+fi
+
 PG_VERSION="${PG_VERSION:-$(ls /usr/lib/postgresql | sort -Vr | head -n 1)}"
 DB_PORT="${DB_PORT:-5432}"
 CONF_DIR="/etc/postgresql/${PG_VERSION}/main"
