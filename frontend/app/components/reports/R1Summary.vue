@@ -123,7 +123,14 @@ watch(period, load)
     </div>
 
     <!-- KPI cards -->
-    <div class="grid grid-cols-2 lg:grid-cols-5 gap-3.5 mb-3.5">
+    <div v-if="loading" class="grid grid-cols-2 lg:grid-cols-5 gap-3.5 mb-3.5">
+      <div v-for="n in 5" :key="n" class="bg-white border border-gray-200 border-l-4 rounded-[14px] shadow-sm p-4">
+        <SkeletonBlock height="0.875rem" width="60%" />
+        <SkeletonBlock height="1.875rem" width="50%" class="mt-1.5" rounded="rounded-lg" />
+        <SkeletonBlock height="0.875rem" width="70%" class="mt-0.5" />
+      </div>
+    </div>
+    <div v-else class="grid grid-cols-2 lg:grid-cols-5 gap-3.5 mb-3.5">
       <div v-for="kpi in ([
         { t: 'Запланировано', v: summary.total,   s: 'слотов',           cls: 'border-blue-400',  vc: 'text-blue-600'  },
         { t: 'Сдано',         v: summary.done,    s: 'отчётов',          cls: 'border-green-500', vc: 'text-green-600' },
@@ -140,7 +147,18 @@ watch(period, load)
     </div>
 
     <!-- Ring + Stack row -->
-    <div class="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-3.5 mb-3.5">
+    <div v-if="loading" class="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-3.5 mb-3.5">
+      <div class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-4">
+        <SkeletonBlock height="1.5rem" width="60%" />
+        <SkeletonBlock height="9rem" width="100%" class="mt-3.5" rounded="rounded-lg" />
+      </div>
+      <div class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-4">
+        <SkeletonBlock height="1.5rem" width="60%" />
+        <SkeletonBlock height="2rem" width="100%" class="mt-3.5" rounded="rounded-lg" />
+        <SkeletonBlock height="1.5rem" width="100%" class="mt-3" rounded="rounded-lg" />
+      </div>
+    </div>
+    <div v-else class="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-3.5 mb-3.5">
       <div class="bg-white border border-gray-200 rounded-[14px] shadow-sm p-4">
         <h3 class="font-semibold text-[14.5px] mb-3.5">Выполнение</h3>
         <div class="flex items-center gap-4">
