@@ -18,6 +18,14 @@ const loadError = ref('')
 
 let $b24: null | B24Frame = null
 
+const goBack = () => {
+  if (window.history.length > 1) {
+    window.history.back()
+  } else {
+    void navigateTo('/')
+  }
+}
+
 const loadPage = async () => {
   loadError.value = ''
   try {
@@ -67,6 +75,22 @@ onMounted(loadPage)
       </div>
     </div>
     <template v-else-if="hasAccess">
+      <div class="max-w-[1180px] mx-auto px-6 pt-6">
+        <header class="mb-4">
+          <div class="flex items-start gap-3">
+            <button
+              aria-label="Назад"
+              class="inline-flex items-center justify-center w-9 h-9 rounded-full text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
+              @click="goBack"
+            >
+              ←
+            </button>
+            <div>
+              <h1 class="text-2xl font-semibold">Отчёты АЗС</h1>
+            </div>
+          </div>
+        </header>
+      </div>
       <div class="flex min-h-screen">
         <ReportNav v-model:active="activeTab" class="hidden lg:block" />
         <main class="flex-1 p-6 max-w-[1180px] mx-auto w-full pb-24 lg:pb-6">
