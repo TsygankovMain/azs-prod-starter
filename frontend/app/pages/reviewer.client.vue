@@ -55,6 +55,7 @@ const { initApp, processErrorGlobal } = useAppInit('ReviewerPage')
 const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
 const toast = useAppToast()
+const { confirm } = useConfirm()
 
 let $b24: null | B24Frame = null
 
@@ -505,6 +506,14 @@ const sendManualRequest = async () => {
     return
   }
 
+  const count = manualRequest.azsIds.length
+  const ok = await confirm({
+    title: 'Отправить запрос отчёта?',
+    text: `Push-уведомление получат ${count} АЗС. Отменить рассылку будет нельзя.`,
+    confirmLabel: `Отправить (${count})`,
+  })
+  if (!ok) return
+
   try {
     const now = new Date()
     const to2 = (n: number) => String(n).padStart(2, '0')
@@ -527,7 +536,6 @@ const sendManualRequest = async () => {
       slotHHmm
     })
 
-    const count = manualRequest.azsIds.length
     manualSuccess.value = `Задание отправлено для ${count} АЗС`
     manualRequest.azsIds = []
     azsSearchQuery.value = ''
@@ -665,6 +673,13 @@ const planGenerateMessage = ref('')
 const planGenerateError = ref('')
 
 const handleGeneratePlan = async () => {
+  const ok = await confirm({
+    title: 'Сформировать план рассылки?',
+    text: 'Будет создан новый план заданий для всех АЗС на сегодня. Уже запланированные задания будут заменены.',
+    confirmLabel: 'Сформировать',
+  })
+  if (!ok) return
+
   planGenerating.value = true
   planGenerateMessage.value = ''
   planGenerateError.value = ''
@@ -680,6 +695,13 @@ const handleGeneratePlan = async () => {
 }
 
 const runTimeout = async () => {
+  const ok = await confirm({
+    title: 'Запустить проверку просрочек сейчас?',
+    text: 'Будет выполнен принудительный обход открытых заданий: просроченные отчёты получат статус «Не сдан».',
+    confirmLabel: 'Запустить',
+  })
+  if (!ok) return
+
   timeoutMessage.value = ''
   try {
     const result = await apiStore.runTimeoutWatcher(200)

@@ -20,6 +20,7 @@ useHead({
         <NuxtPage />
       </NuxtLayout>
       <AppToasts />
+      <ConfirmDialog />
     </B24DashboardGroup>
   </B24App>
 </template>
