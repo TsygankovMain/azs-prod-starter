@@ -51,6 +51,7 @@ COPY infrastructure/timeweb/supervisord.conf /etc/supervisor/conf.d/supervisord.
 COPY infrastructure/timeweb/start-postgres.sh /usr/local/bin/start-postgres.sh
 COPY infrastructure/timeweb/init-db.sh /usr/local/bin/init-db.sh
 COPY infrastructure/timeweb/start-backend.sh /usr/local/bin/start-backend.sh
+COPY infrastructure/timeweb/timeweb-root-ca.crt /opt/app/infrastructure/timeweb/timeweb-root-ca.crt
 
 RUN chmod +x \
   /usr/local/bin/start-postgres.sh \
