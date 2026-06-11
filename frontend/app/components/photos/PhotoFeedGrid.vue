@@ -19,6 +19,7 @@ const props = defineProps<{
   items: PhotoFeedItem[]
   groupByAzs: boolean
   loading?: boolean
+  markedKeys?: Set<string>
 }>()
 
 const emit = defineEmits<{
@@ -155,6 +156,10 @@ const globalIndex = (item: PhotoFeedItem): number => {
   return props.items.indexOf(item)
 }
 
+const isMarked = (item: PhotoFeedItem): boolean => {
+  return props.markedKeys?.has(previewKey(item)) ?? false
+}
+
 const GRAD = 'linear-gradient(135deg,#6a8caf,#34506b)'
 
 const handleRemarkBadgeClick = (e: Event, item: PhotoFeedItem) => {
@@ -192,6 +197,7 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
           :ref="(el) => setTileRef(item, el as HTMLElement | null)"
           :data-preview-key="previewKey(item)"
           class="relative rounded-[11px] aspect-[4/3] overflow-hidden border border-black/5 flex items-end text-white cursor-pointer group"
+          :class="isMarked(item) ? 'ring-2 ring-blue-500' : ''"
           :style="`background:${GRAD}`"
           @click="emit('open', globalIndex(item))"
         >
@@ -216,7 +222,8 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
 
           <!-- Флажок «Отметить» — зона ≥40px, stopPropagation -->
           <button
-            class="absolute top-2 right-2 z-20 w-10 h-10 flex items-center justify-center bg-black/30 rounded-full hover:bg-black/50 transition-colors"
+            class="absolute top-2 right-2 z-20 w-10 h-10 flex items-center justify-center rounded-full transition-colors"
+            :class="isMarked(item) ? 'bg-blue-500/80 hover:bg-blue-600/80' : 'bg-black/30 hover:bg-black/50'"
             aria-label="Отметить"
             @click="handleToggleMark($event, item)"
           >
@@ -255,6 +262,7 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
             :ref="(el) => setTileRef(item, el as HTMLElement | null)"
             :data-preview-key="previewKey(item)"
             class="relative rounded-[11px] aspect-[4/3] overflow-hidden border border-black/5 flex items-end text-white cursor-pointer group"
+            :class="isMarked(item) ? 'ring-2 ring-blue-500' : ''"
             :style="`background:${GRAD}`"
             @click="emit('open', globalIndex(item))"
           >
@@ -276,7 +284,8 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
             </button>
 
             <button
-              class="absolute top-2 right-2 z-20 w-10 h-10 flex items-center justify-center bg-black/30 rounded-full hover:bg-black/50 transition-colors"
+              class="absolute top-2 right-2 z-20 w-10 h-10 flex items-center justify-center rounded-full transition-colors"
+              :class="isMarked(item) ? 'bg-blue-500/80 hover:bg-blue-600/80' : 'bg-black/30 hover:bg-black/50'"
               aria-label="Отметить"
               @click="handleToggleMark($event, item)"
             >

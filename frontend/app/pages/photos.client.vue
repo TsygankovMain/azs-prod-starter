@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { B24Frame } from '@bitrix24/b24jssdk'
 import type { PhotoFiltersValue } from '~/components/photos/PhotoFilters.vue'
+import type { RemarkRecipient } from '~/components/photos/RemarkDraftPanel.vue'
 
 const PAGE_TITLE = 'Фотолента АЗС'
 useHead({ title: PAGE_TITLE })
@@ -36,12 +37,9 @@ const loadPersistedFilters = (): PhotoFiltersValue => {
     const raw = localStorage.getItem(FILTERS_KEY)
     if (!raw) return { ...DEFAULT_FILTERS }
     const parsed = JSON.parse(raw) as Partial<PhotoFiltersValue>
-    // «Сегодня» остаётся живым «сегодня» — period reset при чтении не нужен,
-    // но custom-даты не несут смысла между заходами — очистим
     return {
       ...DEFAULT_FILTERS,
       ...parsed,
-      // Если период был custom и даты протухли — не страшно, пользователь поправит
     }
   } catch {
     return { ...DEFAULT_FILTERS }
@@ -101,7 +99,6 @@ const isLoading = ref(false)
 const isLoadingMore = ref(false)
 const LIMIT = 40
 
-// Вычисляем диапазон дат по активному фильтру периода
 const getDateRange = (): { from: string; to: string } => {
   const now = new Date()
   const to2 = (n: number) => String(n).padStart(2, '0')
@@ -185,6 +182,219 @@ const setupSentinel = () => {
   sentinelObserver.observe(sentinelRef.value)
 }
 
+// ── Черновик замечания (С1/С2/С3) ────────────────────────────────────────
+type MarkEntry = { reportId: number; photoCode: string; azsId: string; azsTitle: string }
+const marks = ref(new Map<string, MarkEntry>())
+const activeAzsId = ref<string>('')
+
+const markedKeys = computed(() => new Set(marks.value.keys()))
+
+const draftCount = computed(() => marks.value.size)
+
+const draftAzsTitle = computed(() => {
+  if (!activeAzsId.value) return ''
+  for (const entry of marks.value.values()) {
+    if (entry.azsId === activeAzsId.value) return entry.azsTitle || `АЗС ${entry.azsId}`
+  }
+  return `АЗС ${activeAzsId.value}`
+})
+
+// ── Получатели (загружаются при первой отметке АЗС) ───────────────────────
+const draftManager = ref<RemarkRecipient>(null)
+const draftAdmin = ref<RemarkRecipient>(null)
+const recipientsLoading = ref(false)
+
+const loadRecipients = async (azsId: string) => {
+  recipientsLoading.value = true
+  try {
+    const resp = await apiStore.getPhotoRecipients(azsId)
+    draftManager.value = resp.manager
+    draftAdmin.value = resp.admin
+  } catch {
+    draftManager.value = null
+    draftAdmin.value = null
+  } finally {
+    recipientsLoading.value = false
+  }
+}
+
+// ── Шаблоны из настроек (с фоллбеком) ────────────────────────────────────
+const DEFAULT_TEMPLATES = [
+  'Переделайте выкладку промо-товара',
+  'Перегрузите правый монитор — старая реклама'
+]
+
+const settingsTemplates = ref<string[] | null>(null)
+
+const remarkTemplates = computed<string[]>(() => {
+  if (settingsTemplates.value && settingsTemplates.value.length > 0) return settingsTemplates.value
+  return DEFAULT_TEMPLATES
+})
+
+const loadRemarkTemplates = async () => {
+  try {
+    const resp = await apiStore.getSettings()
+    const raw = (resp.settings as Record<string, unknown>)?.photoFeed
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const feed = raw as Record<string, unknown>
+      if (Array.isArray(feed.remarkTemplates) && feed.remarkTemplates.length > 0) {
+        settingsTemplates.value = feed.remarkTemplates.map(String)
+      }
+    }
+  } catch {
+    // фоллбек на DEFAULT_TEMPLATES — уже задан
+  }
+}
+
+// ── Отправка (С1/С2) ─────────────────────────────────────────────────────
+const isSending = ref(false)
+
+const handleSend = async ({ recipientRole, message }: { recipientRole: 'manager' | 'admin'; message: string }) => {
+  if (isSending.value || marks.value.size === 0) return
+  isSending.value = true
+  try {
+    const photos = [...marks.value.values()].map(m => ({ reportId: m.reportId, photoCode: m.photoCode }))
+    const result = await apiStore.sendPhotoRemark({
+      azsId: activeAzsId.value,
+      recipientRole,
+      message,
+      photos
+    })
+    const rec = result.item
+    // Локально проставить remark на отмеченные фото (бейджи сразу)
+    for (const [, entry] of marks.value.entries()) {
+      const idx = items.value.findIndex(i => i.reportId === entry.reportId && i.photoCode === entry.photoCode)
+      if (idx !== -1) {
+        items.value[idx] = {
+          ...items.value[idx],
+          remark: {
+            dt: rec.createdAt,
+            recipientName: rec.recipientName,
+            message: rec.message,
+            senderName: rec.senderName
+          }
+        }
+      }
+    }
+    const n = marks.value.size
+    toast.success(`Отправлено: ${rec.recipientName} (АЗС ${rec.azsId}) — ${n} фото`)
+    marks.value = new Map()
+    activeAzsId.value = ''
+    draftManager.value = null
+    draftAdmin.value = null
+  } catch (e: unknown) {
+    const errData = (e as { data?: { errorCode?: string; message?: string } })?.data
+    if (errData?.errorCode === 'RECIPIENT_NOT_SET') {
+      toast.error('У АЗС не указан получатель — выберите администратора')
+    } else {
+      toast.error(errData?.message || (e instanceof Error ? e.message : 'Не удалось отправить замечание'))
+    }
+    // Черновик НЕ теряем при ошибке
+  } finally {
+    isSending.value = false
+  }
+}
+
+const handleDraftClear = () => {
+  marks.value = new Map()
+  activeAzsId.value = ''
+  draftManager.value = null
+  draftAdmin.value = null
+}
+
+// ── Inline-конфликт АЗС (С3) ─────────────────────────────────────────────
+const conflictItem = ref<PhotoFeedItem | null>(null)
+const conflictMessage = computed(() => {
+  if (!conflictItem.value) return ''
+  const n = marks.value.size
+  return `В замечании уже ${n} фото АЗС ${draftAzsTitle.value}`
+})
+
+const resolveConflictSendCurrentThenMark = () => {
+  // Закрываем конфликт — пользователь возвращается в панель для отправки текущего
+  conflictItem.value = null
+}
+
+const resolveConflictClearAndMark = () => {
+  const item = conflictItem.value
+  if (!item) return
+  conflictItem.value = null
+  marks.value = new Map()
+  activeAzsId.value = ''
+  draftManager.value = null
+  draftAdmin.value = null
+  // Отмечаем новое фото
+  doMark(item)
+}
+
+const doMark = (item: PhotoFeedItem) => {
+  const key = `${item.reportId}:${item.photoCode}`
+  if (marks.value.has(key)) {
+    // Снять отметку
+    const next = new Map(marks.value)
+    next.delete(key)
+    marks.value = next
+    if (marks.value.size === 0) activeAzsId.value = ''
+    return
+  }
+  // Добавить отметку
+  const next = new Map(marks.value)
+  next.set(key, {
+    reportId: item.reportId,
+    photoCode: item.photoCode,
+    azsId: item.azsId,
+    azsTitle: item.azsTitle || `АЗС ${item.azsId}`
+  })
+  marks.value = next
+  if (!activeAzsId.value) {
+    activeAzsId.value = item.azsId
+    void loadRecipients(item.azsId)
+  }
+}
+
+// ── Лайтбокс ─────────────────────────────────────────────────────────────
+const lightboxIndex = ref(-1)
+const lightboxOpen = computed(() => lightboxIndex.value >= 0)
+
+// ── Обработчики событий сетки ─────────────────────────────────────────────
+const handleOpen = (index: number) => {
+  lightboxIndex.value = index
+}
+
+const handleToggleMark = (item: PhotoFeedItem) => {
+  const key = `${item.reportId}:${item.photoCode}`
+  const isAlreadyMarked = marks.value.has(key)
+
+  if (!isAlreadyMarked && activeAzsId.value && item.azsId !== activeAzsId.value) {
+    // С3: конфликт АЗС — показать inline-промпт
+    conflictItem.value = item
+    return
+  }
+
+  doMark(item)
+}
+
+const handleRemarkInfo = (item: PhotoFeedItem) => {
+  if (!item.remark) return
+  const r = item.remark
+  const dt = r.dt
+    ? new Date(r.dt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : '—'
+  toast.info(`${dt} → ${r.recipientName}: «${r.message}» — отправил ${r.senderName}`)
+}
+
+const handleLightboxNeedMore = () => {
+  void loadMore()
+}
+
+const handleLightboxClose = () => {
+  lightboxIndex.value = -1
+}
+
+const handleLightboxToggleMark = (item: PhotoFeedItem) => {
+  handleToggleMark(item)
+}
+
 onMounted(async () => {
   try {
     $b24 = await $initializeB24Frame()
@@ -201,7 +411,8 @@ onMounted(async () => {
 
     await Promise.all([
       loadAzsOptions(),
-      loadFeed()
+      loadFeed(),
+      loadRemarkTemplates()
     ])
 
     nextTick(() => setupSentinel())
@@ -230,19 +441,6 @@ watch(filters, () => {
     void loadFeed()
   }, 120)
 }, { deep: true })
-
-// ── Обработчики событий сетки — стабы (подключат следующие волны) ─────────
-const handleOpen = (index: number) => {
-  console.debug('[PhotoFeed] open tile', index)
-}
-
-const handleToggleMark = (item: PhotoFeedItem) => {
-  console.debug('[PhotoFeed] toggle-mark', item.reportId, item.photoCode)
-}
-
-const handleRemarkInfo = (item: PhotoFeedItem) => {
-  console.debug('[PhotoFeed] remark-info', item.reportId, item.photoCode, item.remark)
-}
 
 const goBack = () => {
   if (window.history.length > 1) {
@@ -355,6 +553,7 @@ const goBack = () => {
                 :items="items"
                 :group-by-azs="filters.groupByAzs"
                 :loading="isLoading"
+                :marked-keys="markedKeys"
                 @open="handleOpen"
                 @toggle-mark="handleToggleMark"
                 @remark-info="handleRemarkInfo"
@@ -390,10 +589,82 @@ const goBack = () => {
                 Все фото загружены · {{ items.length }} шт.
               </p>
             </template>
+
+            <!-- Inline-конфликт АЗС (С3) — поверх панели -->
+            <div
+              v-if="conflictItem"
+              class="fixed bottom-0 left-0 right-0 z-[100] bg-amber-50 border-t border-amber-300 shadow-lg px-4 py-4"
+            >
+              <p class="text-sm font-semibold text-amber-800 mb-3">
+                {{ conflictMessage }}
+              </p>
+              <div class="flex gap-2 flex-wrap">
+                <button
+                  class="px-4 py-2 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 transition-colors"
+                  @click="resolveConflictSendCurrentThenMark"
+                >
+                  Отправить текущее
+                </button>
+                <button
+                  class="px-4 py-2 rounded-lg text-sm font-medium bg-white border border-amber-400 text-amber-800 hover:bg-amber-50 transition-colors"
+                  @click="resolveConflictClearAndMark"
+                >
+                  Очистить и начать с этого фото
+                </button>
+                <button
+                  class="px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-100 transition-colors"
+                  @click="conflictItem = null"
+                >
+                  Отмена
+                </button>
+              </div>
+            </div>
+
+            <!-- Панель черновика sticky снизу (при draftCount > 0, нет конфликта) -->
+            <div
+              v-else-if="draftCount > 0"
+              class="fixed bottom-0 left-0 right-0 z-[90]"
+            >
+              <RemarkDraftPanel
+                :count="draftCount"
+                :azs-id="activeAzsId"
+                :azs-title="draftAzsTitle"
+                :manager="draftManager"
+                :admin="draftAdmin"
+                :recipients-loading="recipientsLoading"
+                :templates="remarkTemplates"
+                :is-sending="isSending"
+                @send="handleSend"
+                @clear="handleDraftClear"
+              />
+            </div>
+
           </main>
         </div>
 
       </div>
     </template>
+
+    <!-- Полноэкранный лайтбокс -->
+    <PhotoLightbox
+      v-if="lightboxOpen"
+      :items="items"
+      :start-index="lightboxIndex"
+      :marked-keys="markedKeys"
+      :draft-count="draftCount"
+      :draft-azs-id="activeAzsId"
+      :draft-azs-title="draftAzsTitle"
+      :draft-manager="draftManager"
+      :draft-admin="draftAdmin"
+      :draft-recipients-loading="recipientsLoading"
+      :draft-templates="remarkTemplates"
+      :draft-is-sending="isSending"
+      :has-more="Boolean(nextCursor)"
+      @close="handleLightboxClose"
+      @toggle-mark="handleLightboxToggleMark"
+      @need-more="handleLightboxNeedMore"
+      @draft-send="handleSend"
+      @draft-clear="handleDraftClear"
+    />
   </div>
 </template>

@@ -465,6 +465,32 @@ export const useApiStore = defineStore(
       })
     }
 
+    type PhotoRemarkRecord = {
+      id: number
+      createdAt: string
+      azsId: string
+      azsTitle: string | null
+      recipientRole: 'manager' | 'admin'
+      recipientName: string
+      message: string
+      senderName: string
+      deliveryStatus: 'sent' | 'failed'
+      deliveryError: string | null
+    }
+
+    const sendPhotoRemark = async (payload: {
+      azsId: string
+      recipientRole: 'manager' | 'admin'
+      message: string
+      photos: Array<{ reportId: number; photoCode: string }>
+    }): Promise<{ item: PhotoRemarkRecord }> => {
+      return await $api('/api/photo-remarks', {
+        method: 'POST',
+        body: payload,
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
     const getPhotoPreviewObjectUrl = async (reportId: number, photoCode: string): Promise<string> => {
       const blob = await $fetch(`${apiUrl}/api/reports/photos/${reportId}/${encodeURIComponent(photoCode)}/preview`, {
         headers: { Authorization: `Bearer ${tokenJWT.value}` },
@@ -544,7 +570,8 @@ export const useApiStore = defineStore(
       getReasonCounts,
       getPhotoFeed,
       getPhotoCategories,
-      getPhotoRecipients
+      getPhotoRecipients,
+      sendPhotoRemark
     }
   }
 )
