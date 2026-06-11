@@ -90,7 +90,6 @@ watch(date, load)
         <h1 class="text-[21px] font-semibold">Фото-витрина дня</h1>
         <p class="text-sm text-gray-500 mt-0.5">Все сданные сегодня фото в одном экране — видно порядок «как есть»</p>
       </div>
-      <span class="text-[11.5px] text-gray-400 bg-white border border-gray-200 px-2 py-1 rounded-full">источник: report_photo + Bitrix Disk</span>
     </div>
 
     <!-- Выбор даты -->

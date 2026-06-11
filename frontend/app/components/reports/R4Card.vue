@@ -136,7 +136,6 @@ watch(selectedAzsId, load)
         <h1 class="text-[21px] font-semibold">Карточка АЗС</h1>
         <p class="text-sm text-gray-500 mt-0.5">Полный таймлайн прохождения и фото-доказательства</p>
       </div>
-      <span class="text-[11.5px] text-gray-400 bg-white border border-gray-200 px-2 py-1 rounded-full">источник: dispatch_log + report_photo</span>
     </div>
 
     <!-- AZS picker -->

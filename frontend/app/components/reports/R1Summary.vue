@@ -93,7 +93,6 @@ watch(period, load)
         <h1 class="text-[21px] font-semibold">Сводка за день</h1>
         <p class="text-sm text-gray-500 mt-0.5">Операционный статус прохождения отчётов по всем АЗС</p>
       </div>
-      <span class="text-[11.5px] text-gray-400 bg-white border border-gray-200 px-2 py-1 rounded-full">источник: dispatch_log · getSummary + list</span>
     </div>
 
     <!-- Фильтры -->

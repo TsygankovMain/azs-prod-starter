@@ -44,7 +44,6 @@ watch(period, load)
         <h1 class="text-[21px] font-semibold">Динамика дисциплины</h1>
         <p class="text-sm text-gray-500 mt-0.5">Как меняется доля отчётов, сданных вовремя</p>
       </div>
-      <span class="text-[11.5px] text-gray-400 bg-white border border-gray-200 px-2 py-1 rounded-full">источник: getSummary по дням</span>
     </div>
 
     <div class="inline-flex bg-white border border-gray-200 rounded-[10px] p-0.5 shadow-sm mb-4">
