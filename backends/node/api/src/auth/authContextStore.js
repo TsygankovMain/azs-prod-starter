@@ -47,6 +47,17 @@ const normalizeContextRecord = (input = {}) => {
   };
 };
 
+// Merges a partial update (source) over an existing record (previous).
+// Does NOT pre-normalize `source` to avoid wiping fields the caller did not
+// supply (e.g. a fresh authId without a new refreshToken must keep the old
+// refreshToken). Normalization happens after the merge.
+// Exported so databaseAuthContextStore can reuse identical merge logic.
+export const mergeContextRecords = (previous = {}, source = {}) => normalizeContextRecord({
+  ...previous,
+  ...source,
+  updatedAt: new Date().toISOString()
+});
+
 const normalizeStoreState = (input = {}) => {
   const source = isPlainObject(input) ? input : {};
   const contextsRaw = isPlainObject(source.contexts) ? source.contexts : {};
@@ -131,11 +142,7 @@ export class AuthContextStore {
     const state = await this.mutate((current) => {
       const next = normalizeStoreState(current);
       const previous = next.contexts[key] || {};
-      const merged = normalizeContextRecord({
-        ...previous,
-        ...source,
-        updatedAt: new Date().toISOString()
-      });
+      const merged = mergeContextRecords(previous, source);
       next.contexts[key] = merged;
       if (merged.isAdmin) {
         next.lastAdminKey = key;
