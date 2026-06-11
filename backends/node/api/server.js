@@ -41,6 +41,7 @@ import createReasonForwardingService from './src/notifications/reasonForwardingS
 import { validateRequiredEnv } from './utils/validateEnv.js';
 import { resolvePgSslConfig } from './utils/dbSsl.js';
 import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from './src/shared/transientErrors.js';
+import { maskAuthFields } from './utils/maskSecret.js';
 
 try {
   validateRequiredEnv();
@@ -507,7 +508,7 @@ app.use('/api/photo-remarks', verifyToken, attachAccessContext, createPhotoRemar
 
 app.post('/api/install', async (req, res) => {
   try {
-    console.log('/api/install', req.body);
+    console.log('/api/install', maskAuthFields(req.body));
     const botMode = String(process.env.BITRIX_BOT_MODE || 'notify').trim().toLowerCase();
     const authId = String(req.body?.AUTH_ID || '').trim();
     const refreshToken = String(req.body?.REFRESH_TOKEN || req.body?.REFRESH_ID || '').trim();
@@ -618,7 +619,7 @@ app.post('/api/install', async (req, res) => {
 
 app.post('/api/getToken', async (req, res) => {
   try {
-    console.log('/api/getToken', req.body);
+    console.log('/api/getToken', maskAuthFields(req.body));
     const authId = String(req.body?.AUTH_ID || '').trim();
     const refreshToken = String(req.body?.REFRESH_TOKEN || req.body?.REFRESH_ID || '').trim();
     const domain = String(req.body?.DOMAIN || '').trim().toLowerCase();

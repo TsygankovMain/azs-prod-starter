@@ -1,4 +1,5 @@
 import cron from 'node-cron';
+import { createThrottledLog } from '../shared/throttledLogger.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -36,6 +37,9 @@ export const createTokenRefreshScheduler = ({
 } = {}) => {
   if (!authContextStore) throw new Error('tokenRefreshScheduler requires authContextStore');
   if (!bitrixClient) throw new Error('tokenRefreshScheduler requires bitrixClient');
+
+  // Throttle repeated refresh failures to avoid log storms (once per 5 min per key).
+  const throttledLog = createThrottledLog({ logger });
 
   let task = null;
 
@@ -77,10 +81,12 @@ export const createTokenRefreshScheduler = ({
           logger.info('tokenRefreshScheduler.force_refresh.ok', { key });
         } catch (error) {
           failed += 1;
-          logger.error('tokenRefreshScheduler.force_refresh.failed', {
-            key,
-            message: error.message
-          });
+          throttledLog(
+            `tokenRefreshScheduler.force_refresh.failed:${key}`,
+            'error',
+            'tokenRefreshScheduler.force_refresh.failed',
+            { key, message: error.message }
+          );
         }
         continue;
       }

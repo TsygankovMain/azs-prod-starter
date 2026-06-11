@@ -1,4 +1,5 @@
 import { createGuardedTick } from '../shared/guardedTick.js';
+import { createThrottledLog } from '../shared/throttledLogger.js';
 
 /**
  * Stale-planned slot threshold in minutes (default 30).
@@ -86,6 +87,9 @@ export const createDispatchScheduler = ({
   let generationTask = null;
   let lastSlotKey = '';
   let alertSentForDate = '';
+
+  // Throttle repeated "missing auth/webhook context" warns to 1 line per 5 min.
+  const throttledLog = createThrottledLog({ logger });
 
   // Background context for generation/execution: prefer the injected webhook
   // context, fall back to the per-user runtime context (legacy behavior).
@@ -285,7 +289,12 @@ export const createDispatchScheduler = ({
     const settings = settingsStore ? await settingsStore.read() : {};
     const context = await resolveBackgroundContext();
     if (!hasUsableContext(context)) {
-      logger.warn('dispatchScheduler: generatePlanForDate skipped — missing auth/webhook context', { dateKey });
+      throttledLog(
+        'dispatchScheduler.generatePlanForDate.no_context',
+        'warn',
+        'dispatchScheduler: generatePlanForDate skipped — missing auth/webhook context',
+        { dateKey }
+      );
       return { ok: false, reason: 'no_context' };
     }
     const candidates = await (async () => {
@@ -370,7 +379,12 @@ export const createDispatchScheduler = ({
 
     const context = await resolveBackgroundContext();
     if (!hasUsableContext(context)) {
-      logger.warn('dispatchScheduler: executeDuePlans skipped — missing auth/webhook context');
+      throttledLog(
+        'dispatchScheduler.executeDuePlans.no_context',
+        'warn',
+        'dispatchScheduler: executeDuePlans skipped — missing auth/webhook context',
+        {}
+      );
       return { due: 0, executed: 0, duplicates: 0, failed: 0 };
     }
 
@@ -644,10 +658,12 @@ export const createDispatchScheduler = ({
     }
 
     if (!String(context?.authId || '').trim()) {
-      logger.warn('dispatchScheduler: auth_context_unavailable', {
-        slotKey,
-        reason: 'missing_auth_id'
-      });
+      throttledLog(
+        'dispatchScheduler.auth_context_unavailable',
+        'warn',
+        'dispatchScheduler: auth_context_unavailable',
+        { slotKey, reason: 'missing_auth_id' }
+      );
       return {
         summary: {
           total: 0,

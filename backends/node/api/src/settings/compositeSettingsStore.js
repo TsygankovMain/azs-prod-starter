@@ -1,4 +1,5 @@
 import { normalizeSettings } from './defaultSettings.js';
+import { createThrottledLog } from '../shared/throttledLogger.js';
 
 const normalizeContext = (value) => (
   value && typeof value === 'object' && !Array.isArray(value)
@@ -12,6 +13,9 @@ export const createCompositeSettingsStore = ({
   getDefaultContext = null,
   logger = console
 } = {}) => {
+  // Throttle repetitive background-read errors to one summary per 5 minutes so
+  // a settings.bitrix_read_failed storm (2000+ lines/hour) becomes manageable.
+  const throttledLog = createThrottledLog({ logger });
   if (!bitrixStore || !dbStore) {
     throw new Error('bitrixStore and dbStore are required');
   }
@@ -48,7 +52,7 @@ export const createCompositeSettingsStore = ({
           return bitrixSettings;
         }
       } catch (error) {
-        logger.warn('settings.bitrix_read_failed', { message: error.message });
+        throttledLog('settings.bitrix_read_failed', 'warn', 'settings.bitrix_read_failed', { message: error.message });
       }
 
       try {
