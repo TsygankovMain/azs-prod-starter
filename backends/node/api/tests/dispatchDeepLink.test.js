@@ -110,7 +110,8 @@ test('BITRIX_APP_CODE empty string — notifyDispatch receives no keyboard', asy
   }
 });
 
-test('BITRIX_APP_CODE set — notifyDispatch receives keyboard with «Открыть приложение» button containing reportId', async () => {
+// BUG-019: «Открыть приложение» LINK button removed; «Указать причину» is now COMMAND.
+test('BITRIX_APP_CODE set — notifyDispatch receives keyboard with COMMAND reason button (no open-app button)', async () => {
   const prevAppCode = process.env.BITRIX_APP_CODE;
   try {
     process.env.BITRIX_APP_CODE = 'local.test.app123';
@@ -138,15 +139,18 @@ test('BITRIX_APP_CODE set — notifyDispatch receives keyboard with «Откры
     assert.ok(typeof keyboard === 'object' && !Array.isArray(keyboard), 'keyboard must be a plain object (not array)');
     assert.ok(Array.isArray(keyboard.BUTTONS), 'keyboard.BUTTONS must be an array');
     assert.ok(keyboard.BUTTONS.length > 0, 'keyboard.BUTTONS must not be empty');
-    // No nested arrays — each element must be a plain object
     for (const btn of keyboard.BUTTONS) {
       assert.ok(!Array.isArray(btn), 'keyboard.BUTTONS elements must NOT be arrays (flat format)');
     }
-    const firstButton = keyboard.BUTTONS[0];
-    assert.equal(firstButton.TEXT, 'Открыть приложение', 'first button text must be «Открыть приложение»');
-    assert.ok(typeof firstButton.LINK === 'string', 'button must have a LINK');
-    assert.match(firstButton.LINK, /\/marketplace\/view\//, 'link must contain /marketplace/view/');
-    assert.match(firstButton.LINK, /5503/, 'link must contain the reportItemId');
+    // «Открыть приложение» LINK button must be gone
+    const openBtn = keyboard.BUTTONS.find(b => b.TEXT === 'Открыть приложение');
+    assert.equal(openBtn, undefined, '«Открыть приложение» LINK button must be removed (BUG-019)');
+    // «Указать причину» COMMAND button must exist
+    const reasonBtn = keyboard.BUTTONS.find(b => String(b.TEXT || '').includes('причину'));
+    assert.ok(reasonBtn, '«Указать причину» button must be present');
+    assert.equal(reasonBtn.TYPE, 'COMMAND', '«Указать причину» must be TYPE=COMMAND');
+    assert.ok(String(reasonBtn.COMMAND).includes('5503'), 'COMMAND string must embed the reportId');
+    assert.equal(reasonBtn.LINK, undefined, 'COMMAND button must not have LINK');
   } finally {
     if (prevAppCode === undefined) {
       delete process.env.BITRIX_APP_CODE;
@@ -156,7 +160,7 @@ test('BITRIX_APP_CODE set — notifyDispatch receives keyboard with «Откры
   }
 });
 
-test('BITRIX_APP_CODE set — keyboard second button is «Не успеваю — указать причину» with reason deep-link, NEWLINE separator', async () => {
+test('BITRIX_APP_CODE set — keyboard is single COMMAND button (no NEWLINE, no open-app)', async () => {
   const prevAppCode = process.env.BITRIX_APP_CODE;
   try {
     process.env.BITRIX_APP_CODE = 'local.test.app123';
@@ -179,21 +183,17 @@ test('BITRIX_APP_CODE set — keyboard second button is «Не успеваю �
 
     assert.equal(notifiedPayloads.length, 1);
     const { keyboard } = notifiedPayloads[0];
-    // W1-1: flat {BOT_ID, BUTTONS} format — no nested arrays
     assert.ok(keyboard !== null && keyboard !== undefined, 'keyboard must be present');
-    assert.ok(typeof keyboard === 'object' && !Array.isArray(keyboard), 'keyboard must be a plain object');
     assert.ok(Array.isArray(keyboard.BUTTONS), 'keyboard.BUTTONS must be an array');
     for (const btn of keyboard.BUTTONS) {
       assert.ok(!Array.isArray(btn), 'keyboard.BUTTONS elements must NOT be arrays (flat format)');
     }
-    // Structure: [openBtn, NEWLINE, reasonBtn]
-    assert.ok(keyboard.BUTTONS.length >= 3, 'must have at least 3 elements (2 buttons + NEWLINE)');
-    assert.equal(keyboard.BUTTONS[1].TYPE, 'NEWLINE', 'NEWLINE must be between buttons');
-    const secondButton = keyboard.BUTTONS[2];
-    assert.ok(secondButton, 'second button must exist');
-    assert.equal(secondButton.TEXT, 'Не успеваю — указать причину', 'second button text must be for reason');
-    assert.match(secondButton.LINK, /\/marketplace\/view\//, 'reason link must contain /marketplace/view/');
-    assert.match(secondButton.LINK, /reason/, 'reason link must contain /reason/');
+    // Only 1 real button — no NEWLINE needed
+    const realButtons = keyboard.BUTTONS.filter(b => b.TYPE !== 'NEWLINE');
+    assert.equal(realButtons.length, 1, 'must have exactly 1 real button (reason COMMAND only)');
+    assert.equal(realButtons[0].TYPE, 'COMMAND', 'sole button must be COMMAND type');
+    assert.equal(realButtons[0].TEXT, 'Не успеваю — указать причину');
+    assert.match(String(realButtons[0].COMMAND), /reason:5510/, 'COMMAND must contain reason:reportId');
   } finally {
     if (prevAppCode === undefined) {
       delete process.env.BITRIX_APP_CODE;
