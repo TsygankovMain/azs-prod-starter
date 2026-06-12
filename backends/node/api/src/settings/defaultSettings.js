@@ -36,7 +36,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
       new: '',
       inProgress: '',
       done: '',
-      expired: ''
+      expired: '',
+      rejected: '' // NEW: стадия «Брак» — карточка бракуется после ответа причины через бота
     },
     timeoutMinutes: 60,
     dispatchJitterMinutes: 15,

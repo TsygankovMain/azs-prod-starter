@@ -35,6 +35,7 @@ type SettingsTree = {
       inProgress: string
       done: string
       expired: string
+      rejected: string
     }
     timeoutMinutes: number
     dispatchJitterMinutes: number
@@ -215,7 +216,8 @@ function makeEmptySettings(): SettingsTree {
         new: '',
         inProgress: '',
         done: '',
-        expired: ''
+        expired: '',
+        rejected: ''
       },
       timeoutMinutes: 60,
       dispatchJitterMinutes: 15,
@@ -457,7 +459,8 @@ function readSettings(): SettingsTree {
         new: form.report.stages.new,
         inProgress: form.report.stages.inProgress,
         done: form.report.stages.done,
-        expired: form.report.stages.expired
+        expired: form.report.stages.expired,
+        rejected: form.report.stages.rejected
       },
       timeoutMinutes: toPositiveInt(form.report.timeoutMinutes, 60, 1),
       dispatchJitterMinutes: toPositiveInt(form.report.dispatchJitterMinutes, 15, 0),
@@ -1419,6 +1422,16 @@ onUnmounted(() => {
                     @update:model-value="(v) => setStageSelectValue('expired', String(v ?? ''))"
                   />
                 </B24FormField>
+                <B24FormField label="Стадия: брак" class="w-full">
+                  <B24Select
+                    :items="stageSelectItemsWithNone()"
+                    :model-value="getStageSelectValue('rejected')"
+                    :disabled="!isAdminReady || !reportStages.length"
+                    placeholder="Выберите стадию"
+                    class="w-full"
+                    @update:model-value="(v) => setStageSelectValue('rejected', String(v ?? ''))"
+                  />
+                </B24FormField>
                 <B24FormField label="Таймаут, минут" class="w-full">
                   <template #label>
                     <span class="inline-flex items-center gap-1">
@@ -2119,6 +2132,16 @@ onUnmounted(() => {
                   placeholder="Выберите стадию"
                   class="w-full"
                   @update:model-value="(v) => setStageSelectValue('expired', String(v ?? ''))"
+                />
+              </B24FormField>
+              <B24FormField label="Стадия: брак" class="w-full">
+                <B24Select
+                  :items="stageSelectItemsWithNone()"
+                  :model-value="getStageSelectValue('rejected')"
+                  :disabled="!isAdminReady || !reportStages.length"
+                  placeholder="Выберите стадию"
+                  class="w-full"
+                  @update:model-value="(v) => setStageSelectValue('rejected', String(v ?? ''))"
                 />
               </B24FormField>
               <B24FormField label="Таймаут, минут" class="w-full">
