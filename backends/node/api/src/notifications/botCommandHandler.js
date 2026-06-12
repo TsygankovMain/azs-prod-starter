@@ -47,6 +47,12 @@ export const createBotCommandHandler = ({
   reasonStore,
   reasonCaptureStore,
   botId = Number(process.env.BITRIX_BOT_ID || 0),
+  // Optional best-effort side-effects hook fired AFTER a reason is captured and
+  // confirmed: writes the reason to the CRM report card and forwards it to the
+  // responsible chat — parity with the app path (POST /:id/reason). Injected from
+  // server.js where settings/forwarding/CRM deps are available. Never blocks or
+  // breaks the «Причина принята» reply.
+  onReasonCaptured = null,
   logger = console
 }) => {
   if (!bitrixClient || typeof bitrixClient.callMethod !== 'function') {
@@ -131,6 +137,27 @@ export const createBotCommandHandler = ({
       });
 
       logger.info('bot_reason_captured', { userId, dialogId, reportId: state.reportId });
+
+      // Best-effort side-effects (CRM card + forward to chat). Must NOT break the
+      // capture or the confirmation reply above — those already succeeded.
+      if (typeof onReasonCaptured === 'function') {
+        try {
+          await onReasonCaptured({
+            reportId: state.reportId,
+            azsId: state.azsId,
+            userId: Number(userId),
+            reasonCode: 'other',
+            reasonText: trimmed
+          });
+        } catch (sideError) {
+          logger.warn('bot_reason_sideeffects_failed', {
+            userId,
+            dialogId,
+            reportId: state.reportId,
+            error: sideError?.message || String(sideError)
+          });
+        }
+      }
     } catch (error) {
       logger.warn('bot_reason_capture_failed', {
         userId,

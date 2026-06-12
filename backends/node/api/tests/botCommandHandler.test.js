@@ -164,3 +164,62 @@ test('handleMessage: empty text is ignored even when awaiting', async () => {
   assert.equal(repliedMessages.length, 0);
   assert.ok(store.getAwaiting({ userId: 40, dialogId: 'u40' }) !== null, 'state must remain when text is blank');
 });
+
+// ─── onReasonCaptured hook: CRM write + forward parity with the app path ───────
+
+test('handleMessage: invokes onReasonCaptured with reportId/azsId/text after capturing', async () => {
+  const store = createReasonCaptureStore();
+  const captured = [];
+  const handler = createBotCommandHandler({
+    bitrixClient: { callMethod: async () => ({ ok: true }) },
+    reasonStore: { upsert: async (p) => p },
+    reasonCaptureStore: store,
+    botId: 777,
+    logger: { info: () => {}, warn: () => {} },
+    onReasonCaptured: async (payload) => { captured.push(payload); }
+  });
+  store.setAwaiting({ userId: 20, dialogId: 'u20', reportId: 99, azsId: 'azs-9' });
+
+  await handler.handleMessage({ userId: 20, dialogId: 'u20', text: 'Очередь на мойку' });
+
+  assert.equal(captured.length, 1, 'onReasonCaptured must fire once after capture');
+  assert.equal(captured[0].reportId, 99);
+  assert.equal(captured[0].azsId, 'azs-9');
+  assert.ok(String(captured[0].reasonText).includes('Очередь'), 'reasonText must reach the hook');
+});
+
+test('handleMessage: does NOT invoke onReasonCaptured when not awaiting', async () => {
+  const store = createReasonCaptureStore();
+  const captured = [];
+  const handler = createBotCommandHandler({
+    bitrixClient: { callMethod: async () => ({ ok: true }) },
+    reasonStore: { upsert: async (p) => p },
+    reasonCaptureStore: store,
+    logger: { info: () => {}, warn: () => {} },
+    onReasonCaptured: async (p) => { captured.push(p); }
+  });
+
+  const handled = await handler.handleMessage({ userId: 1, dialogId: 'u1', text: 'случайное сообщение' });
+  assert.equal(handled, false);
+  assert.equal(captured.length, 0, 'hook must not fire when not awaiting');
+});
+
+test('handleMessage: a failing onReasonCaptured does not break the «Принято» reply', async () => {
+  const store = createReasonCaptureStore();
+  const replies = [];
+  const handler = createBotCommandHandler({
+    bitrixClient: { callMethod: async (_m, p) => { replies.push(p); return {}; } },
+    reasonStore: { upsert: async (p) => p },
+    reasonCaptureStore: store,
+    onReasonCaptured: async () => { throw new Error('forward boom'); },
+    logger: { info: () => {}, warn: () => {} }
+  });
+  store.setAwaiting({ userId: 5, dialogId: 'u5', reportId: 7, azsId: 'a' });
+
+  const handled = await handler.handleMessage({ userId: 5, dialogId: 'u5', text: 'причина' });
+  assert.equal(handled, true, 'capture still succeeds even if side-effects fail');
+  assert.ok(
+    replies.some((r) => String(r.fields?.message || '').includes('Причина принята')),
+    'confirmation reply must still be sent'
+  );
+});
