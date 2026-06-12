@@ -10,7 +10,7 @@ const canReview = (req) => (
   Boolean(req.accessContext?.capabilities?.settings)
 );
 
-export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClient, settingsStore, diskApi, getAdminContext = null }) => {
+export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClient, settingsStore, diskApi, getAdminContext = null, getDiskContext = null }) => {
   if (!analyticsStore) throw new Error('analyticsStore is required');
   const router = express.Router();
 
@@ -100,9 +100,12 @@ export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClie
         return res.status(501).json({ error: 'preview_not_supported', message: 'diskApi.downloadFileContent is not available' });
       }
 
-      // Use admin context for disk downloads: user tokens expire quickly and
-      // may not have disk read permissions. Fall back to request context when
-      // admin context is unavailable (e.g. no authId stored).
+      // Disk downloads prefer the webhook-first background context (static token
+      // in the URL, never expires, needs no client_secret) when available, then
+      // admin OAuth, then the request context. User/admin OAuth access tokens
+      // expire in ~1h and die when server-side refresh is broken (BUG-020); the
+      // webhook context sidesteps refresh entirely. A webhook authorizes via its
+      // URL path and carries no authId, so it is selected by isWebhook.
       let diskContext = req.bitrixContext || {};
       if (typeof getAdminContext === 'function') {
         try {
@@ -111,6 +114,14 @@ export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClie
             diskContext = adminCtx;
           }
         } catch { /* best-effort — fall back to request context */ }
+      }
+      if (typeof getDiskContext === 'function') {
+        try {
+          const bgCtx = await getDiskContext();
+          if (bgCtx && (bgCtx.isWebhook || String(bgCtx.authId || '').trim())) {
+            diskContext = bgCtx;
+          }
+        } catch { /* best-effort — keep prior context */ }
       }
       const { base64, name } = await diskApi.downloadFileContent(photo.diskObjectId, diskContext);
       const buffer = Buffer.from(String(base64 || ''), 'base64');
