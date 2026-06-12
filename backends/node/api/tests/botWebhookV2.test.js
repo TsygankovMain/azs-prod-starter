@@ -261,7 +261,7 @@ test('(a) dispatchService: keyboard button is ACTION:SEND with ACTION_VALUE cont
   }
 });
 
-test('(a) dispatchService: ACTION_VALUE contains the correct reportId', async () => {
+test('(a) dispatchService: ACTION_VALUE uses the internal report id, not the CRM item id', async () => {
   const prevAppCode = process.env.BITRIX_APP_CODE;
   try {
     process.env.BITRIX_APP_CODE = 'local.test.v2send2';
@@ -296,10 +296,16 @@ test('(a) dispatchService: ACTION_VALUE contains the correct reportId', async ()
       String(b.TEXT || '').includes('причину') || String(b.TEXT || '').includes('Указать')
     );
 
-    // ACTION_VALUE should be '/reason 9999' (the reportItemId returned by createReportItem)
+    // ACTION_VALUE must be the INTERNAL report id (reserve.id), NOT the CRM item id
+    // (9999) — the bot side-effects resolve the report via reportsStore.getById.
+    assert.match(
+      String(reasonBtn.ACTION_VALUE),
+      /^\/reason \d+$/,
+      `ACTION_VALUE must be /reason <numeric internal id>, got: ${reasonBtn.ACTION_VALUE}`
+    );
     assert.ok(
-      reasonBtn.ACTION_VALUE.includes('9999'),
-      `ACTION_VALUE must include reportId 9999, got: ${reasonBtn.ACTION_VALUE}`
+      !String(reasonBtn.ACTION_VALUE).includes('9999'),
+      `ACTION_VALUE must NOT embed the CRM item id 9999, got: ${reasonBtn.ACTION_VALUE}`
     );
   } finally {
     if (prevAppCode === undefined) {
