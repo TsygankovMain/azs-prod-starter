@@ -75,6 +75,73 @@ const makeHandler = (overrides = {}) => {
   return { handler, repliedMessages, upsertedReasons, store };
 };
 
+// ─── quick reason buttons (getReasons) ───────────────────────────────────────
+
+test('handleCommand: with getReasons attaches a keyboard of reason buttons (ACTION:SEND)', async () => {
+  const replies = [];
+  const handler = createBotCommandHandler({
+    bitrixClient: { callMethod: async (_m, p) => { replies.push(p); return {}; } },
+    reasonStore: { upsert: async (p) => p },
+    reasonCaptureStore: createReasonCaptureStore(),
+    botId: 777,
+    logger: { info: () => {}, warn: () => {} },
+    getReasons: async () => ([
+      { code: 'queue', label: 'Очередь на мойке' },
+      { code: 'staff', label: 'Нет сотрудника' },
+      { code: 'other', label: 'Другое' }
+    ])
+  });
+
+  await handler.handleCommand({ userId: 10, dialogId: 'u10', reportId: 55, azsId: 'a' });
+
+  assert.equal(replies.length, 1);
+  const kb = replies[0].fields?.keyboard;
+  assert.ok(kb && Array.isArray(kb.BUTTONS), 'reply must carry a keyboard with BUTTONS');
+  const queueBtn = kb.BUTTONS.find(b => b.TEXT === 'Очередь на мойке');
+  assert.ok(queueBtn, 'a button per reason label');
+  assert.equal(queueBtn.ACTION, 'SEND', 'reason buttons must be ACTION:SEND');
+  assert.equal(queueBtn.ACTION_VALUE, 'Очередь на мойке', 'ACTION_VALUE is the label (sent as message)');
+  assert.ok(String(replies[0].fields?.message || '').includes('Выберите причину'), 'prompt invites choosing');
+});
+
+test('handleMessage: a tapped catalog label is recorded with its reasonCode (not other)', async () => {
+  const store = createReasonCaptureStore();
+  const upserts = [];
+  const captured = [];
+  const handler = createBotCommandHandler({
+    bitrixClient: { callMethod: async () => ({}) },
+    reasonStore: { upsert: async (p) => { upserts.push(p); return p; } },
+    reasonCaptureStore: store,
+    logger: { info: () => {}, warn: () => {} },
+    getReasons: async () => ([{ code: 'queue', label: 'Очередь на мойке' }, { code: 'other', label: 'Другое' }]),
+    onReasonCaptured: async (p) => { captured.push(p); }
+  });
+  store.setAwaiting({ userId: 1, dialogId: 'u1', reportId: 9, azsId: 'a' });
+
+  await handler.handleMessage({ userId: 1, dialogId: 'u1', text: 'Очередь на мойке' });
+
+  assert.equal(upserts[0].reasonCode, 'queue', 'matched label → its catalog code');
+  assert.equal(captured[0].reasonCode, 'queue', 'hook also gets the resolved code');
+});
+
+test('handleMessage: free text that matches no label stays reasonCode=other', async () => {
+  const store = createReasonCaptureStore();
+  const upserts = [];
+  const handler = createBotCommandHandler({
+    bitrixClient: { callMethod: async () => ({}) },
+    reasonStore: { upsert: async (p) => { upserts.push(p); return p; } },
+    reasonCaptureStore: store,
+    logger: { info: () => {}, warn: () => {} },
+    getReasons: async () => ([{ code: 'queue', label: 'Очередь на мойке' }])
+  });
+  store.setAwaiting({ userId: 2, dialogId: 'u2', reportId: 9, azsId: 'a' });
+
+  await handler.handleMessage({ userId: 2, dialogId: 'u2', text: 'сломалась касса' });
+
+  assert.equal(upserts[0].reasonCode, 'other');
+  assert.ok(String(upserts[0].reasonText).includes('касса'));
+});
+
 // ─── handleCommand ────────────────────────────────────────────────────────────
 
 test('handleCommand: replies «Напишите причину» and sets awaiting state', async () => {

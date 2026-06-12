@@ -53,6 +53,10 @@ export const createBotCommandHandler = ({
   // server.js where settings/forwarding/CRM deps are available. Never blocks or
   // breaks the «Причина принята» reply.
   onReasonCaptured = null,
+  // Optional async provider of the reason catalog [{code,label}] from settings.
+  // When present, handleCommand offers quick-reply buttons and handleMessage maps
+  // a tapped/typed label back to its reasonCode (else falls back to 'other').
+  getReasons = null,
   logger = console
 }) => {
   if (!bitrixClient || typeof bitrixClient.callMethod !== 'function') {
@@ -67,16 +71,45 @@ export const createBotCommandHandler = ({
 
   const runtimeBotId = () => Number(botId || process.env.BITRIX_BOT_ID || 0);
 
-  const sendReply = async ({ dialogId, message, context = {} }) => {
+  const sendReply = async ({ dialogId, message, keyboard = null, context = {} }) => {
+    const fields = { message, urlPreview: false };
+    if (keyboard) {
+      fields.keyboard = keyboard;
+    }
     await bitrixClient.callMethod(
       'imbot.v2.Chat.Message.send',
       {
         botId: runtimeBotId(),
         dialogId: String(dialogId),
-        fields: { message, urlPreview: false }
+        fields
       },
       context
     );
+  };
+
+  // Load the reason catalog [{code,label}] via the injected provider (best-effort).
+  const loadReasons = async () => {
+    if (typeof getReasons !== 'function') return [];
+    try {
+      const list = await getReasons();
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  };
+
+  // Map a tapped/typed text back to a catalog reasonCode. An exact label match
+  // (case-insensitive) to a non-«other» reason yields its code; anything else is
+  // free text under «other».
+  const resolveReason = (text, reasons) => {
+    const t = String(text || '').trim().toLowerCase();
+    const match = (reasons || []).find(
+      (r) => String(r?.label || '').trim().toLowerCase() === t
+    );
+    if (match && String(match.code) !== 'other') {
+      return { reasonCode: String(match.code), reasonText: null };
+    }
+    return { reasonCode: 'other', reasonText: String(text || '').trim() };
   };
 
   /**
@@ -88,13 +121,27 @@ export const createBotCommandHandler = ({
   const handleCommand = async ({ userId, dialogId, reportId, azsId, context = {} }) => {
     reasonCaptureStore.setAwaiting({ userId, dialogId, reportId, azsId });
 
+    // Quick-reply buttons from the reason catalog (ACTION:SEND sends the label as
+    // a message → handleMessage maps it back to a code). Faster than typing; the
+    // user can still type a free-form reason.
+    const reasons = await loadReasons();
+    const buttons = reasons
+      .map((r) => String(r?.label || '').trim())
+      .filter(Boolean)
+      .slice(0, 20)
+      .map((label) => ({ TEXT: label, ACTION: 'SEND', ACTION_VALUE: label }));
+    const keyboard = buttons.length ? { BOT_ID: runtimeBotId(), BUTTONS: buttons } : null;
+
     await sendReply({
       dialogId,
-      message: 'Напишите причину одним сообщением',
+      message: buttons.length
+        ? 'Выберите причину или напишите свою:'
+        : 'Напишите причину одним сообщением',
+      keyboard,
       context
     });
 
-    logger.info('bot_reason_awaiting_set', { userId, dialogId, reportId });
+    logger.info('bot_reason_awaiting_set', { userId, dialogId, reportId, options: buttons.length });
   };
 
   /**
@@ -120,13 +167,17 @@ export const createBotCommandHandler = ({
     // Clear state first so a crash mid-write doesn't leave a stuck state
     reasonCaptureStore.clearAwaiting({ userId, dialogId });
 
+    // Map the text to a catalog reason code when it matches a known label.
+    const reasons = await loadReasons();
+    const { reasonCode, reasonText } = resolveReason(trimmed, reasons);
+
     try {
       await reasonStore.upsert({
         reportId: state.reportId,
         azsId: state.azsId,
         adminUserId: Number(userId),
-        reasonCode: 'other',
-        reasonText: trimmed,
+        reasonCode,
+        reasonText,
         source: 'bot'
       });
 
@@ -146,8 +197,8 @@ export const createBotCommandHandler = ({
             reportId: state.reportId,
             azsId: state.azsId,
             userId: Number(userId),
-            reasonCode: 'other',
-            reasonText: trimmed
+            reasonCode,
+            reasonText
           });
         } catch (sideError) {
           logger.warn('bot_reason_sideeffects_failed', {
