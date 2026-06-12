@@ -1,24 +1,10 @@
 <script setup lang="ts">
-import type { B24Frame } from '@bitrix24/b24jssdk'
 import type { PhotoFiltersValue } from '~/components/photos/PhotoFilters.vue'
 import type { RemarkRecipient } from '~/components/photos/RemarkDraftPanel.vue'
 
-const PAGE_TITLE = 'Фотолента АЗС'
-useHead({ title: PAGE_TITLE })
-
-const { locales: localesI18n, setLocale } = useI18n()
-const { initApp, processErrorGlobal } = useAppInit('PhotoFeedPage')
-const { $initializeB24Frame } = useNuxtApp()
 const apiStore = useApiStore()
 const toast = useAppToast()
 const { errorText: useErrorTextFn } = useErrorText()
-
-let $b24: null | B24Frame = null
-
-// ── Доступ ────────────────────────────────────────────────────────────────
-const hasAccess = ref(false)
-const accessError = ref('')
-const initError = ref('')
 
 // ── Фильтры ──────────────────────────────────────────────────────────────
 const FILTERS_KEY = 'photoFeed.filters'
@@ -214,7 +200,7 @@ type MarkEntry = { reportId: number; photoCode: string; azsId: string; azsTitle:
 const marks = ref(new Map<string, MarkEntry>())
 const activeAzsId = ref<string>('')
 
-// Поднятый state черновика (п.9) — текст и роль живут в странице, не в панели
+// Поднятый state черновика (п.9) — текст и роль живут в компоненте, не в панели
 const draftMessage = ref('')
 const draftRole = ref<'manager' | 'admin'>('manager')
 
@@ -467,40 +453,18 @@ const handleJournalOpenPhoto = async (payload: {
   }
 }
 
-const initPage = async () => {
-  initError.value = ''
-  try {
-    $b24 = await $initializeB24Frame()
-    await initApp($b24, localesI18n, setLocale)
-    await $b24.parent.setTitle(PAGE_TITLE)
+const initView = async () => {
+  await Promise.all([
+    loadAzsOptions(),
+    loadCategoryTitles(),
+    loadFeed(),
+    loadRemarkTemplates()
+  ])
 
-    // Проверка ролей (паттерн reports.client.vue)
-    const roleResp = await apiStore.getMyRole()
-    hasAccess.value = Boolean(roleResp.capabilities?.reviewer || roleResp.capabilities?.settings)
-    if (!hasAccess.value) {
-      accessError.value = 'Фотолента доступна только проверяющим и администраторам. Обратитесь к администратору портала.'
-      return
-    }
-
-    await Promise.all([
-      loadAzsOptions(),
-      loadCategoryTitles(),
-      loadFeed(),
-      loadRemarkTemplates()
-    ])
-
-    nextTick(() => setupSentinel())
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Ошибка инициализации'
-    if (msg.includes('Unable to initialize Bitrix24Frame')) {
-      processErrorGlobal(error)
-      return
-    }
-    initError.value = msg
-  }
+  nextTick(() => setupSentinel())
 }
 
-onMounted(initPage)
+onMounted(initView)
 
 onBeforeUnmount(() => {
   sentinelObserver?.disconnect()
@@ -517,250 +481,213 @@ watch(filters, () => {
     void loadFeed()
   }, 120)
 }, { deep: true })
-
-const goBack = () => {
-  if (window.history.length > 1) {
-    window.history.back()
-  } else {
-    void navigateTo('/')
-  }
-}
 </script>
 
 <template>
-  <div class="w-full bg-[#eef1f4] min-h-screen">
+  <div class="w-full bg-[#eef1f4]">
 
-    <!-- Ошибка доступа -->
-    <div v-if="accessError" class="max-w-[1280px] mx-auto px-4 py-6">
-      <B24Alert color="air-primary-alert" title="Нет доступа" :description="accessError" />
-    </div>
+    <div class="max-w-[1280px] mx-auto px-4 py-6">
 
-    <!-- Ошибка инициализации -->
-    <div v-else-if="initError" class="max-w-[1280px] mx-auto px-4 py-6 flex flex-col gap-2">
-      <B24Alert color="air-primary-alert" title="Ошибка инициализации" :description="initError" />
-      <div>
-        <button
-          class="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium"
-          @click="initPage()"
-        >
-          ↻ Повторить
-        </button>
+      <!-- Шапка -->
+      <header class="mb-6">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h2 class="text-xl font-semibold">Фотолента АЗС</h2>
+            <p class="text-sm text-gray-500 mt-1">Просмотр и фильтрация фотографий по всем АЗС</p>
+          </div>
+
+          <div class="flex items-center gap-2 flex-wrap">
+            <button
+              class="px-4 py-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium disabled:opacity-50"
+              :disabled="isLoading"
+              @click="loadFeed"
+            >
+              {{ isLoading ? 'Обновление…' : '↻ Обновить' }}
+            </button>
+            <button
+              class="px-4 py-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 text-sm font-medium"
+              @click="resetFilters"
+            >
+              Сбросить фильтры
+            </button>
+          </div>
+        </div>
+
+        <!-- Вкладки: Фотолента / Журнал -->
+        <div class="mt-4">
+          <div class="inline-flex rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+            <button
+              :class="[
+                'px-5 py-2.5 text-sm font-semibold transition-colors',
+                activeTab === 'feed' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+              ]"
+              @click="activeTab = 'feed'"
+            >
+              Фотолента
+            </button>
+            <button
+              :class="[
+                'px-5 py-2.5 text-sm font-semibold transition-colors border-l border-gray-200',
+                activeTab === 'journal' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+              ]"
+              @click="activeTab = 'journal'"
+            >
+              Журнал
+              <span
+                v-if="journalLoaded > 0"
+                class="ml-1.5 text-xs opacity-80"
+              >{{ journalLoaded }}</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Журнал (вне двухколоночного макета) -->
+      <div v-if="activeTab === 'journal'" class="max-w-2xl">
+        <RemarkJournal
+          :azs-options="azsOptions"
+          :category-titles="categoryTitles"
+          @open-photo="handleJournalOpenPhoto"
+          @loaded="journalLoaded = $event"
+        />
       </div>
-    </div>
 
-    <template v-else-if="hasAccess">
-      <div class="max-w-[1280px] mx-auto px-4 py-6">
+      <!-- Двухколоночный макет: фильтры слева + лента справа -->
+      <div v-else class="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6 items-start">
 
-        <!-- Шапка (паттерн соседних страниц) -->
-        <header class="mb-6">
-          <div class="flex items-start justify-between gap-4 flex-wrap">
-            <div class="flex items-start gap-3">
+        <!-- Панель фильтров -->
+        <aside class="lg:sticky lg:top-4">
+          <PhotoFilters
+            v-model="filters"
+            :azs-options="azsOptions"
+          />
+        </aside>
+
+        <!-- Основной контент -->
+        <main>
+
+          <!-- Ошибка загрузки с «Повторить» (S2-03) -->
+          <div v-if="loadError" class="mb-4 flex flex-col gap-2">
+            <B24Alert color="air-primary-alert" title="Ошибка загрузки" :description="loadError" />
+            <div>
               <button
-                aria-label="Назад"
-                class="inline-flex items-center justify-center w-9 h-9 rounded-full text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
-                @click="goBack"
-              >
-                ←
-              </button>
-              <div>
-                <h1 class="text-2xl font-semibold">Фотолента АЗС</h1>
-                <p class="text-sm text-gray-500 mt-1">Просмотр и фильтрация фотографий по всем АЗС</p>
-              </div>
-            </div>
-
-            <div class="flex items-center gap-2 flex-wrap">
-              <button
-                class="px-4 py-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium disabled:opacity-50"
+                class="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium disabled:opacity-50"
                 :disabled="isLoading"
                 @click="loadFeed"
               >
-                {{ isLoading ? 'Обновление…' : '↻ Обновить' }}
-              </button>
-              <button
-                class="px-4 py-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 text-sm font-medium"
-                @click="resetFilters"
-              >
-                Сбросить фильтры
+                {{ isLoading ? 'Загрузка…' : '↻ Повторить' }}
               </button>
             </div>
           </div>
 
-          <!-- Вкладки: Фотолента / Журнал -->
-          <div class="mt-4">
-            <div class="inline-flex rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
-              <button
-                :class="[
-                  'px-5 py-2.5 text-sm font-semibold transition-colors',
-                  activeTab === 'feed' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
-                ]"
-                @click="activeTab = 'feed'"
-              >
-                Фотолента
-              </button>
-              <button
-                :class="[
-                  'px-5 py-2.5 text-sm font-semibold transition-colors border-l border-gray-200',
-                  activeTab === 'journal' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
-                ]"
-                @click="activeTab = 'journal'"
-              >
-                Журнал
-                <span
-                  v-if="journalLoaded > 0"
-                  class="ml-1.5 text-xs opacity-80"
-                >{{ journalLoaded }}</span>
-              </button>
-            </div>
+          <!-- Пустое состояние -->
+          <div
+            v-else-if="!isLoading && items.length === 0"
+            class="bg-white rounded-[14px] border border-gray-200 shadow-sm p-12 text-center"
+          >
+            <p class="text-gray-400 text-sm">Нет фото за выбранный период</p>
+            <p class="text-gray-300 text-xs mt-1">Попробуйте изменить фильтры</p>
           </div>
-        </header>
 
-        <!-- Журнал (вне двухколоночного макета) -->
-        <div v-if="activeTab === 'journal'" class="max-w-2xl">
-          <RemarkJournal
-            :azs-options="azsOptions"
-            :category-titles="categoryTitles"
-            @open-photo="handleJournalOpenPhoto"
-            @loaded="journalLoaded = $event"
-          />
-        </div>
-
-        <!-- Двухколоночный макет: фильтры слева + лента справа -->
-        <div v-else class="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6 items-start">
-
-          <!-- Панель фильтров -->
-          <aside class="lg:sticky lg:top-4">
-            <PhotoFilters
-              v-model="filters"
-              :azs-options="azsOptions"
+          <!-- Сетка фото -->
+          <template v-else>
+            <PhotoFeedGrid
+              :items="items"
+              :group-by-azs="filters.groupByAzs"
+              :loading="isLoading"
+              :marked-keys="markedKeys"
+              :category-titles="categoryTitles"
+              @open="handleOpen"
+              @toggle-mark="handleToggleMark"
+              @remark-info="handleRemarkInfo"
             />
-          </aside>
 
-          <!-- Основной контент -->
-          <main>
+            <!-- Сентинел автоподгрузки -->
+            <div ref="sentinelRef" class="h-px mt-4" />
 
-            <!-- Ошибка загрузки с «Повторить» (S2-03) -->
-            <div v-if="loadError" class="mb-4 flex flex-col gap-2">
-              <B24Alert color="air-primary-alert" title="Ошибка загрузки" :description="loadError" />
-              <div>
-                <button
-                  class="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium disabled:opacity-50"
-                  :disabled="isLoading"
-                  @click="loadFeed"
-                >
-                  {{ isLoading ? 'Загрузка…' : '↻ Повторить' }}
-                </button>
-              </div>
+            <!-- Кнопка «Показать ещё» + скелетоны при подгрузке -->
+            <div v-if="nextCursor" class="mt-4 flex flex-col items-center gap-3">
+              <template v-if="isLoadingMore">
+                <div class="grid grid-cols-2 lg:grid-cols-5 gap-2.5 w-full">
+                  <SkeletonBlock
+                    v-for="n in 5"
+                    :key="`more-skel-${n}`"
+                    height="0"
+                    rounded="rounded-[11px]"
+                    class="aspect-[4/3]"
+                  />
+                </div>
+              </template>
+              <button
+                v-else
+                class="px-6 py-2.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium shadow-sm"
+                @click="loadMore"
+              >
+                Показать ещё
+              </button>
             </div>
 
-            <!-- Пустое состояние -->
-            <div
-              v-else-if="!isLoading && items.length === 0"
-              class="bg-white rounded-[14px] border border-gray-200 shadow-sm p-12 text-center"
-            >
-              <p class="text-gray-400 text-sm">Нет фото за выбранный период</p>
-              <p class="text-gray-300 text-xs mt-1">Попробуйте изменить фильтры</p>
+            <!-- Конец ленты -->
+            <p v-else-if="!isLoading && items.length > 0" class="text-center text-xs text-gray-400 mt-6">
+              Все фото загружены · {{ items.length }} шт.
+            </p>
+          </template>
+
+          <!-- Inline-конфликт АЗС (С3) — поверх панели -->
+          <div
+            v-if="conflictItem"
+            class="fixed bottom-0 left-0 right-0 z-[100] bg-amber-50 border-t border-amber-300 shadow-lg px-4 py-4"
+          >
+            <p class="text-sm font-semibold text-amber-800 mb-3">
+              {{ conflictMessage }}
+            </p>
+            <div class="flex gap-2 flex-wrap">
+              <button
+                class="px-4 py-2 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 transition-colors"
+                @click="resolveConflictSendCurrentThenMark"
+              >
+                Вернуться к черновику
+              </button>
+              <button
+                class="px-4 py-2 rounded-lg text-sm font-medium bg-white border border-amber-400 text-amber-800 hover:bg-amber-50 transition-colors"
+                @click="resolveConflictClearAndMark"
+              >
+                Очистить и начать с этого фото
+              </button>
+              <button
+                class="px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-100 transition-colors"
+                @click="conflictItem = null"
+              >
+                Отмена
+              </button>
             </div>
+          </div>
 
-            <!-- Сетка фото -->
-            <template v-else>
-              <PhotoFeedGrid
-                :items="items"
-                :group-by-azs="filters.groupByAzs"
-                :loading="isLoading"
-                :marked-keys="markedKeys"
-                :category-titles="categoryTitles"
-                @open="handleOpen"
-                @toggle-mark="handleToggleMark"
-                @remark-info="handleRemarkInfo"
-              />
+          <!-- Панель черновика sticky снизу (при draftCount > 0, нет конфликта, лайтбокс закрыт) -->
+          <div
+            v-else-if="draftCount > 0 && !lightboxOpen"
+            class="fixed bottom-0 left-0 right-0 z-[90]"
+          >
+            <RemarkDraftPanel
+              v-model:message="draftMessage"
+              v-model:selected-role="draftRole"
+              :count="draftCount"
+              :azs-id="activeAzsId"
+              :azs-title="draftAzsTitle"
+              :manager="draftManager"
+              :admin="draftAdmin"
+              :recipients-loading="recipientsLoading"
+              :templates="remarkTemplates"
+              :is-sending="isSending"
+              @send="handleSend"
+              @clear="handleDraftClear"
+            />
+          </div>
 
-              <!-- Сентинел автоподгрузки -->
-              <div ref="sentinelRef" class="h-px mt-4" />
-
-              <!-- Кнопка «Показать ещё» + скелетоны при подгрузке -->
-              <div v-if="nextCursor" class="mt-4 flex flex-col items-center gap-3">
-                <template v-if="isLoadingMore">
-                  <div class="grid grid-cols-2 lg:grid-cols-5 gap-2.5 w-full">
-                    <SkeletonBlock
-                      v-for="n in 5"
-                      :key="`more-skel-${n}`"
-                      height="0"
-                      rounded="rounded-[11px]"
-                      class="aspect-[4/3]"
-                    />
-                  </div>
-                </template>
-                <button
-                  v-else
-                  class="px-6 py-2.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium shadow-sm"
-                  @click="loadMore"
-                >
-                  Показать ещё
-                </button>
-              </div>
-
-              <!-- Конец ленты -->
-              <p v-else-if="!isLoading && items.length > 0" class="text-center text-xs text-gray-400 mt-6">
-                Все фото загружены · {{ items.length }} шт.
-              </p>
-            </template>
-
-            <!-- Inline-конфликт АЗС (С3) — поверх панели -->
-            <div
-              v-if="conflictItem"
-              class="fixed bottom-0 left-0 right-0 z-[100] bg-amber-50 border-t border-amber-300 shadow-lg px-4 py-4"
-            >
-              <p class="text-sm font-semibold text-amber-800 mb-3">
-                {{ conflictMessage }}
-              </p>
-              <div class="flex gap-2 flex-wrap">
-                <button
-                  class="px-4 py-2 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 transition-colors"
-                  @click="resolveConflictSendCurrentThenMark"
-                >
-                  Вернуться к черновику
-                </button>
-                <button
-                  class="px-4 py-2 rounded-lg text-sm font-medium bg-white border border-amber-400 text-amber-800 hover:bg-amber-50 transition-colors"
-                  @click="resolveConflictClearAndMark"
-                >
-                  Очистить и начать с этого фото
-                </button>
-                <button
-                  class="px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-100 transition-colors"
-                  @click="conflictItem = null"
-                >
-                  Отмена
-                </button>
-              </div>
-            </div>
-
-            <!-- Панель черновика sticky снизу (при draftCount > 0, нет конфликта, лайтбокс закрыт) -->
-            <div
-              v-else-if="draftCount > 0 && !lightboxOpen"
-              class="fixed bottom-0 left-0 right-0 z-[90]"
-            >
-              <RemarkDraftPanel
-                v-model:message="draftMessage"
-                v-model:selected-role="draftRole"
-                :count="draftCount"
-                :azs-id="activeAzsId"
-                :azs-title="draftAzsTitle"
-                :manager="draftManager"
-                :admin="draftAdmin"
-                :recipients-loading="recipientsLoading"
-                :templates="remarkTemplates"
-                :is-sending="isSending"
-                @send="handleSend"
-                @clear="handleDraftClear"
-              />
-            </div>
-
-          </main>
-        </div>
-
+        </main>
       </div>
-    </template>
+
+    </div>
 
     <!-- Полноэкранный лайтбокс -->
     <PhotoLightbox

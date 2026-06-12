@@ -758,6 +758,10 @@ const goBack = () => {
   }
 }
 
+// ── Вкладки экрана проверяющего ──────────────────────────────────────────
+type ReviewerTab = 'dashboard' | 'photos'
+const reviewerTab = ref<ReviewerTab>('dashboard')
+
 const loadRoleAccess = async () => {
   try {
     const response = await apiStore.getMyRole()
@@ -919,6 +923,36 @@ onMounted(async () => {
             >
           </div>
         </header>
+
+        <!-- Строка вкладок: Дашборд / Фотолента -->
+        <div class="mb-6">
+          <div class="inline-flex rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+            <button
+              :class="[
+                'px-5 py-2.5 text-sm font-semibold transition-colors',
+                reviewerTab === 'dashboard' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+              ]"
+              @click="reviewerTab = 'dashboard'"
+            >
+              Дашборд
+            </button>
+            <button
+              :class="[
+                'px-5 py-2.5 text-sm font-semibold transition-colors border-l border-gray-200',
+                reviewerTab === 'photos' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+              ]"
+              @click="reviewerTab = 'photos'"
+            >
+              Фотолента
+            </button>
+          </div>
+        </div>
+
+        <!-- Вкладка: Фотолента -->
+        <PhotoFeedView v-if="reviewerTab === 'photos'" />
+
+        <!-- Вкладка: Дашборд -->
+        <template v-else>
 
         <!--
           Сетевые ошибки ПЕРВИЧНОЙ инициализации уходят в processErrorGlobal → error.vue (там есть «Обновить»);
@@ -1590,6 +1624,8 @@ onMounted(async () => {
             />
           </div>
         </details>
+
+        </template><!-- end v-else Дашборд -->
 
       </div>
     </template>
