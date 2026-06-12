@@ -85,12 +85,6 @@ const appScreens = [
     title: 'Отчёты',
     description: 'Аналитика по отчётам: сводка, рейтинг, динамика, карточка АЗС и фото-витрина.',
     path: '/reports'
-  },
-  {
-    key: 'photos',
-    title: 'Фотолента',
-    description: 'Лента фотографий всех АЗС с фильтрами, группировкой и инструментами замечаний.',
-    path: '/photos'
   }
 ] as const
 
@@ -106,9 +100,6 @@ const visibleScreens = computed(() => appScreens.filter((screen) => {
   }
   if (screen.key === 'reports') {
     return Boolean(currentCapabilities.value.reviewer || currentCapabilities.value.settings || currentCapabilities.value.reports)
-  }
-  if (screen.key === 'photos') {
-    return Boolean(currentCapabilities.value.reviewer || currentCapabilities.value.settings)
   }
   return false
 }))
