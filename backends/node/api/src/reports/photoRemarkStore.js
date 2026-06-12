@@ -4,13 +4,17 @@
  * Таблицы:
  *  - photo_remark : заголовок замечания (снапшоты получателя/отправителя/АЗС)
  *  - photo_remark_photo : нормализованная связка remark ↔ конкретное фото
+ *    (UX-2) + колонки comment, delivery_status, delivery_error — пофотный статус
  *
- * Обе ветки (PG / MySQL) реализуют один и тот же контракт:
+ * Контракт:
  *   ensureSchema()
  *   insertRemark({ azsId, azsTitle, recipientRole, recipientUserId, recipientName,
- *                  message, senderUserId, senderName, photos:[{reportId,photoCode}] }) → row
- *   markDelivery(id, status, error)
+ *                  senderUserId, senderName,
+ *                  photos:[{reportId, photoCode, comment}] }) → row
+ *   markDelivery(id, status, error)          — общий статус пачки на photo_remark
+ *   markPhotoDelivery(remarkId, reportId, photoCode, status, error)  — пофотный
  *   getById(id) → row with photos[] | null
+ *   getPhotoRow(remarkId, reportId, photoCode) → photoViewModel | null
  *   list({ dateFrom, dateTo, azsIds, limit, cursor }) → { items, nextCursor }
  */
 
@@ -36,17 +40,20 @@ const toRemarkViewModel = (row) => ({
   recipientRole: row.recipient_role,
   recipientUserId: row.recipient_user_id ? Number(row.recipient_user_id) : null,
   recipientName: row.recipient_name || null,
-  message: row.message || '',
   senderUserId: row.sender_user_id ? Number(row.sender_user_id) : null,
   senderName: row.sender_name || null,
   deliveryStatus: row.delivery_status || 'sent',
   deliveryError: row.delivery_error || null
 });
 
+// UX-2: each photo row now carries comment + per-photo delivery_status
 const toPhotoViewModel = (row) => ({
   remarkId: Number(row.remark_id),
   reportId: Number(row.report_id),
-  photoCode: row.photo_code
+  photoCode: row.photo_code,
+  comment: row.comment || '',
+  deliveryStatus: row.delivery_status || 'pending',
+  deliveryError: row.delivery_error || null
 });
 
 // ---------------------------------------------------------------------------
@@ -83,7 +90,6 @@ const createPostgresStore = (pool) => ({
         recipient_role  TEXT NOT NULL,
         recipient_user_id BIGINT NULL,
         recipient_name  TEXT NULL,
-        message         TEXT NOT NULL DEFAULT '',
         sender_user_id  BIGINT NULL,
         sender_name     TEXT NULL,
         delivery_status TEXT NOT NULL DEFAULT 'sent',
@@ -98,36 +104,45 @@ const createPostgresStore = (pool) => ({
     `);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS photo_remark_photo (
-        remark_id   BIGINT NOT NULL,
-        report_id   BIGINT NOT NULL,
-        photo_code  TEXT NOT NULL,
+        remark_id       BIGINT NOT NULL,
+        report_id       BIGINT NOT NULL,
+        photo_code      TEXT NOT NULL,
+        comment         TEXT NOT NULL DEFAULT '',
+        delivery_status TEXT NOT NULL DEFAULT 'pending',
+        delivery_error  TEXT NULL,
         PRIMARY KEY (remark_id, report_id, photo_code)
       )
     `);
+    // Idempotent migrations for existing prod data (ADD COLUMN IF NOT EXISTS — PG 9.6+)
+    await pool.query(`ALTER TABLE photo_remark_photo ADD COLUMN IF NOT EXISTS comment TEXT NOT NULL DEFAULT ''`);
+    await pool.query(`ALTER TABLE photo_remark_photo ADD COLUMN IF NOT EXISTS delivery_status TEXT NOT NULL DEFAULT 'pending'`);
+    await pool.query(`ALTER TABLE photo_remark_photo ADD COLUMN IF NOT EXISTS delivery_error TEXT NULL`);
+    // Remove legacy top-level message column from photo_remark if present (safe — ignored if missing)
+    // We do NOT drop it to avoid data loss; new code simply no longer writes it.
   },
 
   async insertRemark({
     azsId, azsTitle = null,
     recipientRole, recipientUserId = null, recipientName = null,
-    message = '', senderUserId = null, senderName = null,
+    senderUserId = null, senderName = null,
     photos = []
   }) {
     const result = await pool.query(
       `INSERT INTO photo_remark
          (azs_id, azs_title, recipient_role, recipient_user_id, recipient_name,
-          message, sender_user_id, sender_name, delivery_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'sent')
+          sender_user_id, sender_name, delivery_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'sent')
        RETURNING *`,
       [azsId, azsTitle ?? null, recipientRole, recipientUserId ?? null, recipientName ?? null,
-       message, senderUserId ?? null, senderName ?? null]
+       senderUserId ?? null, senderName ?? null]
     );
     const row = result.rows[0];
     if (photos.length > 0) {
       for (const ph of photos) {
         await pool.query(
-          `INSERT INTO photo_remark_photo (remark_id, report_id, photo_code)
-           VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-          [row.id, ph.reportId, ph.photoCode]
+          `INSERT INTO photo_remark_photo (remark_id, report_id, photo_code, comment, delivery_status)
+           VALUES ($1, $2, $3, $4, 'pending') ON CONFLICT DO NOTHING`,
+          [row.id, ph.reportId, ph.photoCode, ph.comment ?? '']
         );
       }
     }
@@ -138,6 +153,15 @@ const createPostgresStore = (pool) => ({
     await pool.query(
       `UPDATE photo_remark SET delivery_status = $1, delivery_error = $2 WHERE id = $3`,
       [status, error ?? null, id]
+    );
+  },
+
+  async markPhotoDelivery(remarkId, reportId, photoCode, status, error = null) {
+    await pool.query(
+      `UPDATE photo_remark_photo
+       SET delivery_status = $1, delivery_error = $2
+       WHERE remark_id = $3 AND report_id = $4 AND photo_code = $5`,
+      [status, error ?? null, remarkId, reportId, photoCode]
     );
   },
 
@@ -154,6 +178,16 @@ const createPostgresStore = (pool) => ({
     );
     row.photos = phResult.rows.map(toPhotoViewModel);
     return row;
+  },
+
+  async getPhotoRow(remarkId, reportId, photoCode) {
+    const result = await pool.query(
+      `SELECT * FROM photo_remark_photo
+       WHERE remark_id = $1 AND report_id = $2 AND photo_code = $3 LIMIT 1`,
+      [remarkId, reportId, photoCode]
+    );
+    if (!result.rows.length) return null;
+    return toPhotoViewModel(result.rows[0]);
   },
 
   async list({ dateFrom, dateTo, azsIds = [], limit = 50, cursor = null } = {}) {
@@ -245,7 +279,6 @@ const createMysqlStore = (pool) => ({
         recipient_role    VARCHAR(32) NOT NULL,
         recipient_user_id BIGINT NULL,
         recipient_name    VARCHAR(500) NULL,
-        message           LONGTEXT NOT NULL DEFAULT '',
         sender_user_id    BIGINT NULL,
         sender_name       VARCHAR(500) NULL,
         delivery_status   VARCHAR(16) NOT NULL DEFAULT 'sent',
@@ -256,35 +289,54 @@ const createMysqlStore = (pool) => ({
     `);
     await pool.execute(`
       CREATE TABLE IF NOT EXISTS photo_remark_photo (
-        remark_id   BIGINT NOT NULL,
-        report_id   BIGINT NOT NULL,
-        photo_code  VARCHAR(191) NOT NULL,
+        remark_id       BIGINT NOT NULL,
+        report_id       BIGINT NOT NULL,
+        photo_code      VARCHAR(191) NOT NULL,
+        comment         LONGTEXT NOT NULL,
+        delivery_status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        delivery_error  LONGTEXT NULL,
         PRIMARY KEY (remark_id, report_id, photo_code)
       )
     `);
+    // Idempotent migration for existing prod tables (MySQL lacks ADD COLUMN IF NOT EXISTS)
+    // Guard via information_schema before each ALTER.
+    const migrateCol = async (table, column, definition) => {
+      const [rows] = await pool.execute(
+        `SELECT COUNT(*) AS cnt FROM information_schema.COLUMNS
+         WHERE TABLE_NAME = ? AND COLUMN_NAME = ?`,
+        [table, column]
+      );
+      const cnt = Number(rows[0]?.cnt ?? 0);
+      if (cnt === 0) {
+        await pool.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      }
+    };
+    await migrateCol('photo_remark_photo', 'comment', 'LONGTEXT NOT NULL DEFAULT (\'\')');
+    await migrateCol('photo_remark_photo', 'delivery_status', "VARCHAR(16) NOT NULL DEFAULT 'pending'");
+    await migrateCol('photo_remark_photo', 'delivery_error', 'LONGTEXT NULL');
   },
 
   async insertRemark({
     azsId, azsTitle = null,
     recipientRole, recipientUserId = null, recipientName = null,
-    message = '', senderUserId = null, senderName = null,
+    senderUserId = null, senderName = null,
     photos = []
   }) {
     const [result] = await pool.execute(
       `INSERT INTO photo_remark
          (azs_id, azs_title, recipient_role, recipient_user_id, recipient_name,
-          message, sender_user_id, sender_name, delivery_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent')`,
+          sender_user_id, sender_name, delivery_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'sent')`,
       [azsId, azsTitle ?? null, recipientRole, recipientUserId ?? null, recipientName ?? null,
-       message, senderUserId ?? null, senderName ?? null]
+       senderUserId ?? null, senderName ?? null]
     );
     const insertId = result.insertId;
     if (photos.length > 0) {
       for (const ph of photos) {
         await pool.execute(
-          `INSERT IGNORE INTO photo_remark_photo (remark_id, report_id, photo_code)
-           VALUES (?, ?, ?)`,
-          [insertId, ph.reportId, ph.photoCode]
+          `INSERT IGNORE INTO photo_remark_photo (remark_id, report_id, photo_code, comment, delivery_status)
+           VALUES (?, ?, ?, ?, 'pending')`,
+          [insertId, ph.reportId, ph.photoCode, ph.comment ?? '']
         );
       }
     }
@@ -302,6 +354,15 @@ const createMysqlStore = (pool) => ({
     );
   },
 
+  async markPhotoDelivery(remarkId, reportId, photoCode, status, error = null) {
+    await pool.execute(
+      `UPDATE photo_remark_photo
+       SET delivery_status = ?, delivery_error = ?
+       WHERE remark_id = ? AND report_id = ? AND photo_code = ?`,
+      [status, error ?? null, remarkId, reportId, photoCode]
+    );
+  },
+
   async getById(id) {
     const [rows] = await pool.execute(
       `SELECT * FROM photo_remark WHERE id = ? LIMIT 1`,
@@ -315,6 +376,16 @@ const createMysqlStore = (pool) => ({
     );
     row.photos = phRows.map(toPhotoViewModel);
     return row;
+  },
+
+  async getPhotoRow(remarkId, reportId, photoCode) {
+    const [rows] = await pool.execute(
+      `SELECT * FROM photo_remark_photo
+       WHERE remark_id = ? AND report_id = ? AND photo_code = ? LIMIT 1`,
+      [remarkId, reportId, photoCode]
+    );
+    if (!rows.length) return null;
+    return toPhotoViewModel(rows[0]);
   },
 
   async list({ dateFrom, dateTo, azsIds = [], limit = 50, cursor = null } = {}) {

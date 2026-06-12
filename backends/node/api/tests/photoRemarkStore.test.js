@@ -19,13 +19,25 @@ const createFakePgPool = () => {
         return { rows: [] };
       }
 
+      // Idempotent ALTER TABLE migrations — no-op in fake
+      if (text.startsWith('ALTER TABLE')) {
+        return { rows: [] };
+      }
+
       // INSERT photo_remark_photo (must come BEFORE the remark insert check)
+      // UX-2: params are [remark_id, report_id, photo_code, comment] (delivery_status in SQL literal)
       if (text.startsWith('INSERT INTO photo_remark_photo')) {
-        photos.push({ remark_id: params[0], report_id: params[1], photo_code: params[2] });
+        photos.push({
+          remark_id: params[0], report_id: params[1], photo_code: params[2],
+          comment: params[3] ?? '',
+          delivery_status: 'pending', delivery_error: null
+        });
         return { rows: [] };
       }
 
       // INSERT remark (header only — no _photo suffix)
+      // UX-2: params = [azsId, azsTitle, recipientRole, recipientUserId, recipientName,
+      //                  senderUserId, senderName]  (no top-level message)
       if (text.startsWith('INSERT INTO photo_remark')) {
         seq += 1;
         const row = {
@@ -33,14 +45,26 @@ const createFakePgPool = () => {
           created_at: new Date(),
           azs_id: params[0], azs_title: params[1],
           recipient_role: params[2], recipient_user_id: params[3], recipient_name: params[4],
-          message: params[5], sender_user_id: params[6], sender_name: params[7],
+          sender_user_id: params[5], sender_name: params[6],
           delivery_status: 'sent', delivery_error: null
         };
         remarks.push(row);
         return { rows: [row] };
       }
 
-      // UPDATE delivery
+      // UPDATE per-photo delivery status
+      if (text.includes('UPDATE photo_remark_photo')) {
+        // params: [status, error, remarkId, reportId, photoCode]
+        const ph = photos.find((p) =>
+          Number(p.remark_id) === Number(params[2]) &&
+          Number(p.report_id) === Number(params[3]) &&
+          p.photo_code === params[4]
+        );
+        if (ph) { ph.delivery_status = params[0]; ph.delivery_error = params[1]; }
+        return { rows: [] };
+      }
+
+      // UPDATE delivery (remark-level)
       if (text.startsWith('UPDATE photo_remark SET delivery_status')) {
         const row = remarks.find((r) => r.id === params[2]);
         if (row) { row.delivery_status = params[0]; row.delivery_error = params[1]; }
@@ -50,6 +74,16 @@ const createFakePgPool = () => {
       // SELECT single remark by id
       if (text.includes('FROM photo_remark WHERE id =')) {
         return { rows: remarks.filter((r) => r.id === params[0]) };
+      }
+
+      // SELECT single photo row (getPhotoRow)
+      if (text.includes('FROM photo_remark_photo') && text.includes('AND report_id') && text.includes('AND photo_code')) {
+        const found = photos.find((p) =>
+          Number(p.remark_id) === Number(params[0]) &&
+          Number(p.report_id) === Number(params[1]) &&
+          p.photo_code === params[2]
+        );
+        return { rows: found ? [found] : [] };
       }
 
       // SELECT photos by remark_id (ANY — used by list)
@@ -103,6 +137,18 @@ const createFakeMysqlPool = () => {
 
       if (text.startsWith('CREATE TABLE')) return [{ affectedRows: 0 }];
 
+      // Idempotent migration guards: information_schema check
+      if (text.includes('FROM information_schema.COLUMNS')) {
+        // Simulate column not existing so migration proceeds (no-op in fake ALTER)
+        return [[{ cnt: 0 }]];
+      }
+
+      // ALTER TABLE — no-op in fake
+      if (text.startsWith('ALTER TABLE')) return [{ affectedRows: 0 }];
+
+      // INSERT remark (no _photo suffix)
+      // UX-2: params = [azsId, azsTitle, recipientRole, recipientUserId, recipientName,
+      //                  senderUserId, senderName]  (no top-level message)
       if (text.startsWith('INSERT INTO photo_remark') && !text.includes('photo_remark_photo')) {
         seq += 1;
         const row = {
@@ -110,15 +156,21 @@ const createFakeMysqlPool = () => {
           created_at: new Date(),
           azs_id: params[0], azs_title: params[1],
           recipient_role: params[2], recipient_user_id: params[3], recipient_name: params[4],
-          message: params[5], sender_user_id: params[6], sender_name: params[7],
+          sender_user_id: params[5], sender_name: params[6],
           delivery_status: 'sent', delivery_error: null
         };
         remarks.push(row);
         return [{ insertId: seq }];
       }
 
+      // INSERT IGNORE photo_remark_photo
+      // UX-2: params = [remark_id, report_id, photo_code, comment]
       if (text.startsWith('INSERT IGNORE INTO photo_remark_photo')) {
-        photos.push({ remark_id: params[0], report_id: params[1], photo_code: params[2] });
+        photos.push({
+          remark_id: params[0], report_id: params[1], photo_code: params[2],
+          comment: params[3] ?? '',
+          delivery_status: 'pending', delivery_error: null
+        });
         return [{ affectedRows: 1 }];
       }
 
@@ -126,10 +178,33 @@ const createFakeMysqlPool = () => {
         return [remarks.filter((r) => r.id === params[0])];
       }
 
+      // UPDATE per-photo delivery status
+      if (text.includes('UPDATE photo_remark_photo')) {
+        // params: [status, error, remarkId, reportId, photoCode]
+        const ph = photos.find((p) =>
+          Number(p.remark_id) === Number(params[2]) &&
+          Number(p.report_id) === Number(params[3]) &&
+          p.photo_code === params[4]
+        );
+        if (ph) { ph.delivery_status = params[0]; ph.delivery_error = params[1]; }
+        return [{ affectedRows: 1 }];
+      }
+
+      // UPDATE remark-level delivery
       if (text.startsWith('UPDATE photo_remark SET delivery_status')) {
         const row = remarks.find((r) => r.id === params[2]);
         if (row) { row.delivery_status = params[0]; row.delivery_error = params[1]; }
         return [{ affectedRows: 1 }];
+      }
+
+      // SELECT single photo row (getPhotoRow)
+      if (text.includes('FROM photo_remark_photo') && text.includes('AND report_id') && text.includes('AND photo_code')) {
+        const found = photos.find((p) =>
+          Number(p.remark_id) === Number(params[0]) &&
+          Number(p.report_id) === Number(params[1]) &&
+          p.photo_code === params[2]
+        );
+        return [found ? [found] : []];
       }
 
       if (text.includes('FROM photo_remark_photo WHERE remark_id IN')) {
@@ -285,6 +360,107 @@ test('MySQL: list returns items', async () => {
   await store.insertRemark({ azsId: '7', recipientRole: 'admin', message: 'b' });
   const { items } = await store.list({ azsIds: ['7'], limit: 10 });
   assert.ok(items.length >= 1);
+});
+
+// ---------------------------------------------------------------------------
+// UX-2: Per-photo comment + per-photo delivery status — PG
+// ---------------------------------------------------------------------------
+
+test('PG UX-2: insertRemark stores per-photo comment', async () => {
+  const pool = createFakePgPool();
+  const store = createPhotoRemarkStore({ pool, dbType: 'postgresql' });
+  await store.ensureSchema();
+  const inserted = await store.insertRemark({
+    azsId: '42', recipientRole: 'manager',
+    photos: [
+      { reportId: 10, photoCode: 'front', comment: 'Грязное стекло' },
+      { reportId: 10, photoCode: 'side', comment: 'Сломан насос' }
+    ]
+  });
+  const found = await store.getById(inserted.id);
+  assert.ok(found, 'remark found');
+  assert.equal(found.photos.length, 2);
+  const frontPhoto = found.photos.find((p) => p.photoCode === 'front');
+  assert.ok(frontPhoto, 'front photo found');
+  assert.equal(frontPhoto.comment, 'Грязное стекло', 'per-photo comment stored');
+  const sidePhoto = found.photos.find((p) => p.photoCode === 'side');
+  assert.equal(sidePhoto.comment, 'Сломан насос', 'second photo comment stored');
+});
+
+test('PG UX-2: markPhotoDelivery updates per-photo status', async () => {
+  const pool = createFakePgPool();
+  const store = createPhotoRemarkStore({ pool, dbType: 'postgresql' });
+  await store.ensureSchema();
+  const inserted = await store.insertRemark({
+    azsId: '42', recipientRole: 'manager',
+    photos: [{ reportId: 10, photoCode: 'front', comment: 'Тест' }]
+  });
+  await store.markPhotoDelivery(inserted.id, 10, 'front', 'failed', 'network timeout');
+  const photo = await store.getPhotoRow(inserted.id, 10, 'front');
+  assert.ok(photo, 'photo row found');
+  assert.equal(photo.deliveryStatus, 'failed');
+  assert.equal(photo.deliveryError, 'network timeout');
+});
+
+test('PG UX-2: getPhotoRow returns null for missing photo', async () => {
+  const pool = createFakePgPool();
+  const store = createPhotoRemarkStore({ pool, dbType: 'postgresql' });
+  await store.ensureSchema();
+  const result = await store.getPhotoRow(999, 1, 'nonexistent');
+  assert.equal(result, null);
+});
+
+test('PG UX-2: list returns per-photo comment + status in photos array', async () => {
+  const pool = createFakePgPool();
+  const store = createPhotoRemarkStore({ pool, dbType: 'postgresql' });
+  await store.ensureSchema();
+  await store.insertRemark({
+    azsId: '77', recipientRole: 'admin',
+    photos: [
+      { reportId: 5, photoCode: 'a', comment: 'Комм A' },
+      { reportId: 5, photoCode: 'b', comment: 'Комм B' }
+    ]
+  });
+  const { items } = await store.list({ azsIds: ['77'], limit: 10 });
+  assert.equal(items.length, 1);
+  const ph = items[0].photos.find((p) => p.photoCode === 'a');
+  assert.equal(ph.comment, 'Комм A', 'comment present in list');
+  assert.ok('deliveryStatus' in ph, 'deliveryStatus present per photo in list');
+});
+
+// ---------------------------------------------------------------------------
+// UX-2: Per-photo comment + per-photo delivery status — MySQL
+// ---------------------------------------------------------------------------
+
+test('MySQL UX-2: insertRemark stores per-photo comment', async () => {
+  const pool = createFakeMysqlPool();
+  const store = createPhotoRemarkStore({ pool, dbType: 'mysql' });
+  await store.ensureSchema();
+  const inserted = await store.insertRemark({
+    azsId: '55', recipientRole: 'admin',
+    photos: [
+      { reportId: 20, photoCode: 'top', comment: 'Лужа масла' }
+    ]
+  });
+  const found = await store.getById(inserted.id);
+  assert.ok(found, 'remark found');
+  const topPhoto = found.photos.find((p) => p.photoCode === 'top');
+  assert.equal(topPhoto.comment, 'Лужа масла');
+});
+
+test('MySQL UX-2: markPhotoDelivery updates per-photo status', async () => {
+  const pool = createFakeMysqlPool();
+  const store = createPhotoRemarkStore({ pool, dbType: 'mysql' });
+  await store.ensureSchema();
+  const inserted = await store.insertRemark({
+    azsId: '55', recipientRole: 'admin',
+    photos: [{ reportId: 20, photoCode: 'top', comment: 'Test' }]
+  });
+  await store.markPhotoDelivery(inserted.id, 20, 'top', 'sent', null);
+  const photo = await store.getPhotoRow(inserted.id, 20, 'top');
+  assert.ok(photo, 'photo row found');
+  assert.equal(photo.deliveryStatus, 'sent');
+  assert.equal(photo.deliveryError, null);
 });
 
 // ---------------------------------------------------------------------------
