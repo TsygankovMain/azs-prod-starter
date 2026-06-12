@@ -1,12 +1,9 @@
 <script setup lang="ts">
 /**
- * RemarkDraftPanel — панель-черновик отправки замечания (спека §4.3, С1–С3, С5).
- * Рендерится в двух контекстах: sticky-снизу в сетке и нижний блок в лайтбоксе.
- * Весь state черновика живёт в родителе (photos.client.vue);
- * панель только отображает его и эмитит события.
- *
- * withPending-паттерн: кнопка «Отправить» заблокирована на время запроса через isSending prop.
- * message и selectedRole управляются родителем через v-model (поднятый state, п.9).
+ * RemarkDraftPanel — панель-черновик пофотных замечаний (UX-2).
+ * Показывает список отмеченных фото с их комментариями (редактируемыми),
+ * кнопку × для удаления каждого фото, выбор получателя и кнопку «Отправить (N)».
+ * Нет глобального textarea — коммент живёт в каждой строке.
  */
 
 export type RemarkRecipient = {
@@ -14,39 +11,44 @@ export type RemarkRecipient = {
   name: string
 } | null
 
+type MarkEntry = {
+  reportId: number
+  photoCode: string
+  azsId: string
+  azsTitle: string
+  comment: string
+}
+
 const props = defineProps<{
-  /** Текущее кол-во отмеченных фото */
-  count: number
+  /** Map отмеченных фото */
+  marks: Map<string, MarkEntry>
   /** Ключ АЗС (id) */
   azsId: string
   /** Название АЗС для заголовка */
   azsTitle: string
-  /** Получатель «Управляющий» (null если не заполнен в карточке АЗС) */
+  /** Получатель «Управляющий» */
   manager: RemarkRecipient
-  /** Получатель «Администратор АЗС» (null если не заполнен) */
+  /** Получатель «Администратор АЗС» */
   admin: RemarkRecipient
   /** true когда список получателей грузится */
   recipientsLoading: boolean
-  /** Шаблоны из настроек приложения */
-  templates: string[]
-  /** true при активной отправке (withPending-блокировка) */
+  /** true при активной отправке */
   isSending: boolean
 }>()
 
 const emit = defineEmits<{
-  send: [payload: { recipientRole: 'manager' | 'admin'; message: string }]
+  send: [payload: { recipientRole: 'manager' | 'admin' }]
   clear: []
-  'update:message': [value: string]
   'update:selectedRole': [value: 'manager' | 'admin']
+  'update-comment': [payload: { key: string; comment: string }]
+  'remove-mark': [key: string]
 }>()
 
 type RecipientRole = 'manager' | 'admin'
 
-// Управляемый state через defineModel (поднятый в родителя, п.9)
-const message = defineModel<string>('message', { default: '' })
 const selectedRole = defineModel<RecipientRole>('selectedRole', { default: 'manager' })
 
-// Авто-переключение на admin если manager null (С5)
+// Авто-переключение на admin если manager null
 watch(
   () => props.manager,
   (mgr) => {
@@ -63,45 +65,43 @@ const currentRecipient = computed<RemarkRecipient>(() =>
 
 const neitherAvailable = computed(() => !props.manager && !props.admin && !props.recipientsLoading)
 
+const count = computed(() => props.marks.size)
+
+// Все фото должны иметь непустой комментарий
+const missingComments = computed<string[]>(() => {
+  const keys: string[] = []
+  for (const [key, entry] of props.marks.entries()) {
+    if (!entry.comment.trim()) keys.push(key)
+  }
+  return keys
+})
+
 const canSend = computed(() =>
   !neitherAvailable.value &&
   currentRecipient.value !== null &&
-  message.value.trim().length > 0 &&
+  count.value > 0 &&
+  missingComments.value.length === 0 &&
   !props.isSending
 )
 
-const applyTemplate = (tmpl: string) => {
-  message.value = tmpl
-}
-
 const handleSend = () => {
   if (!canSend.value) return
-  emit('send', {
-    recipientRole: selectedRole.value,
-    message: message.value.trim()
-  })
+  emit('send', { recipientRole: selectedRole.value })
 }
 
 const handleClear = () => {
-  message.value = ''
   selectedRole.value = props.manager ? 'manager' : 'admin'
   emit('clear')
 }
 
-// Когда count приходит 0 (после очистки снаружи), очищаем локальное сообщение
-watch(
-  () => props.count,
-  (n) => {
-    if (n === 0) {
-      message.value = ''
-      selectedRole.value = props.manager ? 'manager' : 'admin'
-    }
-  }
-)
+const entries = computed(() => [...props.marks.entries()])
+
+const getCategoryLabel = (entry: MarkEntry): string =>
+  `${entry.azsTitle} · ${entry.photoCode}`
 </script>
 
 <template>
-  <div class="bg-white border-t border-gray-200 shadow-[0_-4px_16px_rgba(0,0,0,0.08)] rounded-t-2xl p-4 space-y-3">
+  <div class="bg-white border-t border-gray-200 shadow-[0_-4px_16px_rgba(0,0,0,0.08)] rounded-t-2xl p-4 space-y-3 max-h-[60vh] overflow-y-auto">
 
     <!-- Заголовок -->
     <div class="flex items-center justify-between">
@@ -116,7 +116,7 @@ watch(
       </button>
     </div>
 
-    <!-- Нет получателей совсем — ошибочное состояние (С5 крайний случай) -->
+    <!-- Нет получателей совсем -->
     <div
       v-if="neitherAvailable"
       class="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700"
@@ -133,21 +133,18 @@ watch(
         <span class="animate-pulse">Загрузка получателей…</span>
       </div>
 
-      <!-- Выпадашка «Кому» -->
+      <!-- Выбор получателя -->
       <div
         v-else
         class="space-y-1"
       >
         <label class="block text-xs text-gray-500">Кому</label>
-
-        <!-- Предупреждение С5: нет управляющего -->
         <div
           v-if="!manager"
           class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-1.5 mb-1"
         >
           У АЗС не указан управляющий — выбран администратор
         </div>
-
         <div class="inline-flex rounded-lg border border-gray-200 bg-white overflow-hidden text-sm">
           <button
             :class="[
@@ -178,28 +175,48 @@ watch(
         </div>
       </div>
 
-      <!-- Шаблоны -->
-      <div
-        v-if="templates.length > 0"
-        class="flex flex-wrap gap-2"
-      >
-        <button
-          v-for="tmpl in templates"
-          :key="tmpl"
-          class="px-3 py-1.5 text-xs rounded-full border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 transition-colors"
-          @click="applyTemplate(tmpl)"
+      <!-- Список отмеченных фото -->
+      <div class="space-y-2">
+        <div
+          v-for="[key, entry] in entries"
+          :key="key"
+          class="flex items-start gap-2 bg-gray-50 rounded-xl p-2.5 border"
+          :class="!entry.comment.trim() ? 'border-red-200 bg-red-50' : 'border-gray-100'"
         >
-          {{ tmpl }}
-        </button>
+          <div class="flex-1 min-w-0">
+            <p class="text-xs text-gray-500 mb-1 truncate">{{ getCategoryLabel(entry) }}</p>
+            <textarea
+              :value="entry.comment"
+              rows="2"
+              placeholder="Комментарий к фото…"
+              class="w-full rounded-lg border px-2 py-1.5 text-sm text-gray-800 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none"
+              :class="!entry.comment.trim() ? 'border-red-300 bg-white' : 'border-gray-200 bg-white'"
+              @input="emit('update-comment', { key, comment: ($event.target as HTMLTextAreaElement).value })"
+            />
+            <p
+              v-if="!entry.comment.trim()"
+              class="text-xs text-red-500 mt-0.5"
+            >
+              Комментарий обязателен
+            </p>
+          </div>
+          <button
+            class="mt-5 flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors text-sm"
+            :title="`Убрать ${getCategoryLabel(entry)}`"
+            @click="emit('remove-mark', key)"
+          >
+            ×
+          </button>
+        </div>
       </div>
 
-      <!-- Textarea -->
-      <textarea
-        v-model="message"
-        rows="2"
-        placeholder="Текст замечания…"
-        class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none"
-      />
+      <!-- Предупреждение о незаполненных комментариях -->
+      <div
+        v-if="missingComments.length > 0"
+        class="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
+      >
+        {{ missingComments.length }} фото без комментария — заполните перед отправкой
+      </div>
 
       <!-- Кнопка отправки -->
       <div class="flex items-center gap-2">

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 /**
- * PhotoLightbox — полноэкранный просмотр фото (спека §4.2).
+ * PhotoLightbox — полноэкранный просмотр фото (спека §4.2, UX-2).
  * Телепорт в body, z-[210] (выше B24Modal z-[200]).
  * Свайпы pointer-событиями (порог 50px по X).
  * Предзагрузка n±1, revoke вне n±3.
  * Скролл body заблокирован пока открыт.
  * RemarkDraftPanel вставляется снизу при наличии черновика.
+ * Поле комментария + «Отметить с замечанием» у каждого фото.
  */
 
 import type { RemarkRecipient } from '~/components/photos/RemarkDraftPanel.vue'
@@ -20,10 +21,20 @@ type PhotoFeedItem = {
   remark: { createdAt: string | null; recipientName: string; message: string; senderName: string } | null
 }
 
+type MarkEntry = {
+  reportId: number
+  photoCode: string
+  azsId: string
+  azsTitle: string
+  comment: string
+}
+
 const props = defineProps<{
   items: PhotoFeedItem[]
   startIndex: number
   markedKeys: Set<string>
+  /** Map отмеченных фото с комментариями */
+  marks: Map<string, MarkEntry>
   /** Map от photoCode → человеческое название категории */
   categoryTitles?: Map<string, string>
   /** Кол-во отмеченных фото в черновике */
@@ -36,22 +47,25 @@ const props = defineProps<{
   draftManager: RemarkRecipient
   draftAdmin: RemarkRecipient
   draftRecipientsLoading: boolean
+  /** Шаблоны комментариев */
   draftTemplates: string[]
   draftIsSending: boolean
   /** true если есть ещё страницы */
   hasMore: boolean
-  /** Конфликт-промпт (С3) — item при наличии конфликта, null иначе */
+  /** Конфликт-промпт (С3) */
   conflictItem?: PhotoFeedItem | null
-  /** Текст конфликт-промпта */
   conflictMessage?: string
 }>()
 
 const emit = defineEmits<{
   close: []
   'toggle-mark': [item: PhotoFeedItem]
+  'mark-with-comment': [payload: { item: PhotoFeedItem; comment: string }]
   'need-more': []
-  'draft-send': [payload: { recipientRole: 'manager' | 'admin'; message: string }]
+  'draft-send': [payload: { recipientRole: 'manager' | 'admin' }]
   'draft-clear': []
+  'update-comment': [payload: { key: string; comment: string }]
+  'remove-mark': [key: string]
   'resolve-conflict-back': []
   'resolve-conflict-clear': []
   'resolve-conflict-cancel': []
@@ -113,7 +127,6 @@ const preloadAndRevoke = () => {
   const n = currentIndex.value
   const len = props.items.length
 
-  // Preload n-1, n, n+1
   for (const offset of [-1, 0, 1]) {
     const idx = n + offset
     if (idx >= 0 && idx < len) {
@@ -121,7 +134,6 @@ const preloadAndRevoke = () => {
     }
   }
 
-  // Revoke вне n±3 (immutable pattern — создаём новый Map)
   const keepFrom = Math.max(0, n - 3)
   const keepTo = Math.min(len - 1, n + 3)
   const toRevoke: string[] = []
@@ -141,7 +153,6 @@ const preloadAndRevoke = () => {
 
 watch(currentIndex, () => {
   preloadAndRevoke()
-  // Если достигли конца и есть ещё страницы — запросить подгрузку
   if (currentIndex.value >= props.items.length - 2 && props.hasMore) {
     emit('need-more')
   }
@@ -163,7 +174,6 @@ let pointerStartY = 0
 let isPointerDown = false
 
 const onPointerDown = (e: PointerEvent) => {
-  // Игнорировать взаимодействие с интерактивными элементами
   if ((e.target as HTMLElement).closest('button, a, textarea, select, input')) return
   pointerStartX = e.clientX
   pointerStartY = e.clientY
@@ -175,7 +185,6 @@ const onPointerUp = (e: PointerEvent) => {
   isPointerDown = false
   const dx = e.clientX - pointerStartX
   const dy = e.clientY - pointerStartY
-  // Только горизонтальные свайпы (|dx| > |dy| и выше порога)
   if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > SWIPE_THRESHOLD) {
     if (dx < 0) next()
     else prev()
@@ -198,7 +207,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.body.style.overflow = ''
   document.removeEventListener('keydown', onKeyDown)
-  // revoke все кэшированные blob-URLs
   for (const url of blobUrls.value.values()) {
     URL.revokeObjectURL(url)
   }
@@ -241,11 +249,57 @@ const isCurrentMarked = computed(() => {
   return props.markedKeys.has(previewKey(current.value))
 })
 
+// ── Поле комментария для текущего фото ────────────────────────────────────
+// При переходе к фото: если уже отмечено — показать его коммент, иначе пусто
+const localComment = ref('')
+
+watch(
+  [currentIndex, () => props.marks],
+  () => {
+    if (!current.value) return
+    const key = previewKey(current.value)
+    const entry = props.marks.get(key)
+    localComment.value = entry ? entry.comment : ''
+  },
+  { immediate: true }
+)
+
+// Шаблон применяется к полю текущего фото
+const applyTemplate = (tmpl: string) => {
+  localComment.value = tmpl
+  // Если фото уже в черновике — обновить коммент сразу
+  if (current.value && isCurrentMarked.value) {
+    const key = previewKey(current.value)
+    emit('update-comment', { key, comment: tmpl })
+  }
+}
+
+// «Отметить с замечанием» — добавляет фото с введённым комментарием
+const handleMarkWithComment = () => {
+  if (!current.value) return
+  if (isCurrentMarked.value) {
+    // Снять отметку
+    emit('toggle-mark', current.value)
+    localComment.value = ''
+  } else {
+    emit('mark-with-comment', { item: current.value, comment: localComment.value })
+  }
+}
+
+// Обновить коммент при вводе если фото уже отмечено
+const handleCommentInput = (e: Event) => {
+  const val = (e.target as HTMLTextAreaElement).value
+  localComment.value = val
+  if (current.value && isCurrentMarked.value) {
+    const key = previewKey(current.value)
+    emit('update-comment', { key, comment: val })
+  }
+}
+
 // ── Панель черновика видна ────────────────────────────────────────────────
 const showDraftPanel = computed(() => props.draftCount > 0 && !props.conflictItem)
 
-// ── Управляемый state черновика (поднят в родителя, п.9) ─────────────────
-const draftMessage = defineModel<string>('draftMessage', { default: '' })
+// ── Управляемый state роли (поднят в родителя) ───────────────────────────
 const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'manager' })
 </script>
 
@@ -272,17 +326,14 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
           {{ currentIndex + 1 }} / {{ items.length }}{{ hasMore ? '+' : '' }}
         </span>
 
-        <!-- Кнопка «Отметить / Отмечено» -->
-        <button
-          v-if="current"
-          class="px-3 py-1.5 rounded-full text-sm font-semibold transition-colors"
-          :class="isCurrentMarked
-            ? 'bg-blue-500 text-white'
-            : 'bg-white/15 text-white hover:bg-white/25'"
-          @click="current && emit('toggle-mark', current)"
+        <!-- Счётчик черновика -->
+        <span
+          v-if="draftCount > 0"
+          class="text-xs px-2 py-1 rounded-full bg-blue-500 text-white font-semibold"
         >
-          {{ isCurrentMarked ? '⚑ Отмечено' : '⚑ Отметить' }}
-        </button>
+          {{ draftCount }} в черновике
+        </span>
+        <span v-else class="w-16" />
       </div>
 
       <!-- Основное фото -->
@@ -368,7 +419,53 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
         </template>
       </div>
 
-      <!-- Конфликт-промпт С3 внутри лайтбокса (z-[220] над лайтбоксом z-[210]) -->
+      <!-- Блок комментария к текущему фото + кнопка отметить -->
+      <div
+        v-if="current"
+        class="flex-shrink-0 bg-black/70 px-4 py-3 space-y-2"
+      >
+        <!-- Шаблоны -->
+        <div
+          v-if="draftTemplates.length > 0"
+          class="flex flex-wrap gap-1.5"
+        >
+          <button
+            v-for="tmpl in draftTemplates"
+            :key="tmpl"
+            class="px-2.5 py-1 text-xs rounded-full border border-white/20 bg-white/10 hover:bg-white/20 text-white/80 transition-colors"
+            @click.stop="applyTemplate(tmpl)"
+          >
+            {{ tmpl }}
+          </button>
+        </div>
+
+        <div class="flex items-end gap-2">
+          <textarea
+            :value="localComment"
+            rows="2"
+            placeholder="Комментарий к этому фото…"
+            class="flex-1 rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400 resize-none"
+            @input="handleCommentInput"
+          />
+          <button
+            class="flex-shrink-0 px-4 py-2 rounded-xl text-sm font-semibold transition-colors"
+            :class="isCurrentMarked
+              ? 'bg-blue-500 text-white hover:bg-blue-600'
+              : 'bg-white/15 text-white hover:bg-white/25'"
+            @click.stop="handleMarkWithComment"
+          >
+            {{ isCurrentMarked ? '⚑ Отмечено' : '⚑ Отметить с замечанием' }}
+          </button>
+        </div>
+        <p
+          v-if="isCurrentMarked && !localComment.trim()"
+          class="text-xs text-amber-300"
+        >
+          Добавьте комментарий перед отправкой
+        </p>
+      </div>
+
+      <!-- Конфликт-промпт С3 внутри лайтбокса -->
       <div
         v-if="conflictItem"
         class="flex-shrink-0 bg-amber-50 border-t border-amber-300 shadow-lg px-4 py-4"
@@ -404,18 +501,18 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
         class="flex-shrink-0"
       >
         <RemarkDraftPanel
-          v-model:message="draftMessage"
           v-model:selected-role="draftRole"
-          :count="draftCount"
+          :marks="marks"
           :azs-id="draftAzsId"
           :azs-title="draftAzsTitle"
           :manager="draftManager"
           :admin="draftAdmin"
           :recipients-loading="draftRecipientsLoading"
-          :templates="draftTemplates"
           :is-sending="draftIsSending"
           @send="emit('draft-send', $event)"
           @clear="emit('draft-clear')"
+          @update-comment="emit('update-comment', $event)"
+          @remove-mark="emit('remove-mark', $event)"
         />
       </div>
 

@@ -1,10 +1,10 @@
 <script setup lang="ts">
 /**
- * RemarkJournal — вкладка «Журнал» фотоленты (спека §4.4).
+ * RemarkJournal — вкладка «Журнал» фотоленты (спека §4.4, UX-2).
  * Виды: «Лента» (хронология) / «По АЗС» (<details>-группы).
  * Фильтры: период + мультиселект АЗС.
  * Пагинация keyset «Показать ещё».
- * Retry для записей со статусом failed.
+ * Retry для фото со статусом failed — пофотный (retryPhotoRemark(id, reportId, photoCode)).
  */
 
 type AzsOption = {
@@ -16,6 +16,9 @@ type PhotoRef = {
   remarkId: number
   reportId: number
   photoCode: string
+  comment: string
+  deliveryStatus: 'sent' | 'failed'
+  deliveryError: string | null
 }
 
 type RemarkItem = {
@@ -25,7 +28,6 @@ type RemarkItem = {
   azsTitle: string | null
   recipientRole: 'manager' | 'admin'
   recipientName: string | null
-  message: string
   senderName: string | null
   deliveryStatus: 'sent' | 'failed'
   deliveryError: string | null
@@ -125,7 +127,7 @@ const load = async () => {
   nextCursor.value = null
   try {
     const resp = await apiStore.getPhotoRemarks(buildParams())
-    items.value = resp.items
+    items.value = resp.items as RemarkItem[]
     nextCursor.value = resp.nextCursor
     emit('loaded', resp.items.length)
   } catch (e) {
@@ -140,7 +142,7 @@ const loadMore = async () => {
   isLoadingMore.value = true
   try {
     const resp = await apiStore.getPhotoRemarks(buildParams(nextCursor.value))
-    items.value = [...items.value, ...resp.items]
+    items.value = [...items.value, ...(resp.items as RemarkItem[])]
     nextCursor.value = resp.nextCursor
   } catch {
     toast.error('Не удалось загрузить следующую страницу. Попробуйте ещё раз.')
@@ -216,21 +218,38 @@ onBeforeUnmount(() => {
   for (const url of previewUrls.value.values()) URL.revokeObjectURL(url)
 })
 
-// ── Retry failed remark ───────────────────────────────────────────────────
-const retryingIds = ref(new Set<number>())
+// ── Retry per-photo ───────────────────────────────────────────────────────
+// Key: `remarkId:reportId:photoCode`
+const retryingPhotoKeys = ref(new Set<string>())
 
-const handleRetry = async (item: RemarkItem) => {
-  if (retryingIds.value.has(item.id)) return
-  retryingIds.value = new Set([...retryingIds.value, item.id])
+const photoRetryKey = (remarkId: number, reportId: number, photoCode: string) =>
+  `${remarkId}:${reportId}:${photoCode}`
+
+const handlePhotoRetry = async (item: RemarkItem, ph: PhotoRef) => {
+  const key = photoRetryKey(ph.remarkId, ph.reportId, ph.photoCode)
+  if (retryingPhotoKeys.value.has(key)) return
+  retryingPhotoKeys.value = new Set([...retryingPhotoKeys.value, key])
   try {
-    const updated = await apiStore.retryPhotoRemark(item.id)
-    const idx = items.value.findIndex(i => i.id === item.id)
-    if (idx !== -1) {
-      items.value = [
-        ...items.value.slice(0, idx),
-        { ...items.value[idx], deliveryStatus: updated.deliveryStatus, deliveryError: updated.deliveryError ?? null },
-        ...items.value.slice(idx + 1)
-      ]
+    const updated = await apiStore.retryPhotoRemark(ph.remarkId, ph.reportId, ph.photoCode)
+    // Update the specific photo row in items
+    const itemIdx = items.value.findIndex(i => i.id === item.id)
+    if (itemIdx !== -1) {
+      const photoIdx = items.value[itemIdx].photos.findIndex(
+        p => p.reportId === ph.reportId && p.photoCode === ph.photoCode
+      )
+      if (photoIdx !== -1) {
+        const updatedPhotos = [...items.value[itemIdx].photos]
+        updatedPhotos[photoIdx] = {
+          ...updatedPhotos[photoIdx],
+          deliveryStatus: updated.deliveryStatus,
+          deliveryError: updated.deliveryError ?? null
+        }
+        items.value = [
+          ...items.value.slice(0, itemIdx),
+          { ...items.value[itemIdx], photos: updatedPhotos },
+          ...items.value.slice(itemIdx + 1)
+        ]
+      }
     }
     if (updated.deliveryStatus === 'sent') {
       toast.success('Повторная отправка выполнена')
@@ -240,9 +259,9 @@ const handleRetry = async (item: RemarkItem) => {
   } catch (e) {
     toast.error(e instanceof Error ? e.message : 'Не удалось повторить отправку')
   } finally {
-    const next = new Set(retryingIds.value)
-    next.delete(item.id)
-    retryingIds.value = next
+    const next = new Set(retryingPhotoKeys.value)
+    next.delete(key)
+    retryingPhotoKeys.value = next
   }
 }
 
@@ -480,59 +499,73 @@ const getCategoryTitle = (code: string): string => {
           </div>
 
           <!-- Получатель -->
-          <div class="text-sm text-gray-700 mb-1">
+          <div class="text-sm text-gray-700 mb-3">
             <span class="font-medium">{{ item.recipientName || '—' }}</span>
             <span class="text-gray-400 text-xs ml-1">({{ ROLE_LABELS[item.recipientRole] || item.recipientRole }})</span>
           </div>
 
-          <!-- Текст замечания -->
-          <p class="text-sm text-gray-800 mb-2 leading-snug">«{{ item.message }}»</p>
-
-          <!-- Миниатюры фото (до 4) -->
-          <div v-if="item.photos.length > 0" class="flex gap-2 flex-wrap mb-2">
-            <button
-              v-for="ph in item.photos.slice(0, 4)"
+          <!-- Список фото с комментариями и статусами -->
+          <div class="space-y-2 mb-2">
+            <div
+              v-for="ph in item.photos"
               :key="thumbKey(ph)"
-              class="relative w-16 h-12 rounded-lg overflow-hidden border border-black/10 flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-blue-400"
-              :style="`background:${GRAD}`"
-              :title="`${getCategoryTitle(ph.photoCode)} — открыть в ленте`"
-              @click="handleThumbClick(item, ph)"
+              class="flex items-start gap-2 rounded-xl border p-2"
+              :class="ph.deliveryStatus === 'failed' ? 'border-red-200 bg-red-50' : 'border-gray-100 bg-gray-50'"
             >
-              <img
-                v-if="previewUrls.get(thumbKey(ph))"
-                :src="previewUrls.get(thumbKey(ph))!"
-                class="absolute inset-0 w-full h-full object-cover"
-                :alt="getCategoryTitle(ph.photoCode)"
+              <!-- Миниатюра -->
+              <button
+                class="flex-shrink-0 relative w-14 h-11 rounded-lg overflow-hidden border border-black/10 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                :style="`background:${GRAD}`"
+                :title="`${getCategoryTitle(ph.photoCode)} — открыть в ленте`"
+                @click="handleThumbClick(item, ph)"
               >
-              <div
-                v-else
-                class="absolute inset-0 flex items-center justify-center text-white/50 text-[10px] text-center px-0.5 leading-tight"
-              >
-                {{ getCategoryTitle(ph.photoCode) }}
+                <img
+                  v-if="previewUrls.get(thumbKey(ph))"
+                  :src="previewUrls.get(thumbKey(ph))!"
+                  class="absolute inset-0 w-full h-full object-cover"
+                  :alt="getCategoryTitle(ph.photoCode)"
+                >
+                <div
+                  v-else
+                  class="absolute inset-0 flex items-center justify-center text-white/50 text-[9px] text-center px-0.5 leading-tight"
+                >
+                  {{ getCategoryTitle(ph.photoCode) }}
+                </div>
+              </button>
+
+              <!-- Комментарий + статус -->
+              <div class="flex-1 min-w-0">
+                <p class="text-xs text-gray-500 mb-0.5">{{ getCategoryTitle(ph.photoCode) }}</p>
+                <p class="text-sm text-gray-800 leading-snug">«{{ ph.comment }}»</p>
+                <div v-if="ph.deliveryStatus === 'failed'" class="mt-1 flex items-center gap-2 flex-wrap">
+                  <span class="text-xs font-semibold text-red-600">Не доставлено</span>
+                  <span
+                    v-if="ph.deliveryError"
+                    class="text-xs text-red-400 truncate max-w-[160px]"
+                    :title="ph.deliveryError"
+                  >
+                    {{ ph.deliveryError }}
+                  </span>
+                  <button
+                    class="text-xs px-2.5 py-0.5 rounded-full border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 transition-colors"
+                    :disabled="retryingPhotoKeys.has(photoRetryKey(ph.remarkId, ph.reportId, ph.photoCode))"
+                    @click="handlePhotoRetry(item, ph)"
+                  >
+                    {{ retryingPhotoKeys.has(photoRetryKey(ph.remarkId, ph.reportId, ph.photoCode)) ? 'Повтор…' : '↻ Повторить' }}
+                  </button>
+                </div>
+                <span
+                  v-else
+                  class="text-xs text-green-600 font-medium"
+                >
+                  ✓ доставлено
+                </span>
               </div>
-            </button>
-            <span v-if="item.photos.length > 4" class="text-xs text-gray-400 self-center">
-              +{{ item.photos.length - 4 }}
-            </span>
+            </div>
           </div>
 
           <!-- Отправитель -->
           <p class="text-xs text-gray-400">отправил {{ item.senderName || '—' }}</p>
-
-          <!-- Статус: не доставлено -->
-          <div v-if="item.deliveryStatus === 'failed'" class="mt-2 flex items-center gap-2 flex-wrap">
-            <span class="text-xs font-semibold text-red-600">Не доставлено</span>
-            <span v-if="item.deliveryError" class="text-xs text-red-400 truncate max-w-[200px]" :title="item.deliveryError">
-              {{ item.deliveryError }}
-            </span>
-            <button
-              class="text-xs px-3 py-1 rounded-full border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 transition-colors"
-              :disabled="retryingIds.has(item.id)"
-              @click="handleRetry(item)"
-            >
-              {{ retryingIds.has(item.id) ? 'Повтор…' : '↻ Повторить' }}
-            </button>
-          </div>
         </div>
       </div>
     </template>
@@ -562,43 +595,54 @@ const getCategoryTitle = (code: string): string => {
               <div class="flex items-start justify-between gap-2 mb-1.5 flex-wrap">
                 <div class="text-xs text-gray-400 tabular-nums">{{ fmtDateTime(item.createdAt) }}</div>
               </div>
-              <div class="text-sm text-gray-700 mb-1">
+              <div class="text-sm text-gray-700 mb-2">
                 <span class="font-medium">{{ item.recipientName || '—' }}</span>
                 <span class="text-gray-400 text-xs ml-1">({{ ROLE_LABELS[item.recipientRole] || item.recipientRole }})</span>
               </div>
-              <p class="text-sm text-gray-800 mb-2 leading-snug">«{{ item.message }}»</p>
-              <div v-if="item.photos.length > 0" class="flex gap-2 flex-wrap mb-1.5">
-                <button
-                  v-for="ph in item.photos.slice(0, 4)"
+
+              <!-- Список фото -->
+              <div class="space-y-2 mb-1.5">
+                <div
+                  v-for="ph in item.photos"
                   :key="thumbKey(ph)"
-                  class="relative w-16 h-12 rounded-lg overflow-hidden border border-black/10 flex-shrink-0"
-                  :style="`background:${GRAD}`"
-                  :title="`${getCategoryTitle(ph.photoCode)} — открыть в ленте`"
-                  @click="handleThumbClick(item, ph)"
+                  class="flex items-start gap-2 rounded-lg border p-2"
+                  :class="ph.deliveryStatus === 'failed' ? 'border-red-200 bg-red-50' : 'border-gray-100 bg-gray-50'"
                 >
-                  <img
-                    v-if="previewUrls.get(thumbKey(ph))"
-                    :src="previewUrls.get(thumbKey(ph))!"
-                    class="absolute inset-0 w-full h-full object-cover"
-                    :alt="getCategoryTitle(ph.photoCode)"
+                  <button
+                    class="flex-shrink-0 relative w-12 h-9 rounded-md overflow-hidden border border-black/10"
+                    :style="`background:${GRAD}`"
+                    :title="`${getCategoryTitle(ph.photoCode)} — открыть в ленте`"
+                    @click="handleThumbClick(item, ph)"
                   >
-                  <div v-else class="absolute inset-0 flex items-center justify-center text-white/50 text-[10px] text-center px-0.5 leading-tight">
-                    {{ getCategoryTitle(ph.photoCode) }}
+                    <img
+                      v-if="previewUrls.get(thumbKey(ph))"
+                      :src="previewUrls.get(thumbKey(ph))!"
+                      class="absolute inset-0 w-full h-full object-cover"
+                      :alt="getCategoryTitle(ph.photoCode)"
+                    >
+                    <div v-else class="absolute inset-0 flex items-center justify-center text-white/50 text-[9px] text-center px-0.5 leading-tight">
+                      {{ getCategoryTitle(ph.photoCode) }}
+                    </div>
+                  </button>
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs text-gray-500 mb-0.5">{{ getCategoryTitle(ph.photoCode) }}</p>
+                    <p class="text-sm text-gray-800 leading-snug">«{{ ph.comment }}»</p>
+                    <div v-if="ph.deliveryStatus === 'failed'" class="mt-1 flex items-center gap-2 flex-wrap">
+                      <span class="text-xs font-semibold text-red-600">Не доставлено</span>
+                      <button
+                        class="text-xs px-2.5 py-0.5 rounded-full border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 transition-colors"
+                        :disabled="retryingPhotoKeys.has(photoRetryKey(ph.remarkId, ph.reportId, ph.photoCode))"
+                        @click="handlePhotoRetry(item, ph)"
+                      >
+                        {{ retryingPhotoKeys.has(photoRetryKey(ph.remarkId, ph.reportId, ph.photoCode)) ? 'Повтор…' : '↻ Повторить' }}
+                      </button>
+                    </div>
+                    <span v-else class="text-xs text-green-600 font-medium">✓ доставлено</span>
                   </div>
-                </button>
-                <span v-if="item.photos.length > 4" class="text-xs text-gray-400 self-center">+{{ item.photos.length - 4 }}</span>
+                </div>
               </div>
+
               <p class="text-xs text-gray-400">отправил {{ item.senderName || '—' }}</p>
-              <div v-if="item.deliveryStatus === 'failed'" class="mt-1.5 flex items-center gap-2 flex-wrap">
-                <span class="text-xs font-semibold text-red-600">Не доставлено</span>
-                <button
-                  class="text-xs px-3 py-1 rounded-full border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 transition-colors"
-                  :disabled="retryingIds.has(item.id)"
-                  @click="handleRetry(item)"
-                >
-                  {{ retryingIds.has(item.id) ? 'Повтор…' : '↻ Повторить' }}
-                </button>
-              </div>
             </div>
           </div>
         </details>
