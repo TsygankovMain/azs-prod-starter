@@ -196,12 +196,11 @@ watch(sentinelRef, (el) => {
 })
 
 // ── Черновик замечания (С1/С2/С3) ────────────────────────────────────────
-type MarkEntry = { reportId: number; photoCode: string; azsId: string; azsTitle: string }
+type MarkEntry = { reportId: number; photoCode: string; azsId: string; azsTitle: string; comment: string }
 const marks = ref(new Map<string, MarkEntry>())
 const activeAzsId = ref<string>('')
 
-// Поднятый state черновика (п.9) — текст и роль живут в компоненте, не в панели
-const draftMessage = ref('')
+// Роль получателя — одна на всю пачку
 const draftRole = ref<'manager' | 'admin'>('manager')
 
 const markedKeys = computed(() => new Set(marks.value.keys()))
@@ -266,16 +265,19 @@ const loadRemarkTemplates = async () => {
 // ── Отправка (С1/С2) ─────────────────────────────────────────────────────
 const isSending = ref(false)
 
-const handleSend = async ({ recipientRole, message }: { recipientRole: 'manager' | 'admin'; message: string }) => {
+const handleSend = async ({ recipientRole }: { recipientRole: 'manager' | 'admin' }) => {
   if (isSending.value || marks.value.size === 0) return
   isSending.value = true
   try {
-    const photos = [...marks.value.values()].map(m => ({ reportId: m.reportId, photoCode: m.photoCode }))
+    const photos = [...marks.value.values()].map(m => ({
+      reportId: m.reportId,
+      photoCode: m.photoCode,
+      comment: m.comment
+    }))
     const result = await apiStore.sendPhotoRemark({
       azsId: activeAzsId.value,
       azsTitle: draftAzsTitle.value || null,
       recipientRole,
-      message,
       photos
     })
     const rec = result.item
@@ -288,7 +290,7 @@ const handleSend = async ({ recipientRole, message }: { recipientRole: 'manager'
           remark: {
             createdAt: rec.createdAt,
             recipientName: rec.recipientName,
-            message: rec.message,
+            message: entry.comment,
             senderName: rec.senderName
           }
         }
@@ -304,7 +306,6 @@ const handleSend = async ({ recipientRole, message }: { recipientRole: 'manager'
     activeAzsId.value = ''
     draftManager.value = null
     draftAdmin.value = null
-    draftMessage.value = ''
     draftRole.value = 'manager'
   } catch (e: unknown) {
     toast.error(useErrorTextFn(e, 'Не удалось отправить замечание'))
@@ -319,7 +320,6 @@ const handleDraftClear = () => {
   activeAzsId.value = ''
   draftManager.value = null
   draftAdmin.value = null
-  draftMessage.value = ''
   draftRole.value = 'manager'
 }
 
@@ -344,11 +344,11 @@ const resolveConflictClearAndMark = () => {
   activeAzsId.value = ''
   draftManager.value = null
   draftAdmin.value = null
-  // Отмечаем новое фото
-  doMark(item)
+  // Отмечаем новое фото (комментарий будет введён в лайтбоксе)
+  doMark(item, '')
 }
 
-const doMark = (item: PhotoFeedItem) => {
+const doMark = (item: PhotoFeedItem, comment: string) => {
   const key = `${item.reportId}:${item.photoCode}`
   if (marks.value.has(key)) {
     // Снять отметку
@@ -364,12 +364,34 @@ const doMark = (item: PhotoFeedItem) => {
     reportId: item.reportId,
     photoCode: item.photoCode,
     azsId: item.azsId,
-    azsTitle: item.azsTitle || `АЗС ${item.azsId}`
+    azsTitle: item.azsTitle || `АЗС ${item.azsId}`,
+    comment
   })
   marks.value = next
   if (!activeAzsId.value) {
     activeAzsId.value = item.azsId
     void loadRecipients(item.azsId)
+  }
+}
+
+// Обновить комментарий к уже отмеченному фото (редактирование в панели)
+const handleUpdateMarkComment = ({ key, comment }: { key: string; comment: string }) => {
+  const entry = marks.value.get(key)
+  if (!entry) return
+  const next = new Map(marks.value)
+  next.set(key, { ...entry, comment })
+  marks.value = next
+}
+
+// Удалить одну отметку из черновика (кнопка × в панели)
+const handleRemoveMark = (key: string) => {
+  const next = new Map(marks.value)
+  next.delete(key)
+  marks.value = next
+  if (next.size === 0) {
+    activeAzsId.value = ''
+    draftManager.value = null
+    draftAdmin.value = null
   }
 }
 
@@ -382,7 +404,7 @@ const handleOpen = (index: number) => {
   lightboxIndex.value = index
 }
 
-const handleToggleMark = (item: PhotoFeedItem) => {
+const handleToggleMark = (item: PhotoFeedItem, comment = '') => {
   const key = `${item.reportId}:${item.photoCode}`
   const isAlreadyMarked = marks.value.has(key)
 
@@ -392,7 +414,7 @@ const handleToggleMark = (item: PhotoFeedItem) => {
     return
   }
 
-  doMark(item)
+  doMark(item, comment)
 }
 
 const handleRemarkInfo = (item: PhotoFeedItem) => {
@@ -413,7 +435,13 @@ const handleLightboxClose = () => {
 }
 
 const handleLightboxToggleMark = (item: PhotoFeedItem) => {
-  handleToggleMark(item)
+  // Снятие отметки из лайтбокса (без комментария — он уже есть в MarkEntry)
+  handleToggleMark(item, '')
+}
+
+const handleLightboxMarkWithComment = ({ item, comment }: { item: PhotoFeedItem; comment: string }) => {
+  // Добавление отметки с комментарием из лайтбокса
+  handleToggleMark(item, comment)
 }
 
 // ── Переход «миниатюра в журнале → фото в ленте» ─────────────────────────
@@ -669,18 +697,18 @@ watch(filters, () => {
             class="fixed bottom-0 left-0 right-0 z-[90]"
           >
             <RemarkDraftPanel
-              v-model:message="draftMessage"
               v-model:selected-role="draftRole"
-              :count="draftCount"
+              :marks="marks"
               :azs-id="activeAzsId"
               :azs-title="draftAzsTitle"
               :manager="draftManager"
               :admin="draftAdmin"
               :recipients-loading="recipientsLoading"
-              :templates="remarkTemplates"
               :is-sending="isSending"
               @send="handleSend"
               @clear="handleDraftClear"
+              @update-comment="handleUpdateMarkComment"
+              @remove-mark="handleRemoveMark"
             />
           </div>
 
@@ -692,11 +720,11 @@ watch(filters, () => {
     <!-- Полноэкранный лайтбокс -->
     <PhotoLightbox
       v-if="lightboxOpen"
-      v-model:draft-message="draftMessage"
       v-model:draft-role="draftRole"
       :items="items"
       :start-index="lightboxIndex"
       :marked-keys="markedKeys"
+      :marks="marks"
       :category-titles="categoryTitles"
       :draft-count="draftCount"
       :draft-azs-id="activeAzsId"
@@ -711,9 +739,12 @@ watch(filters, () => {
       :conflict-message="conflictMessage"
       @close="handleLightboxClose"
       @toggle-mark="handleLightboxToggleMark"
+      @mark-with-comment="handleLightboxMarkWithComment"
       @need-more="handleLightboxNeedMore"
       @draft-send="handleSend"
       @draft-clear="handleDraftClear"
+      @update-comment="handleUpdateMarkComment"
+      @remove-mark="handleRemoveMark"
       @resolve-conflict-back="resolveConflictSendCurrentThenMark"
       @resolve-conflict-clear="resolveConflictClearAndMark"
       @resolve-conflict-cancel="conflictItem = null"

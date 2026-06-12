@@ -486,7 +486,6 @@ export const useApiStore = defineStore(
       azsTitle: string | null
       recipientRole: 'manager' | 'admin'
       recipientName: string
-      message: string
       senderName: string
       deliveryStatus: 'sent' | 'failed'
       deliveryError: string | null
@@ -496,14 +495,22 @@ export const useApiStore = defineStore(
       azsId: string
       azsTitle?: string | null
       recipientRole: 'manager' | 'admin'
-      message: string
-      photos: Array<{ reportId: number; photoCode: string }>
+      photos: Array<{ reportId: number; photoCode: string; comment: string }>
     }): Promise<{ item: PhotoRemarkRecord }> => {
       return await $api('/api/photo-remarks', {
         method: 'POST',
         body: payload,
         headers: { Authorization: `Bearer ${tokenJWT.value}` }
       })
+    }
+
+    type PhotoRemarkPhotoItem = {
+      remarkId: number
+      reportId: number
+      photoCode: string
+      comment: string
+      deliveryStatus: 'sent' | 'failed'
+      deliveryError: string | null
     }
 
     type PhotoRemarkJournalItem = {
@@ -513,11 +520,10 @@ export const useApiStore = defineStore(
       azsTitle: string | null
       recipientRole: 'manager' | 'admin'
       recipientName: string | null
-      message: string
       senderName: string | null
       deliveryStatus: 'sent' | 'failed'
       deliveryError: string | null
-      photos: Array<{ remarkId: number; reportId: number; photoCode: string }>
+      photos: PhotoRemarkPhotoItem[]
     }
 
     const getPhotoRemarks = async (params: {
@@ -539,8 +545,8 @@ export const useApiStore = defineStore(
       })
     }
 
-    const retryPhotoRemark = async (id: number): Promise<PhotoRemarkJournalItem> => {
-      const resp = await $api<{ item: PhotoRemarkJournalItem }>(`/api/photo-remarks/${id}/retry`, {
+    const retryPhotoRemark = async (id: number, reportId: number, photoCode: string): Promise<PhotoRemarkPhotoItem> => {
+      const resp = await $api<{ item: PhotoRemarkPhotoItem }>(`/api/photo-remarks/${id}/retry/${reportId}/${encodeURIComponent(photoCode)}`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${tokenJWT.value}` }
       })
