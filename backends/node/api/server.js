@@ -268,28 +268,45 @@ const reasonCaptureStore = createReasonCaptureStore();
 // runs under the server-side background context (webhook-first, else admin OAuth),
 // since the operator's app token is not available in a chat. Forward-references
 // settingsStore/webhookBackgroundContext (defined below) — only invoked at runtime.
-const onBotReasonCaptured = async ({ reportId, reasonText }) => {
+const backgroundContextForBot = async () => (
+  webhookBackgroundContext ? webhookBackgroundContext : await getAdminContext()
+);
+// Reason catalog for the bot's quick-reply buttons (from settings).
+const getBotReasons = async () => {
+  try {
+    const settings = await settingsStore.read({ context: await backgroundContextForBot() });
+    return Array.isArray(settings.report?.reasons) ? settings.report.reasons : [];
+  } catch {
+    return [];
+  }
+};
+const onBotReasonCaptured = async ({ reportId, reasonCode = 'other', reasonText }) => {
   const report = await reportsStore.getById(Number(reportId));
   if (!report) return;
-  const context = webhookBackgroundContext
-    ? webhookBackgroundContext
-    : await getAdminContext();
+  const context = await backgroundContextForBot();
   const settings = await settingsStore.read({ context });
   const { createReasonCatalog } = await import('./src/reports/reasonCatalog.js');
   const catalog = createReasonCatalog(Array.isArray(settings.report?.reasons) ? settings.report.reasons : []);
-  const reasonCode = 'other';
-  const reasonValue = catalog.encodeValue(reasonCode, reasonText);
+  const code = catalog.isValidCode(reasonCode) ? reasonCode : 'other';
+  const reasonValue = catalog.encodeValue(code, reasonText);
+  const alreadyDone = String(report.status) === 'done';
 
-  // 1) CRM report card (best-effort)
+  // 1) CRM: «браковать» карточку (стадия expired) + записать причину одним обновлением,
+  //    и зеркалить статус локально. Стадия меняется даже если UF-поле причины не настроено.
   try {
-    const { updateReasonCrmField } = await import('./src/reports/reportCrmSync.js');
-    await updateReasonCrmField({
-      bitrixClient,
+    const { buildReportCrmUpdateFields } = await import('./src/reports/reportCrmSync.js');
+    const entityTypeId = Number(settings?.report?.entityTypeId || 0);
+    const fields = buildReportCrmUpdateFields({
       settings,
-      reportItemId: report.reportItemId,
-      reasonValue,
-      context
+      status: alreadyDone ? report.status : 'expired',
+      reasonValue
     });
+    if (entityTypeId && Number(report.reportItemId) && Object.keys(fields).length) {
+      await bitrixClient.updateReportItem({ entityTypeId, id: Number(report.reportItemId), fields, context });
+    }
+    if (!alreadyDone) {
+      await reportsStore.setReportStatus({ reportId: Number(reportId), status: 'expired' }).catch(() => {});
+    }
   } catch (crmError) {
     console.warn('bot_reason_crm_update_failed', { reportId, message: crmError.message });
   }
@@ -303,9 +320,9 @@ const onBotReasonCaptured = async ({ reportId, reasonText }) => {
       settings,
       azsTitle,
       operatorName: 'Сотрудник АЗС',
-      reasonLabel: catalog.codeToLabel(reasonCode) || reasonCode,
+      reasonLabel: catalog.codeToLabel(code) || code,
       reasonText,
-      reportStatus: report.status,
+      reportStatus: alreadyDone ? report.status : 'expired',
       deadlineAt: report.deadlineAt,
       timezone: settings.timezone || 'Europe/Moscow',
       reportItemId: report.reportItemId,
@@ -320,7 +337,8 @@ const botCommandHandler = createBotCommandHandler({
   bitrixClient,
   reasonStore,
   reasonCaptureStore,
-  onReasonCaptured: onBotReasonCaptured
+  onReasonCaptured: onBotReasonCaptured,
+  getReasons: getBotReasons
 });
 const getAdminContext = async () => {
   const entry = await authContextStore.getLastAdminContext();
