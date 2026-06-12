@@ -1,14 +1,18 @@
 /**
  * photoRemarkRoutes — HTTP endpoints for the photo-remark journal.
  *
+ * UX-2: Per-photo comment contract.
+ * NO top-level `message` — comment lives inside each photo object.
+ *
  * Routes (mounted at /api/photo-remarks by server.js):
- *   POST /          — send remark + write journal
- *   GET  /          — list journal entries
- *   POST /:id/retry — retry delivery of a failed remark
+ *   POST /                                  — send batch of photo remarks (per-photo comments)
+ *   GET  /                                  — list journal entries with per-photo status
+ *   POST /:id/retry                         — retry entire remark (re-send all photos)
+ *   POST /:id/retry/:reportId/:photoCode    — retry single photo (UX-2)
  *
  * Factory:
  *   createPhotoRemarkRouter({
- *     remarkStore, photoRemarkService, bitrixClient, getAdminContext
+ *     remarkStore, photoRemarkService, reportsStore, bitrixClient, getAdminContext
  *   })
  */
 
@@ -98,23 +102,46 @@ export const createPhotoRemarkRouter = ({
   };
 
   // -------------------------------------------------------------------------
-  // POST / — send a new remark
+  // POST / — send a new remark (UX-2 per-photo comment contract)
+  //
+  // Body: {
+  //   azsId: string,
+  //   azsTitle?: string,
+  //   recipientRole: "manager" | "admin",
+  //   photos: Array<{ reportId: number, photoCode: string, comment: string }>  // 1..20
+  // }
+  // NO top-level `message`.
   // -------------------------------------------------------------------------
   router.post('/', async (req, res) => {
     if (!canReview(req)) return res.status(403).json({ error: 'forbidden' });
 
-    const { azsId, azsTitle, recipientRole, message, photos } = req.body || {};
+    const { azsId, azsTitle, recipientRole, photos } = req.body || {};
 
     // Validation
-    if (!String(message || '').trim()) {
-      return res.status(400).json({ error: 'validation_failed', message: 'message must not be empty' });
-    }
     if (!Array.isArray(photos) || photos.length < 1 || photos.length > 20) {
       return res.status(400).json({
         error: 'validation_failed',
         message: 'photos must be an array of 1–20 items'
       });
     }
+
+    // Per-photo comment validation: each photo must have a non-empty comment
+    for (let i = 0; i < photos.length; i++) {
+      const ph = photos[i];
+      if (!ph || typeof ph !== 'object') {
+        return res.status(400).json({
+          error: 'validation_failed',
+          message: `photos[${i}] must be an object`
+        });
+      }
+      if (!String(ph.comment || '').trim()) {
+        return res.status(400).json({
+          error: 'validation_failed',
+          message: `photos[${i}].comment must not be empty`
+        });
+      }
+    }
+
     if (recipientRole !== 'manager' && recipientRole !== 'admin') {
       return res.status(400).json({
         error: 'validation_failed',
@@ -148,12 +175,18 @@ export const createPhotoRemarkRouter = ({
         }
       }
 
+      // Normalize photos: ensure comment is trimmed
+      const normalizedPhotos = photos.map((ph) => ({
+        reportId: Number(ph.reportId),
+        photoCode: String(ph.photoCode),
+        comment: String(ph.comment).trim()
+      }));
+
       const record = await photoRemarkService.sendRemark({
         azsId: String(azsId),
         azsTitle: normalizedAzsTitle,
         recipientRole,
-        message: String(message).trim(),
-        photos,
+        photos: normalizedPhotos,
         sender: { id: senderUserId, name: senderName }
       });
 
@@ -172,6 +205,7 @@ export const createPhotoRemarkRouter = ({
 
   // -------------------------------------------------------------------------
   // GET / — list journal entries
+  // Returns per-photo entries with their own comment + status.
   // -------------------------------------------------------------------------
   router.get('/', async (req, res) => {
     if (!canReview(req)) return res.status(403).json({ error: 'forbidden' });
@@ -191,7 +225,7 @@ export const createPhotoRemarkRouter = ({
   });
 
   // -------------------------------------------------------------------------
-  // POST /:id/retry — retry delivery of a failed remark
+  // POST /:id/retry — retry delivery of ENTIRE remark (all photos)
   // -------------------------------------------------------------------------
   router.post('/:id/retry', async (req, res) => {
     if (!canReview(req)) return res.status(403).json({ error: 'forbidden' });
@@ -218,6 +252,51 @@ export const createPhotoRemarkRouter = ({
       return res.json({ item: updated || result });
     } catch (err) {
       return res.status(500).json({ error: 'remark_retry_failed', message: err.message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /:id/retry/:reportId/:photoCode — retry single photo (UX-2)
+  // -------------------------------------------------------------------------
+  router.post('/:id/retry/:reportId/:photoCode', async (req, res) => {
+    if (!canReview(req)) return res.status(403).json({ error: 'forbidden' });
+
+    const remarkId = Number(req.params.id);
+    const reportId = Number(req.params.reportId);
+    const { photoCode } = req.params;
+
+    if (!Number.isFinite(remarkId) || remarkId <= 0) {
+      return res.status(400).json({ error: 'invalid_id', message: 'id must be a positive number' });
+    }
+    if (!Number.isFinite(reportId) || reportId <= 0) {
+      return res.status(400).json({ error: 'invalid_id', message: 'reportId must be a positive number' });
+    }
+    if (!String(photoCode || '').trim()) {
+      return res.status(400).json({ error: 'invalid_id', message: 'photoCode is required' });
+    }
+
+    try {
+      // Verify parent remark exists
+      const existing = await remarkStore.getById(remarkId);
+      if (!existing) {
+        return res.status(404).json({
+          error: 'not_found',
+          errorCode: REMARK_NOT_FOUND,
+          message: `Remark ${remarkId} not found`
+        });
+      }
+
+      const result = await photoRemarkService.retryPhoto(remarkId, reportId, photoCode);
+      return res.json({ item: result });
+    } catch (err) {
+      if (err.errorCode) {
+        return res.status(err.errorCode === REMARK_NOT_FOUND ? 404 : 422).json({
+          error: 'photo_retry_failed',
+          errorCode: err.errorCode,
+          message: err.message
+        });
+      }
+      return res.status(500).json({ error: 'photo_retry_failed', message: err.message });
     }
   });
 

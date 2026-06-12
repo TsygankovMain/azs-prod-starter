@@ -39,22 +39,48 @@ const createFakeRemarkStore = () => {
   return {
     async insertRemark(data) {
       seq += 1;
+      const photos = (data.photos || []).map((ph) => ({
+        reportId: ph.reportId,
+        photoCode: ph.photoCode,
+        comment: ph.comment ?? '',
+        deliveryStatus: ph.deliveryStatus ?? 'pending',
+        deliveryError: ph.deliveryError ?? null
+      }));
       const r = {
         id: seq, createdAt: new Date().toISOString(),
         azsId: data.azsId, azsTitle: data.azsTitle ?? null,
         recipientRole: data.recipientRole, recipientUserId: data.recipientUserId ?? null,
-        recipientName: data.recipientName ?? null, message: data.message,
+        recipientName: data.recipientName ?? null,
         senderUserId: data.senderUserId ?? null, senderName: data.senderName ?? null,
-        deliveryStatus: 'sent', deliveryError: null, photos: data.photos || []
+        deliveryStatus: 'sent', deliveryError: null, photos
       };
-      records.set(seq, { ...r });
+      records.set(seq, { ...r, photos: [...photos] });
       return r;
     },
     async markDelivery(id, status, error = null) {
       const r = records.get(id);
       if (r) { r.deliveryStatus = status; r.deliveryError = error; }
     },
-    async getById(id) { return records.get(id) ?? null; },
+    async markPhotoDelivery(remarkId, reportId, photoCode, status, error = null) {
+      const r = records.get(remarkId);
+      if (r) {
+        const ph = r.photos.find(
+          (p) => Number(p.reportId) === Number(reportId) && p.photoCode === photoCode
+        );
+        if (ph) { ph.deliveryStatus = status; ph.deliveryError = error; }
+      }
+    },
+    async getById(id) {
+      const r = records.get(id);
+      return r ? { ...r, photos: r.photos ? [...r.photos] : [] } : null;
+    },
+    async getPhotoRow(remarkId, reportId, photoCode) {
+      const r = records.get(remarkId);
+      if (!r) return null;
+      return r.photos.find(
+        (p) => Number(p.reportId) === Number(reportId) && p.photoCode === photoCode
+      ) ?? null;
+    },
     async list({ limit = 10 } = {}) {
       const items = [...records.values()].slice(0, limit);
       return { items, nextCursor: null };
@@ -71,13 +97,16 @@ const createFakeService = (overrides = {}) => ({
     }
     return {
       id: 99, azsId: params.azsId, recipientRole: params.recipientRole,
-      message: params.message, deliveryStatus: 'sent', deliveryError: null,
+      deliveryStatus: 'sent', deliveryError: null,
       photos: params.photos || [], createdAt: new Date().toISOString()
     };
   },
   async retryRemark(record) {
     if (overrides.retryThrow) throw new Error(overrides.retryThrow);
     return { ...record, deliveryStatus: 'sent', deliveryError: null };
+  },
+  async retryPhoto(remarkId, reportId, photoCode) {
+    return { remarkId, reportId, photoCode, deliveryStatus: 'sent', deliveryError: null };
   }
 });
 
@@ -129,17 +158,19 @@ test('POST / returns 403 without reviewer role', async () => {
   assert.equal(res.statusCode, 403);
 });
 
-test('POST / returns 400 when message is empty', async () => {
+// UX-2: no top-level message — photos must carry per-photo comment
+test('POST / returns 400 when photo has no comment (old message-only body rejected)', async () => {
   const router = createPhotoRemarkRouter(stubDeps);
   const handler = findRoute(router, 'post', '/');
   if (!handler) return;
+  // Old contract: top-level message, no per-photo comment → should fail
   const req = makeReq({
-    body: { azsId: '42', recipientRole: 'manager', message: '', photos: [{ reportId: 1, photoCode: 'a' }] }
+    body: { azsId: '42', recipientRole: 'manager', message: 'shared text', photos: [{ reportId: 1, photoCode: 'a' }] }
   });
   const res = makeRes();
   await handler(req, res);
   assert.equal(res.statusCode, 400);
-  assert.ok(res._payload?.message?.includes('message'));
+  assert.ok(res._payload?.message?.toLowerCase().includes('comment'), 'error must mention comment');
 });
 
 test('POST / returns 400 when photos is empty array', async () => {
@@ -147,7 +178,7 @@ test('POST / returns 400 when photos is empty array', async () => {
   const handler = findRoute(router, 'post', '/');
   if (!handler) return;
   const req = makeReq({
-    body: { azsId: '42', recipientRole: 'manager', message: 'test', photos: [] }
+    body: { azsId: '42', recipientRole: 'manager', photos: [] }
   });
   const res = makeRes();
   await handler(req, res);
@@ -158,9 +189,9 @@ test('POST / returns 400 when photos has more than 20 items', async () => {
   const router = createPhotoRemarkRouter(stubDeps);
   const handler = findRoute(router, 'post', '/');
   if (!handler) return;
-  const photos = Array.from({ length: 21 }, (_, i) => ({ reportId: 1, photoCode: String(i) }));
+  const photos = Array.from({ length: 21 }, (_, i) => ({ reportId: 1, photoCode: String(i), comment: 'test' }));
   const req = makeReq({
-    body: { azsId: '42', recipientRole: 'manager', message: 'test', photos }
+    body: { azsId: '42', recipientRole: 'manager', photos }
   });
   const res = makeRes();
   await handler(req, res);
@@ -172,7 +203,7 @@ test('POST / returns 400 when recipientRole is invalid', async () => {
   const handler = findRoute(router, 'post', '/');
   if (!handler) return;
   const req = makeReq({
-    body: { azsId: '42', recipientRole: 'owner', message: 'test', photos: [{ reportId: 1, photoCode: 'a' }] }
+    body: { azsId: '42', recipientRole: 'owner', photos: [{ reportId: 1, photoCode: 'a', comment: 'test' }] }
   });
   const res = makeRes();
   await handler(req, res);
@@ -187,7 +218,7 @@ test('POST / returns 200 on successful send with {item} contract', async () => {
   const handler = findRoute(router, 'post', '/');
   if (!handler) return;
   const req = makeReq({
-    body: { azsId: '42', recipientRole: 'manager', message: 'Замечание', photos: [{ reportId: 10, photoCode: 'front' }] }
+    body: { azsId: '42', recipientRole: 'manager', photos: [{ reportId: 10, photoCode: 'front', comment: 'Замечание' }] }
   });
   const res = makeRes();
   await handler(req, res);
@@ -205,7 +236,7 @@ test('POST / returns 422 on RECIPIENT_NOT_SET errorCode', async () => {
   const handler = findRoute(router, 'post', '/');
   if (!handler) return;
   const req = makeReq({
-    body: { azsId: '42', recipientRole: 'manager', message: 'test', photos: [{ reportId: 1, photoCode: 'a' }] }
+    body: { azsId: '42', recipientRole: 'manager', photos: [{ reportId: 1, photoCode: 'a', comment: 'test' }] }
   });
   const res = makeRes();
   await handler(req, res);
@@ -229,7 +260,7 @@ test('GET / returns 403 without reviewer role', async () => {
 
 test('GET / returns items and nextCursor', async () => {
   const remarkStore = createFakeRemarkStore();
-  await remarkStore.insertRemark({ azsId: '1', recipientRole: 'admin', message: 'a', photos: [] });
+  await remarkStore.insertRemark({ azsId: '1', recipientRole: 'admin', photos: [] });
   const deps = { ...stubDeps, remarkStore };
   const router = createPhotoRemarkRouter(deps);
   const handler = findRoute(router, 'get', '/');
@@ -284,7 +315,8 @@ test('POST /:id/retry returns 403 without reviewer role', async () => {
 test('POST /:id/retry succeeds for existing remark, returns {item}', async () => {
   const remarkStore = createFakeRemarkStore();
   const inserted = await remarkStore.insertRemark({
-    azsId: '42', recipientRole: 'admin', message: 'test', photos: [{ reportId: 10, photoCode: 'front' }]
+    azsId: '42', recipientRole: 'admin',
+    photos: [{ reportId: 10, photoCode: 'front', comment: 'test' }]
   });
   await remarkStore.markDelivery(inserted.id, 'failed', 'timeout');
 
@@ -313,12 +345,15 @@ test('POST /:id/retry uses stored recipientUserId (no re-resolve)', async () => 
     async retryRemark(record) {
       retryCalledWith = record;
       return { ...record, deliveryStatus: 'sent', deliveryError: null };
+    },
+    async retryPhoto(remarkId, reportId, photoCode) {
+      return { remarkId, reportId, photoCode, deliveryStatus: 'sent', deliveryError: null };
     }
   };
   const inserted = await remarkStore.insertRemark({
-    azsId: '42', recipientRole: 'admin', message: 'test',
+    azsId: '42', recipientRole: 'admin',
     recipientUserId: 99, recipientName: 'Stored User',
-    photos: [{ reportId: 10, photoCode: 'front' }]
+    photos: [{ reportId: 10, photoCode: 'front', comment: 'test' }]
   });
   await remarkStore.markDelivery(inserted.id, 'failed', 'timeout');
 
@@ -356,7 +391,7 @@ test('POST / returns 400 PHOTOS_AZS_MISMATCH when photo belongs to different AZS
   const handler = findRoute(router, 'post', '/');
   if (!handler) return;
   const req = makeReq({
-    body: { azsId: '42', recipientRole: 'manager', message: 'test', photos: [{ reportId: 10, photoCode: 'front' }] }
+    body: { azsId: '42', recipientRole: 'manager', photos: [{ reportId: 10, photoCode: 'front', comment: 'test' }] }
   });
   const res = makeRes();
   await handler(req, res);
@@ -375,12 +410,254 @@ test('POST / passes guard when photo azsId matches body azsId', async () => {
   const handler = findRoute(router, 'post', '/');
   if (!handler) return;
   const req = makeReq({
-    body: { azsId: '42', recipientRole: 'manager', message: 'test', photos: [{ reportId: 10, photoCode: 'front' }] }
+    body: { azsId: '42', recipientRole: 'manager', photos: [{ reportId: 10, photoCode: 'front', comment: 'test' }] }
   });
   const res = makeRes();
   await handler(req, res);
   assert.equal(res.statusCode, 200);
   assert.ok(res._payload?.item, 'response should have item');
+});
+
+// ---------------------------------------------------------------------------
+// UX-2: New per-photo comment contract — POST /
+// ---------------------------------------------------------------------------
+
+test('UX-2 POST / accepts per-photo comments (no top-level message)', async () => {
+  const router = createPhotoRemarkRouter({ ...stubDeps, remarkStore: createFakeRemarkStore() });
+  const handler = findRoute(router, 'post', '/');
+  if (!handler) return;
+  const req = makeReq({
+    body: {
+      azsId: '42',
+      recipientRole: 'manager',
+      // No top-level message — comment lives inside each photo
+      photos: [
+        { reportId: 10, photoCode: 'front', comment: 'Грязное стекло' },
+        { reportId: 10, photoCode: 'side', comment: 'Сломан насос' }
+      ]
+    }
+  });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200, 'should accept per-photo comment body');
+  assert.ok(res._payload?.item, 'response should have item key');
+});
+
+test('UX-2 POST / returns 400 when photo has empty comment', async () => {
+  const router = createPhotoRemarkRouter({ ...stubDeps, remarkStore: createFakeRemarkStore() });
+  const handler = findRoute(router, 'post', '/');
+  if (!handler) return;
+  const req = makeReq({
+    body: {
+      azsId: '42',
+      recipientRole: 'manager',
+      photos: [
+        { reportId: 10, photoCode: 'front', comment: '' }  // empty comment should fail
+      ]
+    }
+  });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 400, 'should reject empty photo comment');
+  assert.ok(res._payload?.message?.toLowerCase().includes('comment'), 'error message mentions comment');
+});
+
+test('UX-2 POST / returns 400 when photo has missing comment field', async () => {
+  const router = createPhotoRemarkRouter({ ...stubDeps, remarkStore: createFakeRemarkStore() });
+  const handler = findRoute(router, 'post', '/');
+  if (!handler) return;
+  const req = makeReq({
+    body: {
+      azsId: '42',
+      recipientRole: 'manager',
+      photos: [
+        { reportId: 10, photoCode: 'front' }  // no comment field
+      ]
+    }
+  });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 400, 'should reject photo without comment');
+});
+
+test('UX-2 POST / still rejects missing azsId', async () => {
+  const router = createPhotoRemarkRouter({ ...stubDeps, remarkStore: createFakeRemarkStore() });
+  const handler = findRoute(router, 'post', '/');
+  if (!handler) return;
+  const req = makeReq({
+    body: {
+      recipientRole: 'manager',
+      photos: [{ reportId: 10, photoCode: 'front', comment: 'Test' }]
+    }
+  });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 400);
+  assert.ok(res._payload?.message?.toLowerCase().includes('azsid'));
+});
+
+test('UX-2 POST / passes photos array with comments to service', async () => {
+  let capturedParams = null;
+  const capturingService = {
+    async sendRemark(params) {
+      capturedParams = params;
+      return {
+        id: 1, azsId: params.azsId, recipientRole: params.recipientRole,
+        deliveryStatus: 'sent', deliveryError: null,
+        photos: params.photos, createdAt: new Date().toISOString()
+      };
+    },
+    async retryRemark(record) { return record; }
+  };
+  const router = createPhotoRemarkRouter({
+    ...stubDeps,
+    photoRemarkService: capturingService,
+    remarkStore: createFakeRemarkStore()
+  });
+  const handler = findRoute(router, 'post', '/');
+  if (!handler) return;
+  const req = makeReq({
+    body: {
+      azsId: '42', recipientRole: 'manager',
+      photos: [
+        { reportId: 10, photoCode: 'front', comment: 'Тест 1' },
+        { reportId: 10, photoCode: 'side', comment: 'Тест 2' }
+      ]
+    }
+  });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.ok(capturedParams, 'service.sendRemark should have been called');
+  assert.equal(capturedParams.photos.length, 2, 'both photos passed to service');
+  assert.equal(capturedParams.photos[0].comment, 'Тест 1', 'photo comment passed to service');
+  assert.equal(capturedParams.photos[1].comment, 'Тест 2', 'second photo comment passed to service');
+});
+
+// ---------------------------------------------------------------------------
+// UX-2: Single-photo retry — POST /:id/retry/:reportId/:photoCode
+// ---------------------------------------------------------------------------
+
+const findPhotoRetryHandler = (router) => {
+  for (const layer of router.stack) {
+    if (layer.route?.path === '/:id/retry/:reportId/:photoCode') {
+      const h = layer.route.stack.find((l) => l.method === 'post');
+      return h?.handle || null;
+    }
+  }
+  return null;
+};
+
+const createFakeServiceWithPhotoRetry = (overrides = {}) => ({
+  async sendRemark(params) {
+    return {
+      id: 99, azsId: params.azsId, recipientRole: params.recipientRole,
+      deliveryStatus: 'sent', deliveryError: null,
+      photos: params.photos, createdAt: new Date().toISOString()
+    };
+  },
+  async retryRemark(record) {
+    if (overrides.retryThrow) throw new Error(overrides.retryThrow);
+    return { ...record, deliveryStatus: 'sent', deliveryError: null };
+  },
+  async retryPhoto(remarkId, reportId, photoCode) {
+    if (overrides.retryPhotoThrow) throw new Error(overrides.retryPhotoThrow);
+    return { remarkId, reportId, photoCode, deliveryStatus: 'sent', deliveryError: null };
+  }
+});
+
+test('UX-2 POST /:id/retry/:reportId/:photoCode returns 403 without reviewer', async () => {
+  const router = createPhotoRemarkRouter({
+    ...stubDeps,
+    photoRemarkService: createFakeServiceWithPhotoRetry(),
+    remarkStore: createFakeRemarkStore()
+  });
+  const handler = findPhotoRetryHandler(router);
+  if (!handler) { /* route not yet implemented, test will fail on assertion below */ return; }
+  const req = makeReq({ params: { id: '1', reportId: '10', photoCode: 'front' }, accessContext: { capabilities: {} } });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 403);
+});
+
+test('UX-2 POST /:id/retry/:reportId/:photoCode returns 404 for missing remark', async () => {
+  const router = createPhotoRemarkRouter({
+    ...stubDeps,
+    photoRemarkService: createFakeServiceWithPhotoRetry(),
+    remarkStore: createFakeRemarkStore()
+  });
+  const handler = findPhotoRetryHandler(router);
+  if (!handler) return;
+  const req = makeReq({ params: { id: '9999', reportId: '10', photoCode: 'front' } });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 404);
+});
+
+test('UX-2 POST /:id/retry/:reportId/:photoCode succeeds and returns {item}', async () => {
+  const remarkStore = createFakeRemarkStore();
+  const inserted = await remarkStore.insertRemark({
+    azsId: '42', recipientRole: 'admin',
+    photos: [{ reportId: 10, photoCode: 'front', comment: 'Test' }]
+  });
+
+  let retryPhotoCalledWith = null;
+  const capturingSvc = {
+    async sendRemark() { return {}; },
+    async retryRemark(record) { return { ...record, deliveryStatus: 'sent' }; },
+    async retryPhoto(remarkId, reportId, photoCode) {
+      retryPhotoCalledWith = { remarkId, reportId, photoCode };
+      return { remarkId, reportId, photoCode, deliveryStatus: 'sent', deliveryError: null };
+    }
+  };
+
+  const router = createPhotoRemarkRouter({
+    ...stubDeps,
+    remarkStore,
+    photoRemarkService: capturingSvc
+  });
+  const handler = findPhotoRetryHandler(router);
+  if (!handler) return;
+  const req = makeReq({ params: { id: String(inserted.id), reportId: '10', photoCode: 'front' } });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.ok(res._payload?.item, 'response should have item');
+  assert.ok(retryPhotoCalledWith, 'retryPhoto should have been called');
+  assert.equal(retryPhotoCalledWith.remarkId, inserted.id);
+  assert.equal(retryPhotoCalledWith.reportId, 10);
+  assert.equal(retryPhotoCalledWith.photoCode, 'front');
+});
+
+// ---------------------------------------------------------------------------
+// UX-2: Journal GET / — per-photo comment + status returned
+// ---------------------------------------------------------------------------
+
+test('UX-2 GET / returns photos with per-photo comment and deliveryStatus', async () => {
+  const remarkStore = createFakeRemarkStore();
+  await remarkStore.insertRemark({
+    azsId: '77', recipientRole: 'admin',
+    photos: [
+      { reportId: 5, photoCode: 'a', comment: 'Комментарий A' },
+      { reportId: 5, photoCode: 'b', comment: 'Комментарий B' }
+    ]
+  });
+  const deps = { ...stubDeps, remarkStore };
+  const router = createPhotoRemarkRouter(deps);
+  const handler = findRoute(router, 'get', '/');
+  if (!handler) return;
+  const req = makeReq({ query: {} });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.ok(Array.isArray(res._payload?.items));
+  const item = res._payload.items[0];
+  assert.ok(item, 'journal item exists');
+  assert.ok(Array.isArray(item.photos), 'photos is array');
+  const photoA = item.photos.find((p) => p.photoCode === 'a');
+  assert.ok(photoA, 'photo a found in journal');
+  assert.equal(photoA.comment, 'Комментарий A', 'per-photo comment in journal');
+  assert.ok('deliveryStatus' in photoA, 'per-photo deliveryStatus in journal');
 });
 
 // ---------------------------------------------------------------------------
