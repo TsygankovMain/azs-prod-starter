@@ -38,7 +38,7 @@ const buildDispatchMessage = ({ azsId, azsTitle, deadlineAt, timezone }) => {
     parts.push(`Сдать до ${deadline}.`);
   }
   parts.push('');
-  parts.push('Откройте приложение «Порядок на АЗС» в Bitrix24, чтобы загрузить фото.');
+  parts.push('Откройте приложение «Порядок на АЗС» в Битрикс24, чтобы загрузить фото.');
   return parts.join('\n');
 };
 

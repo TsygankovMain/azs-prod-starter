@@ -364,7 +364,8 @@ test('invalid pre-computed scheduledAt causes candidate to fail gracefully', asy
   assert.match(markFailedCalls[0].errorText, /invalid/i, 'markFailed errorText must mention "invalid"');
 });
 
-test('dispatchCandidate: клавиатура содержит кнопку причины при наличии BITRIX_APP_CODE', async () => {
+// BUG-019: кнопка причины теперь COMMAND, не LINK
+test('dispatchCandidate: клавиатура содержит COMMAND-кнопку причины при наличии BITRIX_APP_CODE', async () => {
   const prevAppCode = process.env.BITRIX_APP_CODE;
 
   process.env.BITRIX_APP_CODE = 'test.app';
@@ -446,9 +447,12 @@ test('dispatchCandidate: клавиатура содержит кнопку пр
       assert.ok(!Array.isArray(btn), 'keyboard.BUTTONS элементы не должны быть массивами (плоский формат)');
     }
 
-    const reasonButton = keyboard.BUTTONS.find((b) => b?.TEXT?.includes('Не успеваю') || b?.LINK?.includes('reason'));
-    assert.ok(reasonButton, 'клавиатура должна содержать кнопку с reason-ссылкой');
-    assert.ok(typeof reasonButton.LINK === 'string' && reasonButton.LINK.includes('test.app'), 'LINK кнопки должен содержать appCode');
+    // BUG-019: reason button is COMMAND type, not LINK
+    const reasonButton = keyboard.BUTTONS.find((b) => b?.TEXT?.includes('Не успеваю') || b?.TEXT?.includes('причину'));
+    assert.ok(reasonButton, 'клавиатура должна содержать кнопку причины');
+    assert.equal(reasonButton.TYPE, 'COMMAND', 'кнопка причины должна быть TYPE=COMMAND (BUG-019)');
+    assert.ok(String(reasonButton.COMMAND).includes('reason'), 'COMMAND должен содержать "reason"');
+    assert.equal(reasonButton.LINK, undefined, 'COMMAND-кнопка не должна иметь LINK');
   } finally {
     // Восстановить env чтобы не загрязнять другие тесты
     if (prevAppCode === undefined) delete process.env.BITRIX_APP_CODE;

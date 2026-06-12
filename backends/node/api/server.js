@@ -38,6 +38,8 @@ import createPhotoRemarkStore from './src/reports/photoRemarkStore.js';
 import { createPhotoRemarkService } from './src/notifications/photoRemarkService.js';
 import { createPhotoRemarkRouter } from './src/reports/photoRemarkRoutes.js';
 import createReasonForwardingService from './src/notifications/reasonForwardingService.js';
+import { createBotCommandHandler } from './src/notifications/botCommandHandler.js';
+import { createReasonCaptureStore } from './src/notifications/reasonCaptureStore.js';
 import { validateRequiredEnv } from './utils/validateEnv.js';
 import { resolvePgSslConfig } from './utils/dbSsl.js';
 import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from './src/shared/transientErrors.js';
@@ -255,6 +257,12 @@ const bitrixClient = createBitrixRestClient({
   }
 });
 const reasonForwardingService = createReasonForwardingService({ bitrixClient });
+const reasonCaptureStore = createReasonCaptureStore();
+const botCommandHandler = createBotCommandHandler({
+  bitrixClient,
+  reasonStore,
+  reasonCaptureStore
+});
 const getAdminContext = async () => {
   const entry = await authContextStore.getLastAdminContext();
   if (!entry?.context) return {};
@@ -506,6 +514,123 @@ app.use('/api/photo-remarks', verifyToken, attachAccessContext, createPhotoRemar
   bitrixClient,
   getAdminContext
 }));
+
+// ---------------------------------------------------------------------------
+// BUG-019: Bot event handler — receives ONIMBOTMESSAGEADD from Bitrix24.
+// Bitrix posts event data to the handler URL that was registered on install.
+// This route is intentionally public (no JWT): Bitrix cannot add our JWT.
+// The bot event handler performs two duties:
+//   1. COMMAND event: user pressed «Указать причину» COMMAND button → bot replies
+//      «Напишите причину одним сообщением» and records awaiting state.
+//   2. Plain message: if user/dialog is in awaiting state, capture the text as
+//      reason via reasonStore, reply «Причина принята», clear awaiting state.
+//
+// SECURITY: The handler URL registered with Bitrix24 includes ?s=<JOB_SECRET>.
+// When JOB_SECRET is configured, any request without the correct ?s param is
+// silently ignored (fail-closed): returns 200 {ok:true,handled:false} so that
+// Bitrix24's retry mechanism does not keep hammering the endpoint.
+// When JOB_SECRET is NOT set (dev / unconfigured deploy) a one-time warning is
+// logged and requests are processed without verification (fallback open).
+// ---------------------------------------------------------------------------
+
+// One-time warning flag: log once per process lifetime when no secret is set.
+let _botEventUnverifiedWarned = false;
+
+app.post('/api/bot/event', async (req, res) => {
+  try {
+    // ── SECURITY GATE ─────────────────────────────────────────────────────────
+    const jobSecret = String(process.env.JOB_SECRET || '').trim();
+    if (jobSecret) {
+      // Secret IS configured → fail-closed: reject any request whose ?s param
+      // is missing or does not match. Return 200 so Bitrix24 does not retry.
+      if (req.query.s !== jobSecret) {
+        console.warn('/api/bot/event: rejected — wrong or missing ?s param (possible spoofed request)');
+        return res.json({ ok: true, handled: false });
+      }
+    } else {
+      // Secret NOT configured → log a one-time startup-style warning and proceed
+      // so dev and unconfigured envs still work.
+      if (!_botEventUnverifiedWarned) {
+        _botEventUnverifiedWarned = true;
+        console.warn('/api/bot/event: JOB_SECRET is not set — endpoint is UNVERIFIED; set JOB_SECRET in production');
+      }
+    }
+    // ── END SECURITY GATE ─────────────────────────────────────────────────────
+
+    // Bitrix24 sends either a flat POST body or nested under 'data'.
+    // For ONIMBOTMESSAGEADD the relevant fields are:
+    //   data[PARAMS][FROM_USER_ID]  — sender userId
+    //   data[PARAMS][DIALOG_ID]     — dialog (e.g. "u42" for user dialogs)
+    //   data[PARAMS][MESSAGE]       — message text
+    //   data[PARAMS][COMMAND]       — command string (set for COMMAND buttons)
+    //   data[EVENT]                 — event name (ONIMBOTMESSAGEADD)
+    const body = req.body || {};
+    const params = body?.data?.PARAMS || body?.PARAMS || {};
+    const event = String(body?.event || body?.EVENT || body?.data?.EVENT || '').toUpperCase();
+
+    const userId = Number(params?.FROM_USER_ID || params?.from_user_id || 0);
+    const dialogId = String(params?.DIALOG_ID || params?.dialog_id || String(userId ? `u${userId}` : ''));
+    const messageText = String(params?.MESSAGE || params?.message || '');
+    const command = String(params?.COMMAND || params?.command || '');
+
+    // Build a minimal auth context from the event body (best-effort)
+    const context = {
+      authId: String(body?.auth?.access_token || body?.AUTH_ID || ''),
+      domain: String(body?.auth?.domain || body?.DOMAIN || ''),
+      memberId: String(body?.auth?.member_id || body?.member_id || '')
+    };
+
+    if (!userId) {
+      // Unknown sender — ack and ignore
+      return res.json({ ok: true, handled: false });
+    }
+
+    if (event === 'ONIMBOTMESSAGEADD' && command) {
+      // COMMAND button pressed: extract reportId from command string and set awaiting state
+      const { parseReasonCommand } = botCommandHandler;
+      const reportId = parseReasonCommand(command);
+
+      if (reportId) {
+        // Resolve azsId from the report in the DB (best-effort: fall back to empty)
+        let azsId = '';
+        try {
+          const report = await reportsStore.getById(reportId);
+          azsId = String(report?.azsId || '');
+        } catch {
+          // best-effort: azsId may be empty; reason will still be stored
+        }
+
+        await botCommandHandler.handleCommand({
+          userId,
+          dialogId,
+          reportId,
+          azsId,
+          context
+        });
+        return res.json({ ok: true, handled: true, action: 'awaiting_reason' });
+      }
+
+      // Unrecognised command — ack
+      return res.json({ ok: true, handled: false });
+    }
+
+    if (event === 'ONIMBOTMESSAGEADD' && !command && messageText) {
+      // Plain message — may be a reason capture
+      const handled = await botCommandHandler.handleMessage({
+        userId,
+        dialogId,
+        text: messageText,
+        context
+      });
+      return res.json({ ok: true, handled, action: handled ? 'reason_captured' : 'ignored' });
+    }
+
+    return res.json({ ok: true, handled: false });
+  } catch (error) {
+    console.error('/api/bot/event error:', error);
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
 
 app.post('/api/install', async (req, res) => {
   try {

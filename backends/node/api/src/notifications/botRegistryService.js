@@ -27,12 +27,34 @@ const loadBuiltInBotAvatar = () => {
   }
 };
 
+/**
+ * Build the bot event handler URL that Bitrix24 will POST to when a message
+ * arrives (ONIMBOTMESSAGEADD).  The URL carries a shared secret so that
+ * /api/bot/event can verify the request originated from Bitrix24.
+ *
+ * @param {string} base  - APP_BASE_URL without trailing slash, e.g. "https://app.example.com"
+ * @param {string} secret - JOB_SECRET value; empty string → no ?s= param appended
+ * @returns {string} full handler URL or empty string if base is empty
+ */
+const buildBotEventHandlerUrl = (base, secret) => {
+  if (!base) return '';
+  const trimmed = base.replace(/\/+$/, '');
+  const path = `${trimmed}/api/bot/event`;
+  return secret ? `${path}?s=${encodeURIComponent(secret)}` : path;
+};
+
 export const createBotRegistryService = ({
   bitrixClient,
   logger = console,
   botCode = process.env.BITRIX_BOT_CODE || 'azs_order_bot',
   botName = process.env.BITRIX_BOT_NAME || 'Порядок на АЗС',
-  botWorkPosition = process.env.BITRIX_BOT_WORK_POSITION || 'Фото-отчёты АЗС'
+  botWorkPosition = process.env.BITRIX_BOT_WORK_POSITION || 'Фото-отчёты АЗС',
+  // handlerBaseUrl: base URL for the bot event handler (APP_BASE_URL / VIRTUAL_HOST).
+  // If not provided, falls back to process.env.APP_BASE_URL or VIRTUAL_HOST.
+  handlerBaseUrl = process.env.APP_BASE_URL || process.env.VIRTUAL_HOST || '',
+  // jobSecret: shared secret appended as ?s= to the event handler URL.
+  // Defaults to process.env.JOB_SECRET.
+  jobSecret = process.env.JOB_SECRET || ''
 }) => {
   if (!bitrixClient || typeof bitrixClient.callMethodWithAuth !== 'function') {
     throw new Error('bitrixClient.callMethodWithAuth is required');
@@ -57,13 +79,34 @@ export const createBotRegistryService = ({
       throw new Error('AUTH_ID is required to register bot during install');
     }
 
+    // Build the event handler URL that Bitrix24 will POST to for ONIMBOTMESSAGEADD.
+    // The URL carries JOB_SECRET as ?s= so the endpoint can verify origin.
+    const eventHandlerUrl = buildBotEventHandlerUrl(
+      String(handlerBaseUrl || '').replace(/\/+$/, ''),
+      String(jobSecret || '')
+    );
+
+    if (!eventHandlerUrl) {
+      logger.warn('botRegistryService: APP_BASE_URL/VIRTUAL_HOST not set — registering bot WITHOUT event handler URL');
+    } else if (!jobSecret) {
+      logger.warn('botRegistryService: JOB_SECRET not set — event handler URL registered WITHOUT secret (endpoint is UNVERIFIED)');
+    }
+
+    const fields = {
+      code: String(botCode).trim(),
+      properties: buildProperties(),
+      type: 'bot',
+      eventMode: 'fetch'
+    };
+
+    // Attach event handler URL when available (Bitrix24 imbot.v2.Bot.register
+    // accepts event_message_add to register the ONIMBOTMESSAGEADD handler URL).
+    if (eventHandlerUrl) {
+      fields.event_message_add = eventHandlerUrl;
+    }
+
     const result = await bitrixClient.callMethodWithAuth('imbot.v2.Bot.register', {
-      fields: {
-        code: String(botCode).trim(),
-        properties: buildProperties(),
-        type: 'bot',
-        eventMode: 'fetch'
-      }
+      fields
     }, runtimeAuthId, context);
 
     const botId = parseBotId(result);

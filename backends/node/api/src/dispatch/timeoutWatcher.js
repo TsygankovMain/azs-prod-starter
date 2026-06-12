@@ -1,5 +1,6 @@
 import { updateReportCrmItem } from '../reports/reportCrmSync.js';
 import { NOTIFY_FALLBACK_PREFIX } from '../notifications/notificationService.js';
+import { buildReasonCommand } from '../notifications/botCommandHandler.js';
 
 const normalizeLimit = (value) => {
   const n = Number(value);
@@ -101,18 +102,20 @@ export const createTimeoutWatcher = ({
           try {
             const existing = await reasonStore.getByReport(report.id);
             if (!existing) {
+              // BUG-019: overdue reason button is now COMMAND (not LINK).
               const appCode = String(process.env.BITRIX_APP_CODE || '').trim();
-              let reasonLink = null;
-              if (appCode && report.id) {
-                const reasonPath = `/reason/${report.id}`;
-                const reasonParams = new URLSearchParams();
-                reasonParams.set('params[reportId]', String(report.id));
-                reasonParams.set('params[path]', reasonPath);
-                reasonLink = `/marketplace/view/${encodeURIComponent(appCode)}/?${reasonParams.toString()}`;
-              }
               const resolvedBotId = Number(notificationService?.botId || botId || process.env.BITRIX_BOT_ID || 0);
-              const reasonKeyboard = reasonLink
-                ? { BOT_ID: resolvedBotId, BUTTONS: [{ TEXT: 'Указать причину', LINK: reasonLink }] }
+              const reasonKeyboard = (appCode && report.id)
+                ? {
+                    BOT_ID: resolvedBotId,
+                    BUTTONS: [
+                      {
+                        TYPE: 'COMMAND',
+                        TEXT: 'Указать причину',
+                        COMMAND: buildReasonCommand(report.id)
+                      }
+                    ]
+                  }
                 : null;
               const azsTitle = await resolveAzsTitle(report.azsId);
               const doborResult = await notificationService.notify({

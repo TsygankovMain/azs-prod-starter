@@ -1,4 +1,4 @@
-import { buildRestAppUriLink } from '../notifications/reportLinks.js';
+import { buildReasonCommand } from '../notifications/botCommandHandler.js';
 import { NOTIFY_FALLBACK_PREFIX } from '../notifications/notificationService.js';
 import { buildZonedDatetime } from './dispatchPlanGenerator.js';
 
@@ -229,31 +229,25 @@ export const createDispatchService = ({
 
         let dispatchKeyboard = null;
         try {
+          // BUG-019: «Открыть приложение» LINK button removed — no working deeplink.
+          // «Указать причину» is now a COMMAND button so the bot handles it in-chat.
+          // BITRIX_APP_CODE guard kept: without it we have no reportId context either.
           const appCode = String(process.env.BITRIX_APP_CODE || '').trim();
           const reserveItemId = reportItemId || reserve.id;
           if (appCode && reserveItemId) {
-            const deepLink = buildRestAppUriLink({ appCode, reportId: reserveItemId });
-            const reasonPath = `/reason/${reserve.id}`;
-            const reasonParams = new URLSearchParams();
-            reasonParams.set('params[reportId]', String(reserve.id));
-            reasonParams.set('params[path]', reasonPath);
-            const reasonDeepLink = `/marketplace/view/${encodeURIComponent(appCode)}/?${reasonParams.toString()}`;
-
             const resolvedBotId = Number(notificationService?.botId || botId || process.env.BITRIX_BOT_ID || 0);
-            const buttons = [];
-            if (deepLink) buttons.push({ TEXT: 'Открыть приложение', LINK: deepLink });
-            if (buttons.length && reasonDeepLink) {
-              buttons.push({ TYPE: 'NEWLINE' });
-              buttons.push({ TEXT: 'Не успеваю — указать причину', LINK: reasonDeepLink });
-            } else if (reasonDeepLink) {
-              buttons.push({ TEXT: 'Не успеваю — указать причину', LINK: reasonDeepLink });
-            }
-            if (buttons.length) {
-              dispatchKeyboard = { BOT_ID: resolvedBotId, BUTTONS: buttons };
-            }
+            const reasonCommand = buildReasonCommand(reserveItemId);
+            const buttons = [
+              {
+                TYPE: 'COMMAND',
+                TEXT: 'Не успеваю — указать причину',
+                COMMAND: reasonCommand
+              }
+            ];
+            dispatchKeyboard = { BOT_ID: resolvedBotId, BUTTONS: buttons };
           }
         } catch {
-          // Defensive: skip keyboard if link building fails
+          // Defensive: skip keyboard if building fails
         }
 
         const notifyResult = await notificationService.notifyDispatch({
