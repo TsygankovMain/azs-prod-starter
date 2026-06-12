@@ -11,7 +11,7 @@
 
 import express from 'express';
 import { resolveAzsRecipients } from './azsRecipients.js';
-import { createAzsTitleResolver } from './reportsRoutes.js';
+import { batchResolveAzsTitles } from './reportsRoutes.js';
 
 // ---------------------------------------------------------------------------
 // Guards — copied verbatim from analyticsRoutes.js pattern
@@ -117,7 +117,7 @@ export const createPhotoFeedRouter = ({
         dateFrom, dateTo, azsIds, photoCodes, remarks, limit, cursor
       });
 
-      // Resolve azsTitle for all unique azsIds on this page
+      // BUG-021: one batch call for the page instead of per-row getCrmItem.
       const pageAzsIds = [...new Set(result.items.map((item) => item.azsId).filter(Boolean))];
       let items = result.items;
       if (pageAzsIds.length > 0) {
@@ -133,16 +133,11 @@ export const createPhotoFeedRouter = ({
             // best-effort — fall back to request context
           }
         }
-        const resolveAzsTitle = createAzsTitleResolver({
+        const titleMap = await batchResolveAzsTitles(pageAzsIds, {
           bitrixClient,
           settings,
           context: resolverContext
         });
-        const titleMap = new Map();
-        await Promise.all(pageAzsIds.map(async (id) => {
-          const title = await resolveAzsTitle(id);
-          titleMap.set(id, title || null);
-        }));
         items = result.items.map((item) => ({
           ...item,
           azsTitle: titleMap.get(item.azsId) ?? item.azsTitle

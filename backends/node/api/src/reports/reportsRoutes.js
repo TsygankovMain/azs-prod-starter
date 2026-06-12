@@ -106,6 +106,65 @@ const parseCrmItemId = (value) => {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 };
 
+/**
+ * batchResolveAzsTitles — BUG-021.
+ *
+ * Fetches titles for ALL AZS ids in ONE crm.item.list call (huge-data path via
+ * listCrmItems with order:{id:'ASC'} + start=-1 internally) and returns a
+ * Map<string, string> id→title.  Falls back gracefully on errors or empty results.
+ *
+ * Use this in hot list/feed paths instead of per-row createAzsTitleResolver.
+ * Keep createAzsTitleResolver for genuinely single-id spots (card detail / submit / upload).
+ *
+ * @param {string[]} azsIds
+ * @param {{ bitrixClient, settings, context? }} opts
+ * @returns {Promise<Map<string, string>>}
+ */
+export const batchResolveAzsTitles = async (azsIds, { bitrixClient, settings, context = {} }) => {
+  const entityTypeId = Number(settings?.azs?.entityTypeId || 0);
+  const fallbackMap = new Map();
+
+  if (!azsIds || azsIds.length === 0) {
+    return fallbackMap;
+  }
+
+  // Build per-id fallback strings upfront so they are always available.
+  for (const id of azsIds) {
+    const parsed = parseCrmItemId(id);
+    fallbackMap.set(String(id), `АЗС ${parsed || id || '?'}`.trim());
+  }
+
+  if (!entityTypeId || typeof bitrixClient?.listCrmItems !== 'function') {
+    return fallbackMap;
+  }
+
+  try {
+    const rows = await bitrixClient.listCrmItems({
+      entityTypeId,
+      select: ['id', 'ID', 'title', 'TITLE'],
+      filter: {},
+      order: { id: 'ASC' }, // triggers huge-data start=-1 path in bitrixRestClient
+      limit: 2000,
+      useOriginalUfNames: 'N',
+      context
+    });
+
+    const resultMap = new Map(fallbackMap); // start from fallbacks
+    for (const row of rows) {
+      const rowId = parseCrmItemId(row?.id ?? row?.ID);
+      if (!rowId) continue;
+      const title = String(row?.title ?? row?.TITLE ?? '').trim();
+      if (title) {
+        resultMap.set(String(rowId), title);
+      }
+    }
+    return resultMap;
+  } catch {
+    // Network / auth error — return fallback map so the page still renders.
+    return fallbackMap;
+  }
+};
+
 export const createAzsTitleResolver = ({ bitrixClient, settings, context = {} }) => {
   const entityTypeId = Number(settings?.azs?.entityTypeId || 0);
   const cache = new Map();
@@ -776,7 +835,6 @@ export const createReportsRouter = ({
 
     try {
       const settings = await settingsStore.read();
-      const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
 
       const items = await reportsStore.list({
         dateFrom: normalizeDateFilter(req.query.dateFrom),
@@ -786,16 +844,24 @@ export const createReportsRouter = ({
         limit: normalizeLimit(req.query.limit)
       });
 
-      const decorated = await Promise.all(items.map(async (item) => {
+      // BUG-021: one batch call for the page instead of per-row getCrmItem.
+      const pageAzsIds = [...new Set(items.map((item) => item.azsId).filter(Boolean))];
+      const titleMap = await batchResolveAzsTitles(pageAzsIds, {
+        bitrixClient,
+        settings,
+        context: req.bitrixContext || {}
+      });
+
+      const decorated = items.map((item) => {
         const { reasonCode, isFallback } = classifyDispatchError(item.errorText);
         return {
           ...item,
-          azsTitle: await resolveAzsTitle(item.azsId),
+          azsTitle: titleMap.get(item.azsId) ?? `АЗС ${item.azsId || '?'}`,
           errorText: item.errorText ?? null,
           errorReason: item.errorText ? reasonCode : null,
           deliveredViaFallback: isFallback
         };
-      }));
+      });
 
       return res.json({
         items: decorated,

@@ -24,13 +24,15 @@ export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClie
         azsIds:   normIds(req.query.azsId),
       });
       const settings = await settingsStore.read();
-      const { createAzsTitleResolver } = await import('./reportsRoutes.js');
-      const resolve = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
-      const items = await Promise.all(rows.map(async r => ({
+      // BUG-021: one batch call for the page instead of per-row getCrmItem.
+      const { batchResolveAzsTitles } = await import('./reportsRoutes.js');
+      const pageAzsIds = [...new Set(rows.map(r => r.azsId).filter(Boolean))];
+      const titleMap = await batchResolveAzsTitles(pageAzsIds, { bitrixClient, settings, context: req.bitrixContext || {} });
+      const items = rows.map(r => ({
         ...r,
-        azsTitle: await resolve(r.azsId),
+        azsTitle: titleMap.get(r.azsId) ?? `АЗС ${r.azsId || '?'}`,
         pct: r.total ? Math.round(r.onTime / r.total * 100) : 0,
-      })));
+      }));
       return res.json({ items });
     } catch (err) {
       return res.status(500).json({ error: 'analytics_rating_failed', message: err.message });
@@ -64,12 +66,14 @@ export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClie
         azsIds: normIds(req.query.azsId),
       });
       const settings = await settingsStore.read();
-      const { createAzsTitleResolver } = await import('./reportsRoutes.js');
-      const resolve = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
-      const items = await Promise.all(rows.map(async r => ({
+      // BUG-021: one batch call for the page instead of per-row getCrmItem.
+      const { batchResolveAzsTitles } = await import('./reportsRoutes.js');
+      const pageAzsIds = [...new Set(rows.map(r => r.azsId).filter(Boolean))];
+      const titleMap = await batchResolveAzsTitles(pageAzsIds, { bitrixClient, settings, context: req.bitrixContext || {} });
+      const items = rows.map(r => ({
         ...r,
-        azsTitle: await resolve(r.azsId),
-      })));
+        azsTitle: titleMap.get(r.azsId) ?? `АЗС ${r.azsId || '?'}`,
+      }));
       return res.json({ items, date });
     } catch (err) {
       return res.status(500).json({ error: 'analytics_day_photos_failed', message: err.message });
