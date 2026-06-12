@@ -123,25 +123,42 @@ export const createBotRegistryService = ({
     };
   };
 
+  // Updates an EXISTING bot's profile AND (re)applies webhook event mode.
+  // CRITICAL: imbot.v2.Bot.register is idempotent — for an already-registered
+  // code it returns the existing bot WITHOUT updating eventMode/webhookUrl. So
+  // switching an existing bot into webhook mode (so it receives ONIMBOTV2*
+  // events) MUST go through imbot.v2.Bot.update. Called on reuse and on
+  // force-reregister; without this the «Указать причину» button stays silent.
   const updateBotAvatar = async ({ botId, authId = '', context = {} }) => {
-    if (!builtInAvatarBase64 || !Number(botId)) {
+    if (!Number(botId)) {
       return false;
     }
     const runtimeAuthId = normalizeAuthId(authId);
     if (!runtimeAuthId) {
       return false;
     }
+    const eventHandlerUrl = buildBotEventHandlerUrl(
+      String(handlerBaseUrl || '').replace(/\/+$/, ''),
+      String(jobSecret || '')
+    );
+    const fields = {
+      properties: buildProperties(),
+      eventMode: 'webhook'
+    };
+    if (eventHandlerUrl) {
+      fields.webhookUrl = eventHandlerUrl;
+    } else {
+      logger.warn('botRegistryService: updating bot WITHOUT webhookUrl — APP_BASE_URL/VIRTUAL_HOST missing; bot events will NOT be delivered');
+    }
     try {
       await bitrixClient.callMethodWithAuth('imbot.v2.Bot.update', {
         botId: Number(botId),
-        fields: {
-          properties: buildProperties()
-        }
+        fields
       }, runtimeAuthId, context);
-      logger.info('bot avatar refreshed', { botId });
+      logger.info('bot updated (profile + webhook mode)', { botId, webhook: Boolean(eventHandlerUrl) });
       return true;
     } catch (error) {
-      logger.warn('bot avatar refresh failed', { botId, error: error.message });
+      logger.warn('bot update failed', { botId, error: error.message });
       return false;
     }
   };
@@ -185,20 +202,23 @@ export const createBotRegistryService = ({
     // portal. No unregister is issued so existing chats and history are preserved.
     // Bitrix24 imbot.v2.Bot.register is idempotent for the same code: it returns
     // the existing botId (or creates a new one) and updates the stored properties.
-    if (existing && !force) {
-      logger.info('bot reused', { botId: existing.id, botCode: expectedCode });
+    if (existing) {
+      // imbot.v2.Bot.register is a NO-OP for an already-registered code (it will
+      // NOT switch eventMode/webhookUrl). So for ANY existing bot — normal reuse
+      // OR force-reregister — we (re)apply webhook mode via imbot.v2.Bot.update.
+      if (force) {
+        logger.info('bot force-reregister (re-apply webhook mode via update)', { botId: existing.id, botCode: expectedCode });
+      } else {
+        logger.info('bot reused', { botId: existing.id, botCode: expectedCode });
+      }
       await updateBotAvatar({ botId: existing.id, authId: runtimeAuthId, context });
       return {
         botId: existing.id,
-        reused: true,
-        registered: false,
+        reused: !force,
+        registered: force,
         bots: existingBots,
         raw: existing.raw
       };
-    }
-
-    if (existing && force) {
-      logger.info('bot force-reregister', { previousBotId: existing.id, botCode: expectedCode });
     }
 
     const registration = await registerBot({ authId: runtimeAuthId, context });

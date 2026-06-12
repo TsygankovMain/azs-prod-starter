@@ -106,6 +106,68 @@ test('(b) botRegistryService: webhookUrl exact format is <base>/api/bot/event?s=
   );
 });
 
+// ─── (b2) EXISTING bot: webhook mode applied via Bot.update, not register ──────
+// Bitrix24: imbot.v2.Bot.register is a no-op for an already-registered code and
+// does NOT switch eventMode/webhookUrl. An existing bot must be updated.
+
+test('(b2) ensureBot on an EXISTING bot applies webhook mode via Bot.update (not register)', async () => {
+  const calls = [];
+  const service = createBotRegistryService({
+    bitrixClient: {
+      async callMethodWithAuth(method, params, authId) {
+        calls.push({ method, params, authId });
+        if (method === 'imbot.v2.Bot.list') {
+          return { bots: [{ id: 555, code: 'azs_order_bot', type: 'bot' }] };
+        }
+        return { bot: { id: 555 } };
+      }
+    },
+    botCode: 'azs_order_bot',
+    handlerBaseUrl: 'https://app.example.com',
+    jobSecret: 'sekret'
+  });
+
+  const reuse = await service.ensureBot({ authId: 'tok' });
+  assert.equal(reuse.botId, 555);
+  const updateCall = calls.find((c) => c.method === 'imbot.v2.Bot.update');
+  assert.ok(updateCall, 'existing bot must be updated via imbot.v2.Bot.update');
+  assert.equal(updateCall.params.fields.eventMode, 'webhook', 'update must set eventMode=webhook');
+  assert.ok(
+    String(updateCall.params.fields.webhookUrl).includes('/api/bot/event?s=sekret'),
+    `update must set webhookUrl with secret, got: ${updateCall.params.fields.webhookUrl}`
+  );
+  assert.ok(
+    !calls.some((c) => c.method === 'imbot.v2.Bot.register'),
+    'must NOT call Bot.register for an existing bot (it would not switch mode)'
+  );
+});
+
+test('(b3) ensureBot force-reregister on existing bot re-applies webhook mode via Bot.update', async () => {
+  const calls = [];
+  const service = createBotRegistryService({
+    bitrixClient: {
+      async callMethodWithAuth(method, params, authId) {
+        calls.push({ method, params, authId });
+        if (method === 'imbot.v2.Bot.list') {
+          return { bots: [{ id: 777, code: 'azs_order_bot', type: 'bot' }] };
+        }
+        return { bot: { id: 777 } };
+      }
+    },
+    botCode: 'azs_order_bot',
+    handlerBaseUrl: 'https://app.example.com',
+    jobSecret: 'sekret'
+  });
+
+  const res = await service.ensureBot({ authId: 'tok', force: true });
+  assert.equal(res.botId, 777);
+  assert.equal(res.registered, true);
+  const updateCall = calls.find((c) => c.method === 'imbot.v2.Bot.update');
+  assert.ok(updateCall, 'force-reregister must update the existing bot via Bot.update');
+  assert.equal(updateCall.params.fields.eventMode, 'webhook');
+  assert.ok(String(updateCall.params.fields.webhookUrl).includes('/api/bot/event?s=sekret'));
+});
+
 // ─── (a) Dispatch button: ACTION:SEND with ACTION_VALUE '/reason <id>' ─────────
 
 const createDispatchFake = () => {

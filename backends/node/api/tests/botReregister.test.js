@@ -168,29 +168,30 @@ test('POST /api/admin/bot/reregister returns 400 when auth_id_missing', async ()
 
 // ── botRegistryService force=true branch ─────────────────────────────────────
 
-test('ensureBot with force=true calls registerBot even when bot already exists', async () => {
+test('ensureBot with force=true updates existing bot to webhook mode (register is a no-op for existing code)', async () => {
   const calls = [];
   const service = createBotRegistryService({
     bitrixClient: {
       async callMethodWithAuth(method) {
         calls.push(method);
-        if (method === 'imbot.v2.Bot.register') {
-          return { bot: { id: 55 } };
-        }
-        // imbot.v2.Bot.list — return existing bot
+        // imbot.v2.Bot.list — return existing bot; other methods return harmless ack
         return { bots: [{ id: 44, code: 'azs_order_bot', type: 'bot' }] };
       }
     },
     logger: { info() {}, warn() {} },
-    botCode: 'azs_order_bot'
+    botCode: 'azs_order_bot',
+    handlerBaseUrl: 'https://app.example.com',
+    jobSecret: 'sek'
   });
 
   const result = await service.ensureBot({ authId: 'token-x', force: true });
   assert.equal(result.registered, true);
   assert.equal(result.reused, false);
-  assert.equal(result.botId, 55);
-  // registerBot must have been called (force=true skips reuse)
-  assert.ok(calls.includes('imbot.v2.Bot.register'), 'registerBot should be called with force=true');
+  assert.equal(result.botId, 44); // existing bot id, not a freshly-registered one
+  // Bot.register is idempotent (no-op) for an existing code → must NOT be used;
+  // webhook mode is re-applied via Bot.update instead.
+  assert.ok(!calls.includes('imbot.v2.Bot.register'), 'register must NOT be called for existing bot');
+  assert.ok(calls.includes('imbot.v2.Bot.update'), 'existing bot must be updated via Bot.update');
 });
 
 test('ensureBot with force=false (default) reuses existing bot without re-registering', async () => {
@@ -218,14 +219,11 @@ test('ensureBot with force=false (default) reuses existing bot without re-regist
   assert.ok(!calls.includes('imbot.v2.Bot.register'), 'registerBot should NOT be called without force');
 });
 
-test('ensureBot force=true logs bot force-reregister when bot exists', async () => {
+test('ensureBot force=true logs force-reregister and updates the existing bot', async () => {
   const logMessages = [];
   const service = createBotRegistryService({
     bitrixClient: {
       async callMethodWithAuth(method) {
-        if (method === 'imbot.v2.Bot.register') {
-          return { bot: { id: 99 } };
-        }
         return { bots: [{ id: 88, code: 'azs_order_bot', type: 'bot' }] };
       }
     },
@@ -233,11 +231,14 @@ test('ensureBot force=true logs bot force-reregister when bot exists', async () 
       info(msg, ctx) { logMessages.push({ msg, ctx }); },
       warn() {}
     },
-    botCode: 'azs_order_bot'
+    botCode: 'azs_order_bot',
+    handlerBaseUrl: 'https://app.example.com',
+    jobSecret: 'sek'
   });
 
-  await service.ensureBot({ authId: 'token-z', force: true });
-  const forceLog = logMessages.find(l => l.msg === 'bot force-reregister');
+  const res = await service.ensureBot({ authId: 'token-z', force: true });
+  assert.equal(res.botId, 88);
+  const forceLog = logMessages.find(l => String(l.msg).includes('force-reregister'));
   assert.ok(forceLog, 'force-reregister should be logged');
-  assert.equal(forceLog.ctx.previousBotId, 88);
+  assert.equal(forceLog.ctx.botId, 88);
 });
