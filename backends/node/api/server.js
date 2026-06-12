@@ -262,10 +262,65 @@ const bitrixClient = createBitrixRestClient({
 });
 const reasonForwardingService = createReasonForwardingService({ bitrixClient });
 const reasonCaptureStore = createReasonCaptureStore();
+// After a reason is captured via the bot, mirror the app path (POST /:id/reason):
+// write the reason to the CRM report card AND forward it to the responsible chat,
+// so the reviewer/manager actually learns WHY the AZS can't submit. Best-effort —
+// runs under the server-side background context (webhook-first, else admin OAuth),
+// since the operator's app token is not available in a chat. Forward-references
+// settingsStore/webhookBackgroundContext (defined below) — only invoked at runtime.
+const onBotReasonCaptured = async ({ reportId, reasonText }) => {
+  const report = await reportsStore.getById(Number(reportId));
+  if (!report) return;
+  const context = webhookBackgroundContext
+    ? webhookBackgroundContext
+    : await getAdminContext();
+  const settings = await settingsStore.read({ context });
+  const { createReasonCatalog } = await import('./src/reports/reasonCatalog.js');
+  const catalog = createReasonCatalog(Array.isArray(settings.report?.reasons) ? settings.report.reasons : []);
+  const reasonCode = 'other';
+  const reasonValue = catalog.encodeValue(reasonCode, reasonText);
+
+  // 1) CRM report card (best-effort)
+  try {
+    const { updateReasonCrmField } = await import('./src/reports/reportCrmSync.js');
+    await updateReasonCrmField({
+      bitrixClient,
+      settings,
+      reportItemId: report.reportItemId,
+      reasonValue,
+      context
+    });
+  } catch (crmError) {
+    console.warn('bot_reason_crm_update_failed', { reportId, message: crmError.message });
+  }
+
+  // 2) Forward to the responsible chat (best-effort)
+  try {
+    const { createAzsTitleResolver } = await import('./src/reports/reportsRoutes.js');
+    const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context });
+    const azsTitle = await resolveAzsTitle(report.azsId).catch(() => String(report.azsId || ''));
+    await reasonForwardingService.forward({
+      settings,
+      azsTitle,
+      operatorName: 'Сотрудник АЗС',
+      reasonLabel: catalog.codeToLabel(reasonCode) || reasonCode,
+      reasonText,
+      reportStatus: report.status,
+      deadlineAt: report.deadlineAt,
+      timezone: settings.timezone || 'Europe/Moscow',
+      reportItemId: report.reportItemId,
+      portalDomain: String(context.domain || ''),
+      context
+    });
+  } catch (fwdError) {
+    console.warn('bot_reason_forward_failed', { reportId, message: fwdError.message });
+  }
+};
 const botCommandHandler = createBotCommandHandler({
   bitrixClient,
   reasonStore,
-  reasonCaptureStore
+  reasonCaptureStore,
+  onReasonCaptured: onBotReasonCaptured
 });
 const getAdminContext = async () => {
   const entry = await authContextStore.getLastAdminContext();
