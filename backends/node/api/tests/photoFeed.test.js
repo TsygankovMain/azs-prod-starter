@@ -450,6 +450,7 @@ test('GET /feed returns 400 for invalid cursor', async () => {
 // ---------------------------------------------------------------------------
 
 test('GET /feed items have azsTitle resolved from bitrix', async () => {
+  // BUG-021: feed uses batchResolveAzsTitles (listCrmItems), not getCrmItem per row.
   const deps = {
     ...stubDeps,
     reportsStore: {
@@ -462,10 +463,10 @@ test('GET /feed items have azsTitle resolved from bitrix', async () => {
     },
     bitrixClient: {
       ...stubDeps.bitrixClient,
-      async getCrmItem({ id }) {
-        if (id === 42) return { id: 42, title: 'АЗС Север' };
-        return null;
-      }
+      async listCrmItems() {
+        return [{ id: 42, title: 'АЗС Север' }];
+      },
+      async getCrmItem() { return null; }
     }
   };
   const router = createPhotoFeedRouter(deps);
@@ -480,7 +481,8 @@ test('GET /feed items have azsTitle resolved from bitrix', async () => {
 });
 
 test('GET /feed uses admin context for azsTitle resolver when getAdminContext is provided', async () => {
-  // Verify that getCrmItem is called with the admin context, not the request context
+  // BUG-021: feed uses batchResolveAzsTitles (listCrmItems), not getCrmItem per row.
+  // Verify that listCrmItems is called with the admin context, not the request context.
   let capturedContext;
   const deps = {
     ...stubDeps,
@@ -494,11 +496,11 @@ test('GET /feed uses admin context for azsTitle resolver when getAdminContext is
     },
     bitrixClient: {
       ...stubDeps.bitrixClient,
-      async getCrmItem({ id, context }) {
+      async listCrmItems({ context }) {
         capturedContext = context;
-        if (id === 42) return { id: 42, title: 'АЗС Тест' };
-        return null;
-      }
+        return [{ id: 42, title: 'АЗС Тест' }];
+      },
+      async getCrmItem() { return null; }
     },
     getAdminContext: async () => ({ authId: 'admin-token-123', domain: 'test.bitrix24.ru' })
   };
@@ -516,6 +518,8 @@ test('GET /feed uses admin context for azsTitle resolver when getAdminContext is
 });
 
 test('GET /feed falls back to request context when getAdminContext fails', async () => {
+  // BUG-021: feed uses batchResolveAzsTitles (listCrmItems), not getCrmItem per row.
+  // When getAdminContext fails, it should fall back to the request context.
   let capturedContext;
   const deps = {
     ...stubDeps,
@@ -529,11 +533,11 @@ test('GET /feed falls back to request context when getAdminContext fails', async
     },
     bitrixClient: {
       ...stubDeps.bitrixClient,
-      async getCrmItem({ id, context }) {
+      async listCrmItems({ context }) {
         capturedContext = context;
-        if (id === 42) return { id: 42, title: 'АЗС Фоллбек' };
-        return null;
-      }
+        return [{ id: 42, title: 'АЗС Фоллбек' }];
+      },
+      async getCrmItem() { return null; }
     },
     getAdminContext: async () => { throw new Error('admin context unavailable'); }
   };
