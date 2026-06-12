@@ -21,6 +21,22 @@ const settings = {
   }
 };
 
+test('buildReportCrmUpdateFields maps status=rejected to the «Брак» stage', () => {
+  const fields = buildReportCrmUpdateFields({
+    settings: {
+      report: {
+        entityTypeId: 163,
+        fields: { reason: 'UF_REASON' },
+        stages: { expired: 'DT163_1:EXPIRED', rejected: 'DT163_1:REJECTED' }
+      }
+    },
+    status: 'rejected',
+    reasonValue: 'Очередь на мойке'
+  });
+  assert.equal(fields.stageId, 'DT163_1:REJECTED', 'rejected → stages.rejected');
+  assert.equal(fields['UF_REASON'], 'Очередь на мойке', 'reason UF written alongside the stage');
+});
+
 // buildReportCrmUpdateFields no longer sets UF_PHOTOS — photos moved to the async builder.
 test('buildReportCrmUpdateFields maps status, folder and unique file ids', () => {
   const fields = buildReportCrmUpdateFields({

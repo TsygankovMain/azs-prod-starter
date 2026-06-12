@@ -16,7 +16,8 @@ export const buildReportCrmUpdateFields = ({
     new: stages.new,
     in_progress: stages.inProgress,
     done: stages.done,
-    expired: stages.expired
+    expired: stages.expired,
+    rejected: stages.rejected
   }[status];
 
   if (stageId) {

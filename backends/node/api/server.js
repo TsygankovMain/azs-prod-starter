@@ -290,15 +290,19 @@ const onBotReasonCaptured = async ({ reportId, reasonCode = 'other', reasonText 
   const code = catalog.isValidCode(reasonCode) ? reasonCode : 'other';
   const reasonValue = catalog.encodeValue(code, reasonText);
   const alreadyDone = String(report.status) === 'done';
+  // «Браковать» = стадия «Брак» из настроек (report.stages.rejected). Если она не
+  // задана — фоллбек на «просрочено» (expired), чтобы карточка всё равно ушла из
+  // работы. Локальный статус зеркалим в expired (в дашборде — «Не сдан»).
+  const brakStatus = String(settings?.report?.stages?.rejected || '').trim() ? 'rejected' : 'expired';
 
-  // 1) CRM: «браковать» карточку (стадия expired) + записать причину одним обновлением,
-  //    и зеркалить статус локально. Стадия меняется даже если UF-поле причины не настроено.
+  // 1) CRM: «браковать» карточку + записать причину одним обновлением, и зеркалить
+  //    статус локально. Стадия меняется даже если UF-поле причины не настроено.
   try {
     const { buildReportCrmUpdateFields } = await import('./src/reports/reportCrmSync.js');
     const entityTypeId = Number(settings?.report?.entityTypeId || 0);
     const fields = buildReportCrmUpdateFields({
       settings,
-      status: alreadyDone ? report.status : 'expired',
+      status: alreadyDone ? report.status : brakStatus,
       reasonValue
     });
     if (entityTypeId && Number(report.reportItemId) && Object.keys(fields).length) {
