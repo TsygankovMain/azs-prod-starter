@@ -249,7 +249,7 @@ test('botRegistryService: registers event handler URL with ?s=<JOB_SECRET> when 
 
   // The handler URL must be set in the fields
   const fields = registerCall.params.fields;
-  const handlerUrl = fields?.event_message_add || fields?.handler || '';
+  const handlerUrl = fields?.webhookUrl || fields?.event_message_add || fields?.handler || '';
   assert.ok(
     String(handlerUrl).includes('/api/bot/event'),
     `handler URL must include /api/bot/event, got: ${handlerUrl}`
@@ -281,7 +281,7 @@ test('botRegistryService: omits ?s param from handler URL when jobSecret is empt
   assert.ok(registerCall, 'imbot.v2.Bot.register must be called');
 
   const fields = registerCall.params.fields;
-  const handlerUrl = fields?.event_message_add || fields?.handler || '';
+  const handlerUrl = fields?.webhookUrl || fields?.event_message_add || fields?.handler || '';
 
   // When no secret, URL should still include the endpoint path but no ?s= param
   if (handlerUrl) {
@@ -311,7 +311,7 @@ test('botRegistryService: handler URL format is <handlerBaseUrl>/api/bot/event?s
 
   const registerCall = calls.find((c) => c.method === 'imbot.v2.Bot.register');
   const fields = registerCall.params.fields;
-  const handlerUrl = fields?.event_message_add || fields?.handler || '';
+  const handlerUrl = fields?.webhookUrl || fields?.event_message_add || fields?.handler || '';
 
   assert.equal(
     handlerUrl,

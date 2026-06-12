@@ -211,10 +211,10 @@ test('timeoutWatcher: expired без причины + BITRIX_APP_CODE → COMMAN
     }
     const btn = keyboard.BUTTONS[0];
     assert.equal(btn.TEXT, 'Указать причину', 'текст кнопки должен быть «Указать причину»');
-    // BUG-019: COMMAND button, not LINK
-    assert.equal(btn.TYPE, 'COMMAND', 'кнопка должна быть TYPE=COMMAND (BUG-019)');
-    assert.ok(String(btn.COMMAND).includes('30'), 'COMMAND должен содержать id отчёта (30)');
-    assert.equal(btn.LINK, undefined, 'COMMAND-кнопка не должна иметь LINK');
+    // BUG-019 v2: ACTION:SEND button, not LINK/COMMAND
+    assert.equal(btn.ACTION, 'SEND', 'кнопка должна быть ACTION=SEND (BUG-019 v2)');
+    assert.ok(String(btn.ACTION_VALUE).includes('30'), 'ACTION_VALUE должен содержать id отчёта (30)');
+    assert.equal(btn.LINK, undefined, 'кнопка причины не должна иметь LINK');
   } finally {
     if (prevAppCode === undefined) {
       delete process.env.BITRIX_APP_CODE;

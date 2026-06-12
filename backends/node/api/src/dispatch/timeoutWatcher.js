@@ -1,6 +1,5 @@
 import { updateReportCrmItem } from '../reports/reportCrmSync.js';
 import { NOTIFY_FALLBACK_PREFIX } from '../notifications/notificationService.js';
-import { buildReasonCommand } from '../notifications/botCommandHandler.js';
 
 const normalizeLimit = (value) => {
   const n = Number(value);
@@ -102,7 +101,8 @@ export const createTimeoutWatcher = ({
           try {
             const existing = await reasonStore.getByReport(report.id);
             if (!existing) {
-              // BUG-019: overdue reason button is now COMMAND (not LINK).
+              // «Указать причину» button: ACTION:SEND sends text as a user message →
+              // fires ONIMBOTV2MESSAGEADD → /api/bot/event parses /reason <id>.
               const appCode = String(process.env.BITRIX_APP_CODE || '').trim();
               const resolvedBotId = Number(notificationService?.botId || botId || process.env.BITRIX_BOT_ID || 0);
               const reasonKeyboard = (appCode && report.id)
@@ -110,9 +110,9 @@ export const createTimeoutWatcher = ({
                     BOT_ID: resolvedBotId,
                     BUTTONS: [
                       {
-                        TYPE: 'COMMAND',
                         TEXT: 'Указать причину',
-                        COMMAND: buildReasonCommand(report.id)
+                        ACTION: 'SEND',
+                        ACTION_VALUE: `/reason ${report.id}`
                       }
                     ]
                   }
