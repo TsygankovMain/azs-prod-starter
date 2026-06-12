@@ -1601,7 +1601,7 @@ export const createReportsRouter = ({
   });
 
   if (analyticsStore) {
-    router.use(createAnalyticsRouter({ analyticsStore, reportsStore, bitrixClient, settingsStore, diskApi, getAdminContext }));
+    router.use(createAnalyticsRouter({ analyticsStore, reportsStore, bitrixClient, settingsStore, diskApi, getAdminContext, getDiskContext: getBackgroundContext }));
   }
 
   return router;
