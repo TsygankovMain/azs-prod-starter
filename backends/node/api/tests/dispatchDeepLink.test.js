@@ -149,7 +149,10 @@ test('BITRIX_APP_CODE set — notifyDispatch receives keyboard with COMMAND reas
     const reasonBtn = keyboard.BUTTONS.find(b => String(b.TEXT || '').includes('причину'));
     assert.ok(reasonBtn, '«Указать причину» button must be present');
     assert.equal(reasonBtn.ACTION, 'SEND', '«Указать причину» must be ACTION=SEND (BUG-019 v2)');
-    assert.ok(String(reasonBtn.ACTION_VALUE).includes('5503'), 'ACTION_VALUE must embed the reportId');
+    // Must embed the INTERNAL report id (reserve.id = dispatch_log.id), NOT the CRM
+    // item id (5503) — the bot side-effects look up via reportsStore.getById.
+    assert.match(String(reasonBtn.ACTION_VALUE), /^\/reason \d+$/, 'ACTION_VALUE must be /reason <numeric internal id>');
+    assert.ok(!String(reasonBtn.ACTION_VALUE).includes('5503'), 'ACTION_VALUE must NOT embed the CRM item id (reportItemId)');
     assert.equal(reasonBtn.LINK, undefined, 'reason button must not have LINK');
   } finally {
     if (prevAppCode === undefined) {
@@ -193,7 +196,8 @@ test('BITRIX_APP_CODE set — keyboard is single COMMAND button (no NEWLINE, no 
     assert.equal(realButtons.length, 1, 'must have exactly 1 real button (reason only)');
     assert.equal(realButtons[0].ACTION, 'SEND', 'sole button must be ACTION=SEND');
     assert.equal(realButtons[0].TEXT, 'Не успеваю — указать причину');
-    assert.match(String(realButtons[0].ACTION_VALUE), /\/reason 5510/, 'ACTION_VALUE must contain /reason <reportId>');
+    assert.match(String(realButtons[0].ACTION_VALUE), /^\/reason \d+$/, 'ACTION_VALUE must be /reason <numeric internal id>');
+    assert.ok(!String(realButtons[0].ACTION_VALUE).includes('5510'), 'ACTION_VALUE must NOT embed the CRM item id (reportItemId)');
   } finally {
     if (prevAppCode === undefined) {
       delete process.env.BITRIX_APP_CODE;

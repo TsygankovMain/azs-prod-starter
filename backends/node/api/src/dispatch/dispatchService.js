@@ -233,14 +233,19 @@ export const createDispatchService = ({
           // No command registration needed. BITRIX_APP_CODE guard kept: without it we
           // have no reportId context either.
           const appCode = String(process.env.BITRIX_APP_CODE || '').trim();
-          const reserveItemId = reportItemId || reserve.id;
-          if (appCode && reserveItemId) {
+          // Encode the INTERNAL report id (reserve.id = dispatch_log.id), NOT the
+          // CRM item id — the bot reason side-effects look up the report via
+          // reportsStore.getById/setReportStatus, which key on dispatch_log.id.
+          // Using reportItemId here made onBotReasonCaptured find no report → no
+          // CRM stage change, no forward, no local status update.
+          const reasonReportId = reserve.id;
+          if (appCode && reasonReportId) {
             const resolvedBotId = Number(notificationService?.botId || botId || process.env.BITRIX_BOT_ID || 0);
             const buttons = [
               {
                 TEXT: 'Не успеваю — указать причину',
                 ACTION: 'SEND',
-                ACTION_VALUE: `/reason ${reserveItemId}`
+                ACTION_VALUE: `/reason ${reasonReportId}`
               }
             ];
             dispatchKeyboard = { BOT_ID: resolvedBotId, BUTTONS: buttons };
