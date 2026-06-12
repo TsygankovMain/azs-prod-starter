@@ -559,7 +559,9 @@ const sectionComplete = computed(() => ({
     && form.report.stages.expired
   ),
   disk: Boolean(form.disk.rootFolderId && form.disk.folderNameTemplate && form.timezone),
-  access: Boolean(form.access.adminUserIds.length),
+  // Пустые списки ролей — валидная конфигурация (доступ к настройкам у админов
+  // портала), поэтому секция всегда «заполнена» и не пугает жёлтой точкой.
+  access: true,
   manage: true,
   photoFeed: Boolean(form.photoFeed.remarkTemplates.length)
 }))
@@ -869,6 +871,11 @@ async function loadRoleContext() {
 
 async function saveSettings() {
   if (!canSave.value) {
+    // Never fail silently: the save button can be pressed while the role is
+    // still resolving or resolved without settings capability — explain why.
+    saveError.value = !isAdminReady.value
+      ? 'Нет прав на сохранение: настройки может менять администратор приложения (админ портала или пользователь из списка «Администраторы»). Обновите страницу и попробуйте снова.'
+      : 'Настройки ещё загружаются — попробуйте через пару секунд.'
     return
   }
 
@@ -1583,6 +1590,9 @@ onUnmounted(() => {
             <!-- Роли доступа section slot -->
             <template #access-body>
               <div class="grid gap-3 p-4">
+                <ProseP class="mb-0 text-sm text-(--ui-color-base-60)">
+                  Пустые списки — это нормально: тогда настройки доступны администраторам портала, остальные сотрудники работают как АЗС. Заполняйте только если нужно выдать роли точечно.
+                </ProseP>
                 <B24FormField label="Администраторы" class="w-full">
                   <template #label>
                     <span class="inline-flex items-center gap-1">
@@ -2336,7 +2346,7 @@ onUnmounted(() => {
                     />
                   </div>
                   <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                    Приоритет ролей: Администратор > Проверяющий > Администратор АЗС.
+                    Приоритет ролей: Администратор > Проверяющий > Администратор АЗС. Пустые списки — это нормально: настройки доступны администраторам портала, остальные работают как АЗС.
                   </ProseP>
                 </div>
               </div>
