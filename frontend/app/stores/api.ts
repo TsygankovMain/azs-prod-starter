@@ -548,10 +548,15 @@ export const useApiStore = defineStore(
     }
 
     const getPhotoPreviewObjectUrl = async (reportId: number, photoCode: string): Promise<string> => {
-      const blob = await $fetch(`${apiUrl}/api/reports/photos/${reportId}/${encodeURIComponent(photoCode)}/preview`, {
+      // Use $api (ofetch baseURL resolution), not raw `${apiUrl}/api/...` string
+      // concat: when apiUrl is malformed (e.g. "https:/" from a bad
+      // NUXT_PUBLIC_API_URL), concat produces "https://api/..." — host "api",
+      // ERR_NAME_NOT_RESOLVED — while ofetch withBase resolves it relative to the
+      // page origin like every other working call. Also gains the 401 retry.
+      const blob = await $api<Blob>(`/api/reports/photos/${reportId}/${encodeURIComponent(photoCode)}/preview`, {
         headers: { Authorization: `Bearer ${tokenJWT.value}` },
         responseType: 'blob'
-      }) as Blob
+      })
       return URL.createObjectURL(blob)
     }
 
