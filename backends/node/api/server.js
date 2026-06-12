@@ -62,6 +62,10 @@ process.on('uncaughtException', (error) => {
 const app = express();
 app.use(cors());
 app.use(express.json());
+// Bitrix24 bot webhook events arrive as application/x-www-form-urlencoded with
+// PHP-nested keys (data[message][text]=...). extended:true (qs) parses them into
+// nested objects so /api/bot/event can read data.message.text etc.
+app.use(express.urlencoded({ extended: true }));
 
 const dbType = (process.env.DB_TYPE || 'postgresql').toLowerCase();
 const defaultDbPort = dbType === 'mysql' ? 3306 : 5432;
@@ -557,71 +561,63 @@ app.post('/api/bot/event', async (req, res) => {
     }
     // ── END SECURITY GATE ─────────────────────────────────────────────────────
 
-    // Bitrix24 sends either a flat POST body or nested under 'data'.
-    // For ONIMBOTMESSAGEADD the relevant fields are:
-    //   data[PARAMS][FROM_USER_ID]  — sender userId
-    //   data[PARAMS][DIALOG_ID]     — dialog (e.g. "u42" for user dialogs)
-    //   data[PARAMS][MESSAGE]       — message text
-    //   data[PARAMS][COMMAND]       — command string (set for COMMAND buttons)
-    //   data[EVENT]                 — event name (ONIMBOTMESSAGEADD)
+    // Bitrix24 chat-bots 2.0 deliver events in webhook mode as
+    // application/x-www-form-urlencoded with PHP-nested keys. The «Указать
+    // причину» button is an ACTION:SEND button, so pressing it SENDS the text
+    // "/reason <reportId>" as a user message → fires ONIMBOTV2MESSAGEADD.
+    //   v2 shape:  data.message.text / data.chat.dialogId / data.message.authorId|data.user.id
+    //   v1 shape (fallback): data.PARAMS.MESSAGE / DIALOG_ID / FROM_USER_ID
     const body = req.body || {};
-    const params = body?.data?.PARAMS || body?.PARAMS || {};
-    const event = String(body?.event || body?.EVENT || body?.data?.EVENT || '').toUpperCase();
+    const data = body?.data || {};
+    const v1params = data?.PARAMS || body?.PARAMS || {};
+    const event = String(body?.event || body?.EVENT || data?.EVENT || '').toUpperCase();
 
-    const userId = Number(params?.FROM_USER_ID || params?.from_user_id || 0);
-    const dialogId = String(params?.DIALOG_ID || params?.dialog_id || String(userId ? `u${userId}` : ''));
-    const messageText = String(params?.MESSAGE || params?.message || '');
-    const command = String(params?.COMMAND || params?.command || '');
+    const messageText = String(
+      data?.message?.text ?? v1params?.MESSAGE ?? v1params?.message ?? ''
+    ).trim();
+    const userId = Number(
+      data?.message?.authorId ?? data?.user?.id ?? v1params?.FROM_USER_ID ?? v1params?.from_user_id ?? 0
+    );
+    const dialogId = String(
+      data?.chat?.dialogId ?? v1params?.DIALOG_ID ?? v1params?.dialog_id ?? (userId ? `u${userId}` : '')
+    );
 
-    // Build a minimal auth context from the event body (best-effort)
+    // Build a minimal auth context for reply callbacks (best-effort).
     const context = {
-      authId: String(body?.auth?.access_token || body?.AUTH_ID || ''),
-      domain: String(body?.auth?.domain || body?.DOMAIN || ''),
-      memberId: String(body?.auth?.member_id || body?.member_id || '')
+      authId: String(body?.auth?.access_token || data?.bot?.auth?.access_token || ''),
+      domain: String(body?.auth?.domain || ''),
+      memberId: String(body?.auth?.member_id || '')
     };
 
-    if (!userId) {
-      // Unknown sender — ack and ignore
+    const isMessageEvent = event === 'ONIMBOTV2MESSAGEADD' || event === 'ONIMBOTMESSAGEADD';
+    // Ignore the bot's OWN messages (its replies), or unidentified senders, to
+    // avoid the reply «Напишите причину» being consumed as the reason (loop).
+    const botSelfId = Number(data?.bot?.id || process.env.BITRIX_BOT_ID || 0);
+    const authorIsBot = String(data?.user?.bot) === 'true' || String(data?.user?.bot) === '1'
+      || (botSelfId > 0 && userId === botSelfId);
+    if (!isMessageEvent || !userId || authorIsBot) {
       return res.json({ ok: true, handled: false });
     }
 
-    if (event === 'ONIMBOTMESSAGEADD' && command) {
-      // COMMAND button pressed: extract reportId from command string and set awaiting state
-      const { parseReasonCommand } = botCommandHandler;
-      const reportId = parseReasonCommand(command);
-
-      if (reportId) {
-        // Resolve azsId from the report in the DB (best-effort: fall back to empty)
-        let azsId = '';
-        try {
-          const report = await reportsStore.getById(reportId);
-          azsId = String(report?.azsId || '');
-        } catch {
-          // best-effort: azsId may be empty; reason will still be stored
-        }
-
-        await botCommandHandler.handleCommand({
-          userId,
-          dialogId,
-          reportId,
-          azsId,
-          context
-        });
-        return res.json({ ok: true, handled: true, action: 'awaiting_reason' });
+    // Button press: "/reason <reportId>" (strict — a plain reason containing a
+    // number must NOT be mistaken for the trigger).
+    const reasonTrigger = messageText.match(/^\/reason\s+(\d+)\s*$/i);
+    if (reasonTrigger) {
+      const reportId = Number(reasonTrigger[1]);
+      let azsId = '';
+      try {
+        const report = await reportsStore.getById(reportId);
+        azsId = String(report?.azsId || '');
+      } catch {
+        // best-effort: azsId may be empty; reason will still be stored
       }
-
-      // Unrecognised command — ack
-      return res.json({ ok: true, handled: false });
+      await botCommandHandler.handleCommand({ userId, dialogId, reportId, azsId, context });
+      return res.json({ ok: true, handled: true, action: 'awaiting_reason' });
     }
 
-    if (event === 'ONIMBOTMESSAGEADD' && !command && messageText) {
-      // Plain message — may be a reason capture
-      const handled = await botCommandHandler.handleMessage({
-        userId,
-        dialogId,
-        text: messageText,
-        context
-      });
+    if (messageText) {
+      // Plain message — captured as the reason only if this user is awaiting.
+      const handled = await botCommandHandler.handleMessage({ userId, dialogId, text: messageText, context });
       return res.json({ ok: true, handled, action: handled ? 'reason_captured' : 'ignored' });
     }
 

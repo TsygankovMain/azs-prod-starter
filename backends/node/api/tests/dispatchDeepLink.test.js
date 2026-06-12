@@ -148,9 +148,9 @@ test('BITRIX_APP_CODE set — notifyDispatch receives keyboard with COMMAND reas
     // «Указать причину» COMMAND button must exist
     const reasonBtn = keyboard.BUTTONS.find(b => String(b.TEXT || '').includes('причину'));
     assert.ok(reasonBtn, '«Указать причину» button must be present');
-    assert.equal(reasonBtn.TYPE, 'COMMAND', '«Указать причину» must be TYPE=COMMAND');
-    assert.ok(String(reasonBtn.COMMAND).includes('5503'), 'COMMAND string must embed the reportId');
-    assert.equal(reasonBtn.LINK, undefined, 'COMMAND button must not have LINK');
+    assert.equal(reasonBtn.ACTION, 'SEND', '«Указать причину» must be ACTION=SEND (BUG-019 v2)');
+    assert.ok(String(reasonBtn.ACTION_VALUE).includes('5503'), 'ACTION_VALUE must embed the reportId');
+    assert.equal(reasonBtn.LINK, undefined, 'reason button must not have LINK');
   } finally {
     if (prevAppCode === undefined) {
       delete process.env.BITRIX_APP_CODE;
@@ -190,10 +190,10 @@ test('BITRIX_APP_CODE set — keyboard is single COMMAND button (no NEWLINE, no 
     }
     // Only 1 real button — no NEWLINE needed
     const realButtons = keyboard.BUTTONS.filter(b => b.TYPE !== 'NEWLINE');
-    assert.equal(realButtons.length, 1, 'must have exactly 1 real button (reason COMMAND only)');
-    assert.equal(realButtons[0].TYPE, 'COMMAND', 'sole button must be COMMAND type');
+    assert.equal(realButtons.length, 1, 'must have exactly 1 real button (reason only)');
+    assert.equal(realButtons[0].ACTION, 'SEND', 'sole button must be ACTION=SEND');
     assert.equal(realButtons[0].TEXT, 'Не успеваю — указать причину');
-    assert.match(String(realButtons[0].COMMAND), /reason:5510/, 'COMMAND must contain reason:reportId');
+    assert.match(String(realButtons[0].ACTION_VALUE), /\/reason 5510/, 'ACTION_VALUE must contain /reason <reportId>');
   } finally {
     if (prevAppCode === undefined) {
       delete process.env.BITRIX_APP_CODE;

@@ -1,4 +1,3 @@
-import { buildReasonCommand } from '../notifications/botCommandHandler.js';
 import { NOTIFY_FALLBACK_PREFIX } from '../notifications/notificationService.js';
 import { buildZonedDatetime } from './dispatchPlanGenerator.js';
 
@@ -229,19 +228,19 @@ export const createDispatchService = ({
 
         let dispatchKeyboard = null;
         try {
-          // BUG-019: «Открыть приложение» LINK button removed — no working deeplink.
-          // «Указать причину» is now a COMMAND button so the bot handles it in-chat.
-          // BITRIX_APP_CODE guard kept: without it we have no reportId context either.
+          // «Указать причину» button: ACTION:SEND makes the press send the text as a
+          // message from the user → fires ONIMBOTV2MESSAGEADD → /api/bot/event parses it.
+          // No command registration needed. BITRIX_APP_CODE guard kept: without it we
+          // have no reportId context either.
           const appCode = String(process.env.BITRIX_APP_CODE || '').trim();
           const reserveItemId = reportItemId || reserve.id;
           if (appCode && reserveItemId) {
             const resolvedBotId = Number(notificationService?.botId || botId || process.env.BITRIX_BOT_ID || 0);
-            const reasonCommand = buildReasonCommand(reserveItemId);
             const buttons = [
               {
-                TYPE: 'COMMAND',
                 TEXT: 'Не успеваю — указать причину',
-                COMMAND: reasonCommand
+                ACTION: 'SEND',
+                ACTION_VALUE: `/reason ${reserveItemId}`
               }
             ];
             dispatchKeyboard = { BOT_ID: resolvedBotId, BUTTONS: buttons };

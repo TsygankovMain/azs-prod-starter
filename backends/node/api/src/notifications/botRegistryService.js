@@ -79,7 +79,7 @@ export const createBotRegistryService = ({
       throw new Error('AUTH_ID is required to register bot during install');
     }
 
-    // Build the event handler URL that Bitrix24 will POST to for ONIMBOTMESSAGEADD.
+    // Build the webhookUrl that Bitrix24 will POST ONIMBOTV2* events to.
     // The URL carries JOB_SECRET as ?s= so the endpoint can verify origin.
     const eventHandlerUrl = buildBotEventHandlerUrl(
       String(handlerBaseUrl || '').replace(/\/+$/, ''),
@@ -96,13 +96,15 @@ export const createBotRegistryService = ({
       code: String(botCode).trim(),
       properties: buildProperties(),
       type: 'bot',
-      eventMode: 'fetch'
+      // webhook mode: Bitrix24 POSTs ONIMBOTV2* events to webhookUrl.
+      // fetch mode is NOT used — in fetch mode Bitrix does not push events anywhere.
+      eventMode: 'webhook'
     };
 
-    // Attach event handler URL when available (Bitrix24 imbot.v2.Bot.register
-    // accepts event_message_add to register the ONIMBOTMESSAGEADD handler URL).
+    // Attach webhookUrl when available (v2 field; do NOT use the v1 event_message_add
+    // field — it is not recognized by imbot.v2.Bot.register in webhook mode).
     if (eventHandlerUrl) {
-      fields.event_message_add = eventHandlerUrl;
+      fields.webhookUrl = eventHandlerUrl;
     }
 
     const result = await bitrixClient.callMethodWithAuth('imbot.v2.Bot.register', {
