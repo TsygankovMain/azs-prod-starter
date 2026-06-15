@@ -1,0 +1,356 @@
+<mxfile host="app.diagrams.net" modified="2026-06-15T12:00:00.000Z" agent="claude" version="24.0.0">
+  <diagram id="brands-model" name="1. Модель бренда">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title1" value="Модель: Бренд (наша БД) → набор АЗС + папка Диска + внешняя ссылка" style="text;html=1;fontSize=18;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="2000" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend1" value="Легенда:  ⬜ таблица БД   🟦 объект Bitrix Диска   🟩 операция REST   → связь/ссылка   ⚠️ ограничение" style="text;html=1;fontSize=12;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="55" width="1800" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- TABLE brand -->
+        <mxCell id="tbl_brand" value="Таблица brand (наша БД)&#10;─────────────────────&#10;id BIGSERIAL PK&#10;name TEXT NOT NULL&#10;disk_folder_id BIGINT NULL&#10;disk_folder_path TEXT NULL&#10;external_link TEXT NULL&#10;external_link_updated_at TIMESTAMPTZ&#10;created_at / updated_at" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;fontStyle=0;fontSize=13;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="40" y="100" width="300" height="200" as="geometry" />
+        </mxCell>
+
+        <!-- TABLE brand_azs -->
+        <mxCell id="tbl_brand_azs" value="Таблица brand_azs (наша БД)&#10;─────────────────────────&#10;id BIGSERIAL PK&#10;brand_id BIGINT FK → brand.id&#10;azs_id TEXT NOT NULL&#10;UNIQUE(azs_id)  ← инвариант&#10;created_at" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;fontStyle=0;fontSize=13;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="40" y="340" width="300" height="150" as="geometry" />
+        </mxCell>
+
+        <!-- arrow brand → brand_azs -->
+        <mxCell id="e_brand_azs" value="1:N" style="endArrow=block;endFill=1;html=1;fontSize=11;" edge="1" parent="1" source="tbl_brand" target="tbl_brand_azs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- AZS list -->
+        <mxCell id="azs_list" value="АЗС портала (из CRM)&#10;────────────────────&#10;azs_id: &quot;42&quot;  ← Лукойл-Тверская&#10;azs_id: &quot;88&quot;  ← Лукойл-Арбат&#10;azs_id: &quot;117&quot; ← ГПН-Пушкин&#10;... (11 АЗС ГПН)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=0;fontSize=12;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="440" y="340" width="280" height="150" as="geometry" />
+        </mxCell>
+
+        <!-- arrow brand_azs → AZS list -->
+        <mxCell id="e_azs_list" value="azs_id" style="endArrow=open;html=1;fontSize=11;dashed=1;" edge="1" parent="1" source="tbl_brand_azs" target="azs_list">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Invariant note -->
+        <mxCell id="inv_note" value="⚠️ Инвариант: одна АЗС = один бренд&#10;UNIQUE(azs_id) в brand_azs&#10;UI: занятые АЗС — disabled в мультиселекте&#10;API: 409 при дубле" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="440" y="530" width="280" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- Bitrix Disk folder -->
+        <mxCell id="disk_folder" value="Bitrix Диск&#10;────────────────────────────&#10;Папка бренда: «ГПН-Москва»&#10;ID = brand.disk_folder_id&#10;&#10;AZS-Photo-Reports/&#10;  ГПН-Москва/           ← папка бренда&#10;    42_Лукойл-Тверская/ ← папка АЗС&#10;      2026-06/           ← месяц&#10;        15/              ← день&#10;          фото.jpg" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=0;fontSize=12;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="820" y="100" width="340" height="220" as="geometry" />
+        </mxCell>
+
+        <!-- arrow brand → disk_folder -->
+        <mxCell id="e_brand_disk" value="disk_folder_id" style="endArrow=block;endFill=1;html=1;fontSize=11;" edge="1" parent="1" source="tbl_brand" target="disk_folder">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- REST: createFolder -->
+        <mxCell id="rest_create" value="disk.folder.addsubfolder&#10;(bitrixRestClient.js:675)&#10;→ создать папку бренда" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="820" y="360" width="260" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- REST: getexternallink -->
+        <mxCell id="rest_link" value="disk.folder.getexternallink&#10;→ получить публичную ссылку&#10;→ сохранить в brand.external_link" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="820" y="460" width="260" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- External link -->
+        <mxCell id="ext_link" value="Внешняя ссылка (brand.external_link)&#10;────────────────────────────────────&#10;https://portal.bitrix24.ru/disk/...&#10;Передаётся партнёру ГПН&#10;Открывается без авторизации&#10;&#10;⚠️ Пароль — только вручную в Диске (Вариант A)&#10;⚠️ Отзыв — только вручную в Диске (REST не умеет)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=0;fontSize=12;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="1220" y="100" width="380" height="180" as="geometry" />
+        </mxCell>
+
+        <!-- arrow disk → ext_link -->
+        <mxCell id="e_disk_link" value="getexternallink" style="endArrow=block;endFill=1;html=1;fontSize=11;" edge="1" parent="1" source="disk_folder" target="ext_link">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Admin action arrow -->
+        <mxCell id="e_admin_create" value="Создать папку" style="endArrow=open;html=1;fontSize=11;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="rest_create" target="disk_folder">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Password note -->
+        <mxCell id="pwd_note" value="Вариант A: Пароль/срок — вручную&#10;в нативном UI Bitrix Диска.&#10;REST API не поддерживает пароль." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1220" y="320" width="280" height="80" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="brands-upload-flow" name="2. Поток загрузки фото">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title2" value="Поток: загрузка фото оператором → роутинг в папку бренда → внешняя ссылка → ГПН" style="text;html=1;fontSize=18;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="2000" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Step 1: Operator uploads -->
+        <mxCell id="s1" value="1. Оператор загружает фото&#10;(POST /:id/photo)&#10;reportsRoutes.js:1477" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="40" y="100" width="240" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Step 2: resolve brand -->
+        <mxCell id="s2" value="2. Резолвинг бренда для АЗС&#10;SELECT brand_id FROM brand_azs&#10;WHERE azs_id = report.azsId" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="360" y="100" width="260" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e12" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="s1" target="s2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Decision: in brand? -->
+        <mxCell id="d1" value="АЗС в бренде?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="710" y="90" width="160" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e2d" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="s2" target="d1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Yes: brand path -->
+        <mxCell id="s3_yes" value="3a. Да → rootFolderId = brand.disk_folder_id&#10;folderNameTemplate = &quot;{azs}_{azs_name}/{yyyy-mm}/{dd}&quot;&#10;(diskService.js:287, reportsRoutes.js:1477)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="960" y="60" width="340" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- No: old path -->
+        <mxCell id="s3_no" value="3b. Нет → rootFolderId = settings.disk.rootFolderId&#10;folderNameTemplate = &quot;{yyyy-mm}/{dd}/{azs}_{azs_name}&quot;&#10;(defaultSettings.js:51 — без изменений)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="960" y="170" width="340" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e_yes" value="Да" style="endArrow=block;endFill=1;html=1;fontSize=11;" edge="1" parent="1" source="d1" target="s3_yes">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e_no" value="Нет" style="endArrow=block;endFill=1;html=1;fontSize=11;" edge="1" parent="1" source="d1" target="s3_no">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Step 4: ensureFolderPath -->
+        <mxCell id="s4" value="4. ensureFolderPath(diskApi, rootFolderId, folderPath)&#10;disk.folder.addsubfolder — создать подпапки&#10;(diskService.js:241, bitrixRestClient.js:675)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1380" y="60" width="380" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e3a4" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="s3_yes" target="s4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3b4" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="s3_no" target="s4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Step 5: upload file -->
+        <mxCell id="s5" value="5. disk.folder.uploadfile(targetFolderId, ...)&#10;(bitrixRestClient.js:688)&#10;→ diskObjectId, crmFileId" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1380" y="180" width="380" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e45" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="s4" target="s5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Step 6: upsertPhoto -->
+        <mxCell id="s6" value="6. upsertPhoto({ diskFolderId: targetFolderId, ... })&#10;→ report_photo.disk_folder_id = папка внутри бренда&#10;(reportsRoutes.js:1492)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="960" y="300" width="380" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e56" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="s5" target="s6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Step 7: CRM sync -->
+        <mxCell id="s7" value="7. crmSyncJobStore.enqueue({ diskFolderId })&#10;→ CRM-карточка: поле «Папка Диска» = ID дневной папки АЗС&#10;(reportsRoutes.js:1514, reportCrmSync.js:27)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="960" y="410" width="380" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e67" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="s6" target="s7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Step 8: External link -->
+        <mxCell id="s8" value="8. Партнёр ГПН открывает внешнюю ссылку&#10;(brand.external_link)&#10;→ Видит папку бренда со всеми АЗС ГПН" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="960" y="520" width="380" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Step 9: Password (optional) -->
+        <mxCell id="s9" value="9. (Опц.) Пароль от ссылки&#10;Введён партнёром ГПН, если&#10;администратор задал его вручную&#10;в нативном UI Bitrix Диска (Вариант A)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1400" y="520" width="280" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e89" value="пароль (если задан)" style="endArrow=open;html=1;fontSize=11;dashed=1;" edge="1" parent="1" source="s8" target="s9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Result: AZS folder structure -->
+        <mxCell id="struct_note" value="Структура папки бренда на Диске:&#10;ГПН-Москва/                  ← brand.disk_folder_id&#10;  42_Лукойл-Тверская/        ← АЗС #42&#10;    2026-06/15/фото.jpg&#10;  88_Лукойл-Арбат/            ← АЗС #88&#10;    2026-06/15/фото.jpg&#10;  ...11 АЗС ГПН" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="40" y="420" width="380" height="160" as="geometry" />
+        </mxCell>
+
+        <!-- resync note -->
+        <mxCell id="resync_note" value="/resync (reportsRoutes.js:1680):&#10;берёт diskFolderId из report_photo.disk_folder_id&#10;→ дневная папка АЗС внутри бренда&#10;→ CRM-поле обновляется корректно&#10;(BUG-P3 фикс: строка 1697)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="600" width="360" height="100" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="brands-cjm" name="3. CJM — дорожки участников">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title3" value="CJM/JTBD — Бренды: Администратор / Партнёр ГПН / Оператор" style="text;html=1;fontSize=18;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="10" width="2000" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Lane headers -->
+        <mxCell id="lane_admin_hdr" value="Администратор" style="text;html=1;fontSize=15;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="50" width="220" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="lane_gpn_hdr" value="Партнёр ГПН" style="text;html=1;fontSize=15;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="500" width="220" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="lane_op_hdr" value="Оператор АЗС" style="text;html=1;fontSize=15;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="950" width="220" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Lane backgrounds -->
+        <mxCell id="lane_admin_bg" value="" style="rounded=0;fillColor=#f0f7ff;strokeColor=#6c8ebf;opacity=30;" vertex="1" parent="1">
+          <mxGeometry x="40" y="100" width="2100" height="380" as="geometry" />
+        </mxCell>
+        <mxCell id="lane_gpn_bg" value="" style="rounded=0;fillColor=#fff8f0;strokeColor=#d79b00;opacity=30;" vertex="1" parent="1">
+          <mxGeometry x="40" y="550" width="2100" height="380" as="geometry" />
+        </mxCell>
+        <mxCell id="lane_op_bg" value="" style="rounded=0;fillColor=#f0fff0;strokeColor=#82b366;opacity=30;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1000" width="2100" height="280" as="geometry" />
+        </mxCell>
+
+        <!-- ADMIN lane steps -->
+        <mxCell id="a1" value="1. Создать бренд&#10;Заполнить название&#10;«ГПН Москва»" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="280" y="130" width="200" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="a2" value="2. Назначить 11 АЗС&#10;Мультиселект АЗС&#10;(занятые — disabled)&#10;→ brand_azs заполнен" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="540" y="130" width="200" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="a3" value="3. Создать папку Диска&#10;«Создать новую» или&#10;«Указать существующую»&#10;→ brand.disk_folder_id" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="800" y="130" width="200" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="a4" value="4. Получить ссылку&#10;Кнопка «Получить ссылку»&#10;→ disk.folder.getexternallink&#10;→ brand.external_link" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="130" width="200" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="a5" value="5. (Опц.) Пароль в Диске&#10;Открыть папку в Диске&#10;→ Поделиться → Настройки&#10;→ Пароль + срок (Вариант A)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1320" y="130" width="200" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="a6" value="6. Передать ссылку ГПН&#10;Скопировать из приложения&#10;→ отправить партнёру&#10;(почта / мессенджер)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1580" y="130" width="200" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Admin step arrows -->
+        <mxCell id="ea12" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="a1" target="a2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ea23" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="a2" target="a3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ea34" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="a3" target="a4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ea45" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="a4" target="a5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ea56" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="a5" target="a6"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- Admin pain/outcome -->
+        <mxCell id="a_pain" value="Боль: «раньше давал ссылку на Google Drive&#10;— теперь нужно то же самое, но на Bitrix»" style="text;html=1;fontSize=11;fontStyle=2;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="250" width="420" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="a_out" value="Результат: Ссылка передана ГПН, новые фото&#10;попадают автоматически, без Google Drive" style="text;html=1;fontSize=11;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="250" width="440" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Admin: editing brand -->
+        <mxCell id="a_edit" value="(в дальнейшем) Редактировать бренд:&#10;добавить/убрать АЗС&#10;Обновить ссылку" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="800" y="310" width="220" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- GPN lane steps -->
+        <mxCell id="g1" value="1. Получил ссылку&#10;от администратора&#10;(почта / мессенджер)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="280" y="580" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g2" value="2. Открыть ссылку&#10;в браузере&#10;(без авторизации в Bitrix)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="540" y="580" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g3_pwd" value="3. (Опц.) Ввести пароль&#10;Если администратор&#10;установил его в Диске (Вариант A)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="800" y="580" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g4" value="4. Смотреть фото своих АЗС&#10;Папки по АЗС, затем по датам&#10;Только 11 АЗС ГПН, без чужих" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="580" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g5" value="5. Скачать / просмотреть&#10;фото для контроля&#10;качества / аудита" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1320" y="580" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="eg12" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="g1" target="g2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eg23" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="g2" target="g3_pwd"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eg34" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="g3_pwd" target="g4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eg45" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="g4" target="g5"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="g_pain" value="Боль: «хотим видеть фото СВОИХ АЗС, не всего портала»" style="text;html=1;fontSize=11;fontStyle=2;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="680" width="480" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="g_out" value="Результат: Ссылка → только папка бренда, только свои АЗС" style="text;html=1;fontSize=11;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="680" width="460" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- Operator lane steps -->
+        <mxCell id="o1" value="1. Получил запрос фото&#10;(бот Bitrix)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="280" y="1030" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="o2" value="2. Загружает фото&#10;как обычно&#10;(мобильное приложение)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="540" y="1030" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="o3" value="3. Фото автоматически&#10;роутятся в папку бренда&#10;(если АЗС в бренде)&#10;Оператор не знает про бренды" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="800" y="1030" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="o4" value="4. Получает подтверждение&#10;«Фото загружено»&#10;Процесс не изменился" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="1030" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="eo12" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="o1" target="o2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eo23" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="o2" target="o3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="eo34" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="o3" target="o4"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="o_note" value="UX-инвариант: оператор не видит изменений — загружает фото как обычно" style="text;html=1;fontSize=11;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="1130" width="700" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- Cross-lane arrows -->
+        <mxCell id="x_admin_gpn" value="передаёт ссылку" style="endArrow=block;html=1;dashed=1;strokeColor=#9673a6;fontSize=11;" edge="1" parent="1" source="a6" target="g1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="x_op_disk" value="фото → Диск (автоматически)" style="endArrow=block;html=1;dashed=1;strokeColor=#9673a6;fontSize=11;" edge="1" parent="1" source="o3" target="g4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
