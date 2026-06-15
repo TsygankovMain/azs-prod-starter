@@ -9,6 +9,7 @@ const canReview = (req) => (
   Boolean(req.accessContext?.capabilities?.reviewer) ||
   Boolean(req.accessContext?.capabilities?.settings)
 );
+const AUTH_CODES = ['invalid_client', 'wrong_client'];
 
 export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClient, settingsStore, diskApi, getAdminContext = null, getDiskContext = null }) => {
   if (!analyticsStore) throw new Error('analyticsStore is required');
@@ -142,7 +143,6 @@ export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClie
       // Auth-class signals: invalid_client / wrong_client in err.code or message.
       // These require operator action (re-auth / fix admin context) → 503.
       // Transient/network errors keep 502 so callers don't mislabel blips.
-      const AUTH_CODES = ['invalid_client', 'wrong_client'];
       const errCode = String(err.code || '').toLowerCase();
       const errMsg  = String(err.message || '').toLowerCase();
       const isAuthBroken = AUTH_CODES.some(c => errCode === c || errMsg.includes(c));
