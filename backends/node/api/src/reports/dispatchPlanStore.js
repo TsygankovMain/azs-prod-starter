@@ -26,7 +26,10 @@ const createPostgresStore = (pool) => ({
         error_text TEXT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE(plan_date, azs_id, base_time)
+        entry_type TEXT NOT NULL DEFAULT 'primary',
+        window_index INT NOT NULL DEFAULT 0,
+        deadline_at TIMESTAMPTZ NULL,
+        UNIQUE(plan_date, azs_id, base_time, entry_type, window_index)
       )
     `);
     await pool.query(`
@@ -48,6 +51,37 @@ const createPostgresStore = (pool) => ({
       ALTER TABLE dispatch_plan
         ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ NULL
     `);
+    // S8-A3 БЛОКЕР 1: миграция UNIQUE ключа.
+    // Удаляем старый UNIQUE(plan_date, azs_id, base_time) и добавляем
+    // новый UNIQUE(plan_date, azs_id, base_time, entry_type, window_index).
+    // Идемпотентно: DROP IF EXISTS + CREATE IF NOT EXISTS.
+    // Старые имена ограничений зависят от имени таблицы/PostgreSQL-конвенций.
+    // Пробуем несколько вариантов имён (dispatch_plan_plan_date_azs_id_base_time_key, etc.)
+    await pool.query(`
+      DO $$
+      BEGIN
+        -- Снимаем старое ограничение с тремя полями (различные возможные имена)
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'dispatch_plan'::regclass
+            AND contype = 'u'
+            AND conname = 'dispatch_plan_plan_date_azs_id_base_time_key'
+        ) THEN
+          ALTER TABLE dispatch_plan DROP CONSTRAINT dispatch_plan_plan_date_azs_id_base_time_key;
+        END IF;
+        -- Добавляем новое ограничение с пятью полями (если ещё не существует)
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'dispatch_plan'::regclass
+            AND contype = 'u'
+            AND conname = 'dispatch_plan_plan_date_azs_id_base_time_entry_type_window_index_key'
+        ) THEN
+          ALTER TABLE dispatch_plan
+            ADD CONSTRAINT dispatch_plan_plan_date_azs_id_base_time_entry_type_window_index_key
+            UNIQUE (plan_date, azs_id, base_time, entry_type, window_index);
+        END IF;
+      END $$;
+    `);
   },
 
   async upsertPlanned({
@@ -60,7 +94,7 @@ const createPostgresStore = (pool) => ({
     const result = await pool.query(
       `INSERT INTO dispatch_plan (plan_date, azs_id, admin_user_id, base_time, execute_at, jitter_minutes, entry_type, window_index, deadline_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (plan_date, azs_id, base_time) DO NOTHING RETURNING *`,
+       ON CONFLICT (plan_date, azs_id, base_time, entry_type, window_index) DO NOTHING RETURNING *`,
       [planDate, azsId, adminUserId, baseTime, executeAt, jitterMinutes, entryType, windowIndex, deadlineAt]
     );
     return result.rows[0] ?? null;
@@ -125,7 +159,10 @@ const createMysqlStore = (pool) => ({
         error_text LONGTEXT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY ux_dispatch_plan (plan_date, azs_id, base_time),
+        entry_type VARCHAR(16) NOT NULL DEFAULT 'primary',
+        window_index INT NOT NULL DEFAULT 0,
+        deadline_at DATETIME NULL,
+        UNIQUE KEY ux_dispatch_plan (plan_date, azs_id, base_time, entry_type, window_index),
         INDEX ix_dispatch_plan_due (status, execute_at)
       )
     `);
@@ -153,6 +190,36 @@ const createMysqlStore = (pool) => ({
     } catch (e) {
       if (!String(e.message || '').includes('Duplicate column') && e.code !== 'ER_DUP_FIELDNAME') throw e;
     }
+    // S8-A3 БЛОКЕР 1: миграция UNIQUE ключа MySQL.
+    // Снимаем старый UNIQUE KEY ux_dispatch_plan (plan_date, azs_id, base_time)
+    // и добавляем новый с пятью полями. Идемпотентно — try/catch на отсутствие/дубликат.
+    try {
+      // Проверяем, существует ли старый ключ с тремя полями через information_schema
+      const [oldKeyRows] = await pool.execute(
+        `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'dispatch_plan'
+           AND INDEX_NAME = 'ux_dispatch_plan'
+           AND SEQ_IN_INDEX = 4
+           -- Если есть 4-й компонент, значит ключ уже расширенный
+           `,
+        []
+      ).catch(() => [[{ c: 0 }]]);
+      // Если поле SEQ_IN_INDEX=4 не найдено (0 строк), ключ старый — нужно пересоздать
+      if (Number(oldKeyRows?.[0]?.c || 0) === 0) {
+        // Снимаем старый ключ (ignore если не существует)
+        await pool.execute(`ALTER TABLE dispatch_plan DROP INDEX ux_dispatch_plan`).catch(() => {});
+        // Добавляем новый расширенный ключ
+        await pool.execute(
+          `ALTER TABLE dispatch_plan ADD UNIQUE KEY ux_dispatch_plan (plan_date, azs_id, base_time, entry_type, window_index)`
+        ).catch((e) => {
+          // Duplicate key name — ключ с таким именем уже есть (с 5 полями) — игнорируем
+          if (e.code !== 'ER_DUP_KEYNAME' && !String(e.message || '').includes('Duplicate key name')) throw e;
+        });
+      }
+    } catch {
+      // Лучшие усилия — если что-то пошло не так при проверке, продолжаем
+    }
   },
 
   async upsertPlanned({
@@ -169,10 +236,10 @@ const createMysqlStore = (pool) => ({
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [planDate, azsId, adminUserId, baseTime, executeAtSql, jitterMinutes, entryType, windowIndex, deadlineAtSql]
     );
-    // Re-SELECT by unique key regardless of whether it was inserted or already existed
+    // Re-SELECT by unique key (5 полей) — возвращает ИМЕННО эту строку
     const [rows] = await pool.execute(
-      `SELECT * FROM dispatch_plan WHERE plan_date=? AND azs_id=? AND base_time=? LIMIT 1`,
-      [planDate, azsId, baseTime]
+      `SELECT * FROM dispatch_plan WHERE plan_date=? AND azs_id=? AND base_time=? AND entry_type=? AND window_index=? LIMIT 1`,
+      [planDate, azsId, baseTime, entryType, windowIndex]
     );
     return rows[0] ?? null;
   },
@@ -222,9 +289,11 @@ const createMysqlStore = (pool) => ({
 // ---------------------------------------------------------------------------
 
 // Note on upsertPlanned return value: idempotent on UNIQUE(plan_date,azs_id,
-// base_time). PG returns null when the row already existed (ON CONFLICT DO
-// NOTHING); MySQL always returns the row (INSERT IGNORE + re-select). The
-// generator ignores the return — it only relies on no duplicate being created.
+// base_time,entry_type,window_index). PG returns null when the row already
+// existed (ON CONFLICT DO NOTHING); MySQL always returns the row (INSERT IGNORE
+// + re-select by all 5 key fields). The generator ignores the return — it only
+// relies on no duplicate being created. Primary and reminder rows for the same
+// AZS/date/base_time coexist because they differ in entry_type/window_index.
 export const createDispatchPlanStore = ({ pool, dbType } = {}) => {
   if (!pool) {
     throw new Error('pool is required');

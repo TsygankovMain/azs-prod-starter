@@ -451,19 +451,19 @@ export const createDispatchScheduler = ({
         }
 
         // Проверяем статус отчёта (OR-6: локальный статус, без CRM-запроса)
+        // S8-A3 БЛОКЕР 2+3: используем getActiveReportForAzsOnDate(azsId, planDate)
+        // вместо getBySlotKey(base_time напоминания) — ищем отчёт первичной точки
+        // по АЗС и дате, а не по времени напоминания.
         let reportStatus = null;
-        if (reportsStore && typeof reportsStore.getBySlotKey === 'function') {
+        if (reportsStore && typeof reportsStore.getActiveReportForAzsOnDate === 'function') {
           try {
-            // Первичный slotKey = planDate:baseTime основной точки (без суффикса)
-            // Ищем по originalSlotKey = planDate:primaryBaseTime (windowIndex=0)
-            // В реальном приложении нужно хранить связку, здесь используем plan_date:base_time primary-строки.
-            // Для упрощения ищем по azsId + plan_date с ANY слотом (getBySlotKey принимает slotKey)
-            // Строим primary slotKey: planDate:base_time (без reminder-суффикса)
-            const primarySlotKey = `${row.plan_date}:${row.base_time}`;
-            const report = await reportsStore.getBySlotKey({ slotKey: primarySlotKey, azsId: row.azs_id });
+            const report = await reportsStore.getActiveReportForAzsOnDate({
+              azsId: row.azs_id,
+              planDate: row.plan_date
+            });
             reportStatus = report?.status ?? null;
           } catch (err) {
-            logger.warn('dispatchScheduler: reminder getBySlotKey failed', {
+            logger.warn('dispatchScheduler: reminder getActiveReportForAzsOnDate failed', {
               id: row.id, message: err.message
             });
             // Продолжаем — при ошибке проверки считаем не сданным и шлём уведомление

@@ -54,14 +54,17 @@ const makeLogStore = ({ reserveResult = { reserved: true, id: 1 }, ...methods } 
 });
 
 /**
- * Создаёт fakeReportsStore с методом getBySlotKey.
+ * Создаёт fakeReportsStore с методом getActiveReportForAzsOnDate.
+ * S8-A3 БЛОКЕР 2+3: используем РЕАЛЬНЫЙ интерфейс метода (azsId + planDate),
+ * а не getBySlotKey(base_time напоминания) — который не существует в prod reportsStore.
  * По умолчанию: статус 'new' (не сдан).
  */
 const makeReportsStore = ({ status = 'new', ...methods } = {}) => ({
-  async getBySlotKey(args) {
+  async getActiveReportForAzsOnDate(args) {
     methods.getCalls?.push?.(args);
     if (status === null) return null; // нет отчёта
-    return { id: 1, status, slot_key: args?.slotKey ?? args, azs_id: 'azs-b' };
+    // Возвращает отчёт по azsId+planDate (не по base_time напоминания!)
+    return { id: 1, status, azs_id: args?.azsId, plan_date: args?.planDate };
   }
 });
 
@@ -373,4 +376,91 @@ test('S8-A3 совместимость: строка без entry_type (null) т
   await scheduler.runOnce();
 
   assert.ok(dispatchBatchCalls.length > 0, 'legacy строка (нет entry_type) → обычный dispatchBatch');
+});
+
+// ---------------------------------------------------------------------------
+// S8-A3 БЛОКЕР 2+3: проверяем lookup getActiveReportForAzsOnDate
+// Ключевой тест: lookup должен использовать azsId+planDate (не base_time напоминания)
+// ---------------------------------------------------------------------------
+
+test('S8-A3 БЛОКЕР 2+3: lookup использует azsId+planDate (не base_time), находит отчёт первичной точки', async () => {
+  const lookupCalls = [];
+
+  // reminder-строка с base_time='1500' (другой, чем у primary '0730')
+  const reminderRow = makeReminderDueRow({
+    plan_date: '2026-06-20',
+    base_time: '1500',   // время напоминания — ОТЛИЧАЕТСЯ от времени сдачи отчёта
+    window_index: 1
+  });
+
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: true,
+    dispatchPlanStore: makePlanStore({
+      dueRows: [reminderRow],
+      markDispatched: () => {}
+    }),
+    dispatchLogStore: makeLogStore(),
+    // reportsStore: отслеживаем параметры вызова
+    reportsStore: {
+      async getActiveReportForAzsOnDate({ azsId, planDate }) {
+        lookupCalls.push({ azsId, planDate });
+        // Возвращаем отчёт co статусом 'new' (не сдан)
+        return { id: 10, status: 'new', azs_id: azsId, plan_date: planDate };
+      }
+    },
+    notificationService: {
+      async notify() {}
+    },
+    dispatchService: {
+      async dispatchBatch() { throw new Error('не должен вызываться'); }
+    },
+    getCandidates: async () => [],
+    settingsStore: { async read() { return { timezone: 'Europe/Moscow' }; } },
+    getRuntimeContext: async () => ({ authId: 'tok', domain: 'd', memberId: 'm', userId: 1 }),
+    nowFn: () => new Date('2026-06-20T12:05:00.000Z'),
+    logger: { info() {}, warn() {}, error() {} }
+  });
+
+  await scheduler.runOnce();
+
+  assert.ok(lookupCalls.length > 0, 'getActiveReportForAzsOnDate был вызван');
+  const call = lookupCalls[0];
+  // Lookup должен использовать azs_id и plan_date из строки плана
+  assert.equal(call.azsId, 'azs-b', 'lookup передаёт azsId из строки плана');
+  assert.equal(call.planDate, '2026-06-20', 'lookup передаёт planDate из строки плана');
+  // КРИТИЧНО: lookup НЕ должен использовать base_time напоминания в качестве key
+  // (это и был баг — поиск по '1500' вместо поиска отчёта по дате)
+});
+
+test('S8-A3 БЛОКЕР 2+3: без reportsStore → fallback к notify (безопасный дефолт)', async () => {
+  const notifyCalls = [];
+
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: true,
+    dispatchPlanStore: makePlanStore({
+      dueRows: [makeReminderDueRow()],
+      markDispatched: () => {}
+    }),
+    dispatchLogStore: makeLogStore(),
+    // reportsStore НЕ передан → безопасный дефолт: считаем не сданным → шлём notify
+    reportsStore: null,
+    notificationService: {
+      async notify(args) { notifyCalls.push(args); }
+    },
+    dispatchService: {
+      async dispatchBatch() { throw new Error('не должен вызываться'); }
+    },
+    getCandidates: async () => [],
+    settingsStore: { async read() { return { timezone: 'Europe/Moscow' }; } },
+    getRuntimeContext: async () => ({ authId: 'tok', domain: 'd', memberId: 'm', userId: 1 }),
+    nowFn: () => new Date('2026-06-20T11:35:00.000Z'),
+    logger: { info() {}, warn() {}, error() {} }
+  });
+
+  await scheduler.runOnce();
+
+  // Без reportsStore статус неизвестен → шлём уведомление (безопасный дефолт)
+  assert.ok(notifyCalls.length > 0, 'без reportsStore → notify отправляется (безопасный дефолт)');
 });
