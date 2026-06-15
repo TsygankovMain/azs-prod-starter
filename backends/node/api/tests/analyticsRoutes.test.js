@@ -102,6 +102,30 @@ test('preview returns 503 preview_auth_broken when download throws wrong_client'
   assert.equal(res._payload?.error, 'preview_auth_broken');
 });
 
+// Test A2.5 (production path): download throws Error with invalid_client ONLY in message,
+//            NO err.code property — must return 503 preview_auth_broken.
+test('preview returns 503 preview_auth_broken when download throws error with invalid_client in message (production path)', async () => {
+  const authErr = new Error('Bitrix OAuth refresh failed: invalid_client - bad credentials');
+  // Note: NO .code property set, matching production error shape.
+  const deps = {
+    ...stubDeps,
+    reportsStore: { async listPhotos() { return [{ photoCode: 'p2b', diskObjectId: 88 }]; } },
+    diskApi: {
+      async downloadFileContent() { throw authErr; },
+    },
+    getAdminContext: async () => ({ authId: 'SOME_TOKEN' }),
+    getDiskContext:  async () => null,
+  };
+  const router = createAnalyticsRouter(deps);
+  const handler = router.stack.find(l => l.route?.path === '/photos/:reportId/:photoCode/preview')?.route?.stack[0]?.handle;
+  if (!handler) return;
+  const req = makeReq({ params: { reportId: '25', photoCode: 'p2b' } });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 503);
+  assert.equal(res._payload?.error, 'preview_auth_broken');
+});
+
 // Test A3: no usable admin context (resolver returns null) and no getDiskContext
 //          at all — download throws invalid_client → 503.
 test('preview returns 503 preview_auth_broken when getAdminContext returns null and getDiskContext absent', async () => {
