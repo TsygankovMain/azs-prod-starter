@@ -7,6 +7,29 @@ type ReasonItem = {
   label: string
 }
 
+type DispatchWindowItem = {
+  from: string
+  to: string
+}
+
+type DispatchProfileConfigA = {
+  slots: string[]
+  jitterMinutes: number
+}
+
+type DispatchProfileConfigB = {
+  windows: DispatchWindowItem[]
+  escalateUntilDone: boolean
+}
+
+type DispatchProfile = {
+  id: string
+  name: string
+  azsIds: string[]
+  mode: 'A' | 'B'
+  config: DispatchProfileConfigA | DispatchProfileConfigB
+}
+
 type SettingsTree = {
   azs: {
     entityTypeId: number
@@ -57,6 +80,7 @@ type SettingsTree = {
   photoFeed: {
     remarkTemplates: string[]
   }
+  dispatchProfiles: DispatchProfile[]
 }
 
 type JsonObject = Record<string, unknown>
@@ -147,7 +171,7 @@ const roleCapabilities = ref<AppCapabilities>({
 })
 
 // ─── Section navigation state ────────────────────────────────────────────────
-type SectionId = 'azs' | 'photo-type' | 'report' | 'reasons' | 'stages' | 'disk' | 'access' | 'manage' | 'photo-feed'
+type SectionId = 'azs' | 'photo-type' | 'report' | 'reasons' | 'stages' | 'disk' | 'access' | 'manage' | 'photo-feed' | 'dispatch-profiles'
 const activeSection = ref<SectionId>('azs')
 const mobileOpenSection = ref<SectionId | ''>('azs')
 
@@ -238,7 +262,8 @@ function makeEmptySettings(): SettingsTree {
     },
     photoFeed: {
       remarkTemplates: []
-    }
+    },
+    dispatchProfiles: []
   }
 }
 
@@ -384,8 +409,59 @@ function normalizeSettings(
       ? normalized.photoFeed.remarkTemplates.map((t: unknown) => String(t || '').trim()).filter(Boolean)
       : []
   }
+  normalized.dispatchProfiles = normalizeDispatchProfiles(normalized.dispatchProfiles)
 
   return normalized
+}
+
+function normalizeDispatchProfileConfigA(raw: unknown): DispatchProfileConfigA {
+  const obj = isPlainObject(raw) ? raw : {}
+  return {
+    slots: Array.isArray(obj.slots)
+      ? obj.slots.map((s: unknown) => String(s || '').trim()).filter(Boolean)
+      : [],
+    jitterMinutes: Math.max(0, Math.trunc(Number(obj.jitterMinutes) || 0))
+  }
+}
+
+function normalizeDispatchProfileConfigB(raw: unknown): DispatchProfileConfigB {
+  const obj = isPlainObject(raw) ? raw : {}
+  return {
+    windows: Array.isArray(obj.windows)
+      ? obj.windows
+          .filter((w: unknown) => isPlainObject(w))
+          .map((w: unknown) => {
+            const win = w as Record<string, unknown>
+            return {
+              from: String(win.from || '00:00').trim(),
+              to: String(win.to || '00:00').trim()
+            }
+          })
+      : [],
+    escalateUntilDone: obj.escalateUntilDone !== false
+  }
+}
+
+function normalizeDispatchProfiles(raw: unknown): DispatchProfile[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((p: unknown) => isPlainObject(p))
+    .map((p: unknown) => {
+      const profile = p as Record<string, unknown>
+      const mode: 'A' | 'B' = profile.mode === 'B' ? 'B' : 'A'
+      return {
+        id: String(profile.id || '').trim(),
+        name: String(profile.name || '').trim(),
+        azsIds: Array.isArray(profile.azsIds)
+          ? profile.azsIds.map((id: unknown) => String(id || '').trim()).filter(Boolean)
+          : [],
+        mode,
+        config: mode === 'B'
+          ? normalizeDispatchProfileConfigB(profile.config)
+          : normalizeDispatchProfileConfigA(profile.config)
+      }
+    })
+    .filter(p => p.id)
 }
 
 const form = reactive<SettingsTree>(makeEmptySettings())
@@ -426,6 +502,22 @@ function applySettings(nextSettings: SettingsTree) {
   // photoFeed
   form.photoFeed.remarkTemplates = Array.isArray(nextSettings.photoFeed?.remarkTemplates)
     ? [...nextSettings.photoFeed.remarkTemplates]
+    : []
+  // dispatchProfiles — глубокая копия
+  form.dispatchProfiles = Array.isArray(nextSettings.dispatchProfiles)
+    ? nextSettings.dispatchProfiles.map(p => ({
+        ...p,
+        azsIds: [...p.azsIds],
+        config: p.mode === 'B'
+          ? {
+              windows: (p.config as DispatchProfileConfigB).windows.map(w => ({ ...w })),
+              escalateUntilDone: (p.config as DispatchProfileConfigB).escalateUntilDone
+            }
+          : {
+              slots: [...(p.config as DispatchProfileConfigA).slots],
+              jitterMinutes: (p.config as DispatchProfileConfigA).jitterMinutes
+            }
+      }))
     : []
 }
 
@@ -484,7 +576,25 @@ function readSettings(): SettingsTree {
       remarkTemplates: form.photoFeed.remarkTemplates
         .map((t) => String(t || '').trim())
         .filter(Boolean)
-    }
+    },
+    dispatchProfiles: form.dispatchProfiles
+      .filter(p => p.id && p.name.trim())
+      .map(p => ({
+        id: p.id,
+        name: p.name.trim(),
+        azsIds: p.azsIds.filter(Boolean),
+        mode: p.mode,
+        config: p.mode === 'B'
+          ? {
+              windows: (p.config as DispatchProfileConfigB).windows
+                .filter(w => w.from && w.to),
+              escalateUntilDone: (p.config as DispatchProfileConfigB).escalateUntilDone
+            }
+          : {
+              slots: [...new Set((p.config as DispatchProfileConfigA).slots.filter(Boolean))].sort(),
+              jitterMinutes: Math.max(0, Math.trunc(Number((p.config as DispatchProfileConfigA).jitterMinutes) || 0))
+            }
+      }))
   })
 }
 
@@ -563,7 +673,10 @@ const sectionComplete = computed(() => ({
   // портала), поэтому секция всегда «заполнена» и не пугает жёлтой точкой.
   access: true,
   manage: true,
-  photoFeed: Boolean(form.photoFeed.remarkTemplates.length)
+  photoFeed: Boolean(form.photoFeed.remarkTemplates.length),
+  // Профили: секция «заполнена», если нет профилей с пустым именем
+  dispatchProfiles: form.dispatchProfiles.length === 0
+    || form.dispatchProfiles.every(p => p.name.trim())
 }))
 
 // ─── Smart-process select items (for B24Select) ───────────────────────────────
@@ -581,6 +694,7 @@ const navSections = computed(() => [
   { id: 'disk' as SectionId, label: 'Диск и часовой пояс', complete: sectionComplete.value.disk },
   { id: 'access' as SectionId, label: 'Роли доступа', complete: sectionComplete.value.access },
   { id: 'photo-feed' as SectionId, label: 'Фотолента', complete: sectionComplete.value.photoFeed },
+  { id: 'dispatch-profiles' as SectionId, label: 'Профили рассылки', complete: sectionComplete.value.dispatchProfiles },
   { id: 'manage' as SectionId, label: 'Управление', complete: true }
 ])
 
@@ -997,6 +1111,77 @@ function addDispatchTimeSlot() {
 
 function removeDispatchTimeSlot(index: number) {
   form.report.dispatchTimes.splice(index, 1)
+}
+
+// ─── Профили рассылки ─────────────────────────────────────────────────────────
+
+/** Множество АЗС, занятых в других профилях (для disabledAzsIds в AzsMultiSelect) */
+function getDisabledAzsIds(profileId: string): string[] {
+  const result: string[] = []
+  for (const p of form.dispatchProfiles) {
+    if (p.id !== profileId) {
+      for (const id of p.azsIds) {
+        result.push(id)
+      }
+    }
+  }
+  return [...new Set(result)]
+}
+
+function makeProfileId(): string {
+  return `profile-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+}
+
+function addDispatchProfile() {
+  form.dispatchProfiles.push({
+    id: makeProfileId(),
+    name: '',
+    azsIds: [],
+    mode: 'A',
+    config: { slots: [], jitterMinutes: 0 }
+  })
+}
+
+async function removeDispatchProfile(index: number) {
+  const ok = await confirm({
+    title: 'Удалить профиль рассылки?',
+    text: 'АЗС из этого профиля перейдут на глобальное расписание.',
+    confirmLabel: 'Удалить',
+  })
+  if (!ok) return
+  form.dispatchProfiles.splice(index, 1)
+}
+
+function setProfileMode(profile: DispatchProfile, mode: 'A' | 'B') {
+  if (profile.mode === mode) return
+  profile.mode = mode
+  if (mode === 'A') {
+    profile.config = { slots: [], jitterMinutes: 0 }
+  } else {
+    profile.config = { windows: [], escalateUntilDone: true }
+  }
+}
+
+function addProfileSlot(profile: DispatchProfile) {
+  const cfg = profile.config as DispatchProfileConfigA
+  if (!Array.isArray(cfg.slots)) cfg.slots = []
+  cfg.slots.push('09:00')
+}
+
+function removeProfileSlot(profile: DispatchProfile, index: number) {
+  const cfg = profile.config as DispatchProfileConfigA
+  cfg.slots.splice(index, 1)
+}
+
+function addProfileWindow(profile: DispatchProfile) {
+  const cfg = profile.config as DispatchProfileConfigB
+  if (!Array.isArray(cfg.windows)) cfg.windows = []
+  cfg.windows.push({ from: '09:00', to: '18:00' })
+}
+
+function removeProfileWindow(profile: DispatchProfile, index: number) {
+  const cfg = profile.config as DispatchProfileConfigB
+  cfg.windows.splice(index, 1)
 }
 
 onMounted(async () => {
@@ -1673,6 +1858,180 @@ onUnmounted(() => {
                     />
                   </div>
                 </B24FormField>
+              </div>
+            </template>
+
+            <!-- Профили рассылки section slot -->
+            <template #dispatch-profiles-body>
+              <div class="space-y-3 p-4">
+                <ProseP class="mb-0 text-sm text-(--ui-color-base-60)">
+                  Каждый профиль задаёт расписание для группы АЗС. АЗС, не входящие ни в один профиль, получают глобальное расписание.
+                </ProseP>
+                <div class="space-y-4">
+                  <div
+                    v-for="(profile, pIdx) in form.dispatchProfiles"
+                    :key="profile.id"
+                    class="rounded-lg border border-(--ui-color-base-20) p-3 space-y-3"
+                  >
+                    <!-- Имя профиля + удалить -->
+                    <div class="flex items-center gap-2">
+                      <B24Input
+                        v-model="profile.name"
+                        class="flex-1"
+                        placeholder="Название профиля"
+                        :disabled="!isAdminReady"
+                      />
+                      <B24Button
+                        size="sm"
+                        color="air-primary-alert"
+                        label="Удалить"
+                        :disabled="!isAdminReady"
+                        @click="removeDispatchProfile(pIdx)"
+                      />
+                    </div>
+                    <!-- Выбор АЗС -->
+                    <AzsMultiSelect
+                      :model-value="profile.azsIds"
+                      :disabled-azs-ids="getDisabledAzsIds(profile.id)"
+                      label="АЗС профиля"
+                      placeholder="Нет выбранных АЗС"
+                      @update:model-value="(v) => { profile.azsIds = v }"
+                    />
+                    <!-- Переключатель режима -->
+                    <div class="flex items-center gap-3">
+                      <span class="text-sm text-(--ui-color-base-70)">Режим:</span>
+                      <label class="flex items-center gap-1.5 cursor-pointer text-sm">
+                        <input
+                          type="radio"
+                          :name="`mode-${profile.id}`"
+                          value="A"
+                          :checked="profile.mode === 'A'"
+                          :disabled="!isAdminReady"
+                          @change="setProfileMode(profile, 'A')"
+                        >
+                        A — Фиксированные слоты
+                      </label>
+                      <label class="flex items-center gap-1.5 cursor-pointer text-sm">
+                        <input
+                          type="radio"
+                          :name="`mode-${profile.id}`"
+                          value="B"
+                          :checked="profile.mode === 'B'"
+                          :disabled="!isAdminReady"
+                          @change="setProfileMode(profile, 'B')"
+                        >
+                        B — В окнах
+                      </label>
+                    </div>
+                    <!-- Режим A -->
+                    <template v-if="profile.mode === 'A'">
+                      <div class="space-y-2">
+                        <div class="text-xs font-medium text-(--ui-color-base-60) uppercase tracking-wide">Слоты отправки</div>
+                        <div
+                          v-for="(_, sIdx) in (profile.config as DispatchProfileConfigA).slots"
+                          :key="sIdx"
+                          class="flex items-center gap-2"
+                        >
+                          <input
+                            v-model="(profile.config as DispatchProfileConfigA).slots[sIdx]"
+                            type="time"
+                            step="60"
+                            class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                            :disabled="!isAdminReady"
+                          >
+                          <B24Button
+                            size="xs"
+                            color="air-primary-alert"
+                            label="✕"
+                            :disabled="!isAdminReady"
+                            @click="removeProfileSlot(profile, sIdx)"
+                          />
+                        </div>
+                        <B24Button
+                          size="xs"
+                          color="air-secondary"
+                          label="Добавить слот"
+                          :disabled="!isAdminReady"
+                          @click="addProfileSlot(profile)"
+                        />
+                      </div>
+                      <B24FormField label="Джиттер, минут">
+                        <B24InputNumber
+                          v-model="(profile.config as DispatchProfileConfigA).jitterMinutes"
+                          class="w-full"
+                          :disabled="!isAdminReady"
+                        />
+                      </B24FormField>
+                    </template>
+                    <!-- Режим B -->
+                    <template v-else>
+                      <div class="space-y-2">
+                        <div class="text-xs font-medium text-(--ui-color-base-60) uppercase tracking-wide">Окна рассылки</div>
+                        <div
+                          v-for="(win, wIdx) in (profile.config as DispatchProfileConfigB).windows"
+                          :key="wIdx"
+                          class="flex flex-wrap items-center gap-2 rounded border border-(--ui-color-base-20) bg-(--ui-color-base-5) px-3 py-2"
+                        >
+                          <span class="text-xs text-(--ui-color-base-60) w-20 shrink-0">
+                            {{ wIdx === 0 ? 'Первичная' : `Эскалация ${wIdx}` }}
+                          </span>
+                          <label class="text-sm text-(--ui-color-base-70)">с</label>
+                          <input
+                            v-model="win.from"
+                            type="time"
+                            step="60"
+                            class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-2 py-1.5 text-sm"
+                            :disabled="!isAdminReady"
+                          >
+                          <label class="text-sm text-(--ui-color-base-70)">до</label>
+                          <input
+                            v-model="win.to"
+                            type="time"
+                            step="60"
+                            class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-2 py-1.5 text-sm"
+                            :disabled="!isAdminReady"
+                          >
+                          <span
+                            v-if="win.from >= win.to"
+                            class="text-xs text-red-500"
+                          >«с» должно быть раньше «до»</span>
+                          <B24Button
+                            size="xs"
+                            color="air-primary-alert"
+                            label="✕"
+                            :disabled="!isAdminReady"
+                            @click="removeProfileWindow(profile, wIdx)"
+                          />
+                        </div>
+                        <B24Button
+                          size="xs"
+                          color="air-secondary"
+                          label="Добавить окно"
+                          :disabled="!isAdminReady"
+                          @click="addProfileWindow(profile)"
+                        />
+                        <ProseP class="mb-0 text-xs text-(--ui-color-base-60)">
+                          1 отчёт/день. Окно 1 — первичная отправка, окна 2+ — напоминание если отчёт не сдан. Задайте окна вне часов пик.
+                        </ProseP>
+                      </div>
+                      <label class="flex items-center gap-2 cursor-pointer text-sm">
+                        <input
+                          v-model="(profile.config as DispatchProfileConfigB).escalateUntilDone"
+                          type="checkbox"
+                          :disabled="!isAdminReady"
+                          class="rounded border-gray-300 text-blue-600"
+                        >
+                        Эскалация — повторять в следующих окнах, пока отчёт не сдан
+                      </label>
+                    </template>
+                  </div>
+                </div>
+                <B24Button
+                  color="air-secondary"
+                  label="Добавить профиль"
+                  :disabled="!isAdminReady"
+                  @click="addDispatchProfile"
+                />
               </div>
             </template>
 
@@ -2457,6 +2816,264 @@ onUnmounted(() => {
                   />
                 </div>
               </B24FormField>
+            </div>
+          </B24Card>
+
+          <!-- Профили рассылки -->
+          <B24Card
+            id="section-dispatch-profiles"
+            variant="outline"
+            :b24ui="{ body: 'p-4 sm:p-5', header: 'p-4 sm:p-5' }"
+          >
+            <template #header>
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="mb-1 flex items-center gap-2">
+                    <ProseH3 class="mb-0">Профили рассылки</ProseH3>
+                    <B24Badge
+                      rounded
+                      size="sm"
+                      :color="sectionComplete.dispatchProfiles ? 'air-primary-success' : 'air-secondary'"
+                      inverted
+                      :label="sectionComplete.dispatchProfiles ? 'готово' : 'заполнить'"
+                    />
+                  </div>
+                  <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
+                    Группы АЗС с индивидуальным расписанием рассылки. АЗС вне профилей получают глобальное расписание (раздел «Сроки и этапы»).
+                  </ProseP>
+                </div>
+                <B24Button
+                  color="air-secondary"
+                  size="sm"
+                  label="Добавить профиль"
+                  :disabled="!isAdminReady"
+                  @click="addDispatchProfile"
+                />
+              </div>
+            </template>
+
+            <div class="space-y-4">
+              <ProseP
+                v-if="form.dispatchProfiles.length === 0"
+                class="mb-0 text-sm text-(--ui-color-base-50)"
+              >
+                Профили не созданы. Нажмите «Добавить профиль» чтобы задать индивидуальное расписание для группы АЗС.
+              </ProseP>
+
+              <div
+                v-for="(profile, pIdx) in form.dispatchProfiles"
+                :key="profile.id"
+                class="rounded-lg border border-(--ui-color-base-20) p-4 space-y-4"
+              >
+                <!-- Заголовок профиля: имя + удалить -->
+                <div class="flex items-center gap-3">
+                  <B24FormField label="Название профиля" class="flex-1">
+                    <B24Input
+                      v-model="profile.name"
+                      class="w-full"
+                      placeholder="Например: Трассовые АЗС"
+                      :disabled="!isAdminReady"
+                    />
+                  </B24FormField>
+                  <div class="pt-5">
+                    <B24Button
+                      size="sm"
+                      color="air-primary-alert"
+                      label="Удалить профиль"
+                      :disabled="!isAdminReady"
+                      @click="removeDispatchProfile(pIdx)"
+                    />
+                  </div>
+                </div>
+
+                <!-- Выбор АЗС -->
+                <B24FormField label="АЗС профиля">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      АЗС профиля
+                      <B24Tooltip text="АЗС, уже включённые в другие профили, отображаются как «занята» и недоступны для выбора.">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <AzsMultiSelect
+                    :model-value="profile.azsIds"
+                    :disabled-azs-ids="getDisabledAzsIds(profile.id)"
+                    label="АЗС"
+                    placeholder="Нет выбранных АЗС"
+                    @update:model-value="(v) => { profile.azsIds = v }"
+                  />
+                </B24FormField>
+
+                <!-- Переключатель режима -->
+                <div class="flex items-center gap-4">
+                  <span class="text-sm font-medium text-(--ui-color-base-70)">Режим расписания:</span>
+                  <label class="flex items-center gap-2 cursor-pointer text-sm">
+                    <input
+                      type="radio"
+                      :name="`mode-${profile.id}`"
+                      value="A"
+                      :checked="profile.mode === 'A'"
+                      :disabled="!isAdminReady"
+                      class="text-blue-600"
+                      @change="setProfileMode(profile, 'A')"
+                    >
+                    <span>
+                      <strong>A</strong> — Фиксированные слоты + джиттер
+                    </span>
+                  </label>
+                  <label class="flex items-center gap-2 cursor-pointer text-sm">
+                    <input
+                      type="radio"
+                      :name="`mode-${profile.id}`"
+                      value="B"
+                      :checked="profile.mode === 'B'"
+                      :disabled="!isAdminReady"
+                      class="text-blue-600"
+                      @change="setProfileMode(profile, 'B')"
+                    >
+                    <span>
+                      <strong>B</strong> — Случайное время в окнах
+                    </span>
+                  </label>
+                </div>
+
+                <!-- Режим A: слоты + джиттер -->
+                <template v-if="profile.mode === 'A'">
+                  <div class="grid gap-4 sm:grid-cols-2">
+                    <B24FormField label="Слоты отправки" class="w-full sm:col-span-2">
+                      <template #label>
+                        <span class="inline-flex items-center gap-1">
+                          Слоты отправки
+                          <B24Tooltip text="Время (HH:MM) фиксированных запросов отчёта для АЗС этого профиля. Джиттер случайно сдвигает момент в пределах ±N минут.">
+                            <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                          </B24Tooltip>
+                        </span>
+                      </template>
+                      <div class="space-y-2">
+                        <div
+                          v-for="(_, sIdx) in (profile.config as DispatchProfileConfigA).slots"
+                          :key="`slot-${profile.id}-${sIdx}`"
+                          class="flex items-center gap-2"
+                        >
+                          <input
+                            v-model="(profile.config as DispatchProfileConfigA).slots[sIdx]"
+                            type="time"
+                            step="60"
+                            class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                            :disabled="!isAdminReady"
+                          >
+                          <B24Button
+                            size="xs"
+                            color="air-primary-alert"
+                            label="Удалить"
+                            :disabled="!isAdminReady"
+                            @click="removeProfileSlot(profile, sIdx)"
+                          />
+                        </div>
+                        <B24Button
+                          size="xs"
+                          color="air-secondary"
+                          label="Добавить слот"
+                          :disabled="!isAdminReady"
+                          @click="addProfileSlot(profile)"
+                        />
+                      </div>
+                    </B24FormField>
+                    <B24FormField label="Джиттер, минут (±N)" class="w-full">
+                      <template #label>
+                        <span class="inline-flex items-center gap-1">
+                          Джиттер, минут (±N)
+                          <B24Tooltip text="Случайный сдвиг момента отправки: ±N минут от каждого слота. 0 = без сдвига.">
+                            <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                          </B24Tooltip>
+                        </span>
+                      </template>
+                      <B24InputNumber
+                        v-model="(profile.config as DispatchProfileConfigA).jitterMinutes"
+                        class="w-full"
+                        :disabled="!isAdminReady"
+                      />
+                    </B24FormField>
+                  </div>
+                </template>
+
+                <!-- Режим B: окна + эскалация -->
+                <template v-else>
+                  <B24FormField label="Окна рассылки" class="w-full">
+                    <template #label>
+                      <span class="inline-flex items-center gap-1">
+                        Окна рассылки (по порядку)
+                        <B24Tooltip text="Окно 1 — первичная отправка в случайный момент внутри диапазона. Окна 2+ — точки эскалации: бот напомнит, если отчёт ещё не сдан.">
+                          <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                        </B24Tooltip>
+                      </span>
+                    </template>
+                    <div class="space-y-2">
+                      <div
+                        v-for="(win, wIdx) in (profile.config as DispatchProfileConfigB).windows"
+                        :key="`win-${profile.id}-${wIdx}`"
+                        class="flex flex-wrap items-center gap-2 rounded border border-(--ui-color-base-20) bg-(--ui-color-base-5) px-3 py-2"
+                      >
+                        <B24Badge
+                          rounded
+                          size="sm"
+                          :color="wIdx === 0 ? 'air-primary' : 'air-secondary'"
+                          inverted
+                          :label="wIdx === 0 ? 'Первичная' : `Эскалация ${wIdx}`"
+                          class="shrink-0"
+                        />
+                        <label class="text-sm text-(--ui-color-base-70)">с</label>
+                        <input
+                          v-model="win.from"
+                          type="time"
+                          step="60"
+                          class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                          :disabled="!isAdminReady"
+                        >
+                        <label class="text-sm text-(--ui-color-base-70)">до</label>
+                        <input
+                          v-model="win.to"
+                          type="time"
+                          step="60"
+                          class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                          :disabled="!isAdminReady"
+                        >
+                        <span
+                          v-if="win.from >= win.to"
+                          class="text-xs text-red-500"
+                        >«с» должно быть раньше «до»</span>
+                        <B24Button
+                          size="xs"
+                          color="air-primary-alert"
+                          label="✕"
+                          :disabled="!isAdminReady"
+                          @click="removeProfileWindow(profile, wIdx)"
+                        />
+                      </div>
+                      <B24Button
+                        size="xs"
+                        color="air-secondary"
+                        label="+ Добавить окно"
+                        :disabled="!isAdminReady"
+                        @click="addProfileWindow(profile)"
+                      />
+                      <ProseP class="mb-0 text-xs text-(--ui-color-base-60)">
+                        1 отчёт/день. Если не сдан в окне 1 — бот напомнит в окне 2, затем в окне 3 и т.д. Дедлайн = конец последнего окна. Задайте окна вне часов пик.
+                      </ProseP>
+                    </div>
+                  </B24FormField>
+                  <label class="flex items-center gap-2 cursor-pointer text-sm">
+                    <input
+                      v-model="(profile.config as DispatchProfileConfigB).escalateUntilDone"
+                      type="checkbox"
+                      :disabled="!isAdminReady"
+                      class="rounded border-gray-300 text-blue-600"
+                    >
+                    Эскалация — повторять напоминание в следующих окнах, пока отчёт не сдан
+                  </label>
+                </template>
+              </div>
             </div>
           </B24Card>
 
