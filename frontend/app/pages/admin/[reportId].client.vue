@@ -747,6 +747,11 @@ onBeforeUnmount(() => {
 
 // ── Focus Mode: toggle for the "all slots" list ──────────────────────────────
 const showAllSlots = ref(false)
+
+// Авто-раскрытие списка при появлении ошибок загрузки (LOGIC-F2)
+watch(hasUploadErrors, (hasErr) => {
+  if (hasErr) showAllSlots.value = true
+})
 </script>
 
 <template>
@@ -884,6 +889,37 @@ const showAllSlots = ref(false)
         <p class="mt-1 font-mono break-all">{{ saveErrorDetail }}</p>
       </details>
     </div>
+    <!-- Ошибки загрузки фото с перечнем слотов и кнопкой «Повторить» (LOGIC-F2) -->
+    <div v-if="hasUploadErrors" class="space-y-2">
+      <B24Alert
+        color="air-primary-alert"
+        title="Не удалось загрузить фото"
+        description="Часть фотографий не была загружена на сервер. Используйте кнопку «Повторить загрузку» для каждого проблемного фото ниже."
+      />
+      <div class="space-y-1.5">
+        <div
+          v-for="slot in photoSlots.filter(s => s.error && s.confirmed && !s.uploaded)"
+          :key="slot.key"
+          class="flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5"
+        >
+          <div class="min-w-0 space-y-0.5">
+            <p class="text-[13px] font-medium text-red-800 leading-tight">{{ slot.title }}</p>
+            <p class="text-[11px] text-red-600 leading-tight break-all">{{ slot.error }}</p>
+          </div>
+          <B24Button
+            color="air-primary"
+            variant="outline"
+            label="Повторить"
+            size="xs"
+            class="shrink-0"
+            :disabled="slot.uploadState === 'uploading'"
+            loading-auto
+            @click="retrySlotUpload(slot)"
+          />
+        </div>
+      </div>
+    </div>
+
     <div v-if="submitError" class="space-y-1">
       <B24Alert
         color="air-primary-alert"
