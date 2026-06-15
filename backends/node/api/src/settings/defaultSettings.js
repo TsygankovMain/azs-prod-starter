@@ -61,7 +61,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
       'Переделайте выкладку промо-товара',
       'Перегрузите правый монитор — старая реклама'
     ]
-  }
+  },
+  dispatchProfiles: []
 });
 
 const isPlainObject = (value) => (
@@ -312,6 +313,130 @@ export const validateSettings = (settings, {
     validateUserIdList(settings.access.azsAdminUserIds, 'access.azsAdminUserIds', errors);
   }
 
+  // ─── dispatchProfiles ──────────────────────────────────────────────────────
+  if (settings.dispatchProfiles !== undefined) {
+    if (!Array.isArray(settings.dispatchProfiles)) {
+      errors.push('dispatchProfiles must be an array');
+    } else {
+      const timeRe = /^\d{2}:\d{2}$/;
+
+      const parseTimeMinutes = (s) => {
+        const m = String(s || '').match(/^(\d{2}):(\d{2})$/);
+        if (!m) return null;
+        const h = Number(m[1]);
+        const min = Number(m[2]);
+        if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+        return h * 60 + min;
+      };
+
+      // Проверяем уникальность azsIds по всем профилям (AC-6, OR-4)
+      const seenAzsIds = new Map(); // azsId → первый profileIndex
+
+      for (let i = 0; i < settings.dispatchProfiles.length; i++) {
+        const profile = settings.dispatchProfiles[i];
+        const prefix = `dispatchProfiles[${i}]`;
+
+        // id
+        if (!profile || typeof profile.id !== 'string' || !profile.id.trim()) {
+          errors.push(`${prefix}.id must be a non-empty string`);
+        }
+
+        // name
+        if (!profile || typeof profile.name !== 'string' || !profile.name.trim()) {
+          errors.push(`${prefix}.name must be a non-empty string`);
+        }
+
+        // azsIds
+        if (!profile || !Array.isArray(profile.azsIds)) {
+          errors.push(`${prefix}.azsIds must be an array of strings`);
+        } else {
+          for (const azsId of profile.azsIds) {
+            if (typeof azsId !== 'string') {
+              errors.push(`${prefix}.azsIds must be an array of strings`);
+              break;
+            }
+            if (seenAzsIds.has(azsId)) {
+              errors.push(`dispatchProfiles: azsId '${azsId}' appears in multiple profiles (profiles[${seenAzsIds.get(azsId)}] and [${i}])`);
+            } else {
+              seenAzsIds.set(azsId, i);
+            }
+          }
+        }
+
+        // mode
+        if (!profile || (profile.mode !== 'A' && profile.mode !== 'B')) {
+          errors.push(`${prefix}.mode must be 'A' or 'B'`);
+          continue; // Остальные проверки конфига зависят от mode
+        }
+
+        // config
+        if (!profile.config || typeof profile.config !== 'object' || Array.isArray(profile.config)) {
+          errors.push(`${prefix}.config must be an object`);
+          continue;
+        }
+
+        if (profile.mode === 'A') {
+          // slots — непустой массив HH:mm
+          if (!Array.isArray(profile.config.slots) || profile.config.slots.length === 0) {
+            errors.push(`${prefix}.config.slots must be a non-empty array of HH:mm strings`);
+          } else {
+            const hasInvalidSlot = profile.config.slots.some(
+              (s) => !timeRe.test(String(s || ''))
+            );
+            if (hasInvalidSlot) {
+              errors.push(`${prefix}.config.slots contains invalid values, expected HH:mm`);
+            }
+          }
+
+          // jitterMinutes — число >= 0
+          if (typeof profile.config.jitterMinutes !== 'number'
+              || !Number.isFinite(profile.config.jitterMinutes)
+              || profile.config.jitterMinutes < 0) {
+            errors.push(`${prefix}.config.jitterMinutes must be >= 0`);
+          }
+        } else {
+          // mode === 'B'
+          // windows — непустой массив { from, to } с HH:mm и from < to
+          if (!Array.isArray(profile.config.windows) || profile.config.windows.length === 0) {
+            errors.push(`${prefix}.config.windows must be a non-empty array`);
+          } else {
+            for (let j = 0; j < profile.config.windows.length; j++) {
+              const win = profile.config.windows[j];
+              const winPrefix = `${prefix}.config.windows[${j}]`;
+
+              if (!win || typeof win.from !== 'string' || typeof win.to !== 'string') {
+                errors.push(`${winPrefix} must have string from and to`);
+                continue;
+              }
+
+              if (!timeRe.test(win.from) || !timeRe.test(win.to)) {
+                errors.push(`${winPrefix} from and to must match HH:mm`);
+                continue;
+              }
+
+              const fromMin = parseTimeMinutes(win.from);
+              const toMin = parseTimeMinutes(win.to);
+
+              if (fromMin === null) {
+                errors.push(`${winPrefix}.from is not a valid time`);
+              } else if (toMin === null) {
+                errors.push(`${winPrefix}.to is not a valid time`);
+              } else if (fromMin >= toMin) {
+                errors.push(`${winPrefix}: from must be earlier than to`);
+              }
+            }
+          }
+
+          // escalateUntilDone — опциональный boolean
+          if (profile.config.escalateUntilDone !== undefined
+              && typeof profile.config.escalateUntilDone !== 'boolean') {
+            errors.push(`${prefix}.config.escalateUntilDone must be a boolean`);
+          }
+        }
+      }
+    }
+  }
+
   if (errors.length > 0) {
     throw new SettingsValidationError(errors);
   }
@@ -356,7 +481,10 @@ export const validateSettings = (settings, {
             .filter((t) => typeof t === 'string' && t.trim())
             .map((t) => t.trim())
         : DEFAULT_SETTINGS.photoFeed.remarkTemplates.slice()
-    }
+    },
+    dispatchProfiles: Array.isArray(settings.dispatchProfiles)
+      ? settings.dispatchProfiles
+      : []
   };
 };
 
