@@ -948,11 +948,11 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- Вкладка: Фотолента -->
-        <PhotoFeedView v-if="reviewerTab === 'photos'" />
+        <!-- Вкладка: Фотолента (v-show сохраняет компонент в DOM, черновик замечаний выживает при переключении вкладок) -->
+        <PhotoFeedView v-show="reviewerTab === 'photos'" />
 
         <!-- Вкладка: Дашборд -->
-        <template v-else>
+        <template v-if="reviewerTab === 'dashboard'">
 
         <!--
           Сетевые ошибки ПЕРВИЧНОЙ инициализации уходят в processErrorGlobal → error.vue (там есть «Обновить»);
@@ -1625,7 +1625,7 @@ onMounted(async () => {
           </div>
         </details>
 
-        </template><!-- end v-else Дашборд -->
+        </template><!-- end v-if Дашборд -->
 
       </div>
     </template>
