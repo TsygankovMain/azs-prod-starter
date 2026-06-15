@@ -3,6 +3,18 @@ import { withoutTrailingSlash } from 'ufo'
 
 type JsonObject = Record<string, unknown>
 
+export type BrandItem = {
+  id: number
+  name: string
+  diskFolderId: number | null
+  diskFolderPath: string | null
+  externalLink: string | null
+  externalLinkUpdatedAt: string | null
+  azsIds: string[]
+  createdAt: string | null
+  updatedAt: string | null
+}
+
 type ReportRow = {
   id: number
   slotKey: string
@@ -554,18 +566,6 @@ export const useApiStore = defineStore(
     }
 
     // ─── Brands ───────────────────────────────────────────────────────────────
-
-    type BrandItem = {
-      id: number
-      name: string
-      diskFolderId: number | null
-      diskFolderPath: string | null
-      externalLink: string | null
-      externalLinkUpdatedAt: string | null
-      azsIds: string[]
-      createdAt: string | null
-      updatedAt: string | null
-    }
 
     const listBrands = async (): Promise<{ items: BrandItem[] }> => {
       return await $api('/api/brands', {

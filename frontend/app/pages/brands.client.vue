@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { B24Frame } from '@bitrix24/b24jssdk'
+import type { BrandItem } from '~/stores/api'
 
 const PAGE_TITLE = 'Бренды — внешний доступ к фото'
 
@@ -15,18 +16,7 @@ const { confirm } = useConfirm()
 let $b24: null | B24Frame = null
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-type BrandItem = {
-  id: number
-  name: string
-  diskFolderId: number | null
-  diskFolderPath: string | null
-  externalLink: string | null
-  externalLinkUpdatedAt: string | null
-  azsIds: string[]
-  createdAt: string | null
-  updatedAt: string | null
-}
+// BrandItem импортируется из ~/stores/api
 
 type AzsOption = {
   value: string
@@ -65,6 +55,10 @@ type BrandEditState = {
 
 const editState = ref<Record<number, BrandEditState>>({})
 
+/**
+ * Мутирующая инициализация — вызывается только из JS-кода (lifecycle, actions).
+ * В шаблоне НЕ используется.
+ */
 function ensureEditState(brand: BrandItem) {
   if (!editState.value[brand.id]) {
     editState.value[brand.id] = {
@@ -80,6 +74,14 @@ function ensureEditState(brand: BrandItem) {
     }
   }
   return editState.value[brand.id]
+}
+
+/**
+ * Безопасный геттер без мутации — для использования в шаблоне.
+ * Возвращает undefined если состояние ещё не инициализировано.
+ */
+function getBrandState(brandId: number): BrandEditState | undefined {
+  return editState.value[brandId]
 }
 
 // ─── disabledAzsIds per brand: АЗС, занятые ДРУГИМИ брендами ─────────────────
@@ -102,7 +104,8 @@ async function loadBrands() {
   try {
     const resp = await apiStore.listBrands()
     brands.value = resp.items ?? []
-    // sync edit state for existing brands
+    // Инициализируем/синхронизируем editState для всех брендов после загрузки,
+    // чтобы шаблон мог обращаться к editState[brand.id] без мутирующих вызовов.
     for (const brand of brands.value) {
       if (editState.value[brand.id]) {
         // keep user edits in name/azsIds but refresh link from server
@@ -111,7 +114,17 @@ async function loadBrands() {
           editState.value[brand.id].showLinkBox = true
         }
       } else {
-        ensureEditState(brand)
+        editState.value[brand.id] = {
+          name: brand.name,
+          azsIds: [...brand.azsIds],
+          isRenameSaving: false,
+          isAzsSaving: false,
+          isDeleting: false,
+          isLinkLoading: false,
+          link: brand.externalLink ?? '',
+          linkCopied: false,
+          showLinkBox: Boolean(brand.externalLink)
+        }
       }
     }
   } catch (error) {
@@ -190,6 +203,8 @@ async function saveAzs(brand: BrandItem) {
     const resp = await apiStore.setBrandAzs(brand.id, state.azsIds)
     const idx = brands.value.findIndex(b => b.id === brand.id)
     if (idx !== -1) brands.value[idx] = resp.item
+    // Синхронизируем editState нормализованным составом от сервера
+    editState.value[brand.id].azsIds = [...resp.item.azsIds]
     toast.success(`Состав АЗС бренда «${brand.name}» сохранён`)
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Не удалось сохранить состав АЗС'
@@ -413,7 +428,7 @@ onUnmounted(() => {
               variant="ghost"
               size="sm"
               label="Удалить бренд"
-              :loading="ensureEditState(brand).isDeleting"
+              :loading="getBrandState(brand.id)?.isDeleting"
               loading-auto
               @click="deleteBrand(brand)"
             />
@@ -427,7 +442,7 @@ onUnmounted(() => {
           </p>
           <div class="flex gap-2">
             <B24Input
-              v-model="ensureEditState(brand).name"
+              v-model="editState[brand.id].name"
               class="flex-1"
               placeholder="Название бренда"
             />
@@ -435,7 +450,7 @@ onUnmounted(() => {
               color="air-secondary"
               size="sm"
               label="Сохранить"
-              :loading="ensureEditState(brand).isRenameSaving"
+              :loading="getBrandState(brand.id)?.isRenameSaving"
               loading-auto
               @click="renameBrand(brand)"
             />
@@ -448,7 +463,7 @@ onUnmounted(() => {
             АЗС бренда
           </p>
           <AzsMultiSelect
-            v-model="ensureEditState(brand).azsIds"
+            v-model="editState[brand.id].azsIds"
             :options="azsOptions.length ? azsOptions : undefined"
             :disabled-azs-ids="getDisabledAzsIds(brand.id)"
             label="АЗС"
@@ -459,7 +474,7 @@ onUnmounted(() => {
               color="air-primary"
               size="sm"
               label="Сохранить состав АЗС"
-              :loading="ensureEditState(brand).isAzsSaving"
+              :loading="getBrandState(brand.id)?.isAzsSaving"
               loading-auto
               @click="saveAzs(brand)"
             />
@@ -483,15 +498,15 @@ onUnmounted(() => {
 
           <!-- Link box -->
           <div
-            v-if="ensureEditState(brand).showLinkBox && ensureEditState(brand).link"
+            v-if="getBrandState(brand.id)?.showLinkBox && getBrandState(brand.id)?.link"
             class="mb-3 rounded-lg border border-(--ui-color-base-20) bg-(--ui-color-base-5) p-3 space-y-2"
           >
             <div class="flex gap-2 items-center flex-wrap">
-              <code class="flex-1 break-all text-xs text-(--ui-color-base-80) select-all">{{ ensureEditState(brand).link }}</code>
+              <code class="flex-1 break-all text-xs text-(--ui-color-base-80) select-all">{{ getBrandState(brand.id)?.link }}</code>
               <B24Button
-                :color="ensureEditState(brand).linkCopied ? 'air-primary-success' : 'air-secondary'"
+                :color="getBrandState(brand.id)?.linkCopied ? 'air-primary-success' : 'air-secondary'"
                 size="xs"
-                :label="ensureEditState(brand).linkCopied ? 'Скопировано!' : 'Скопировать'"
+                :label="getBrandState(brand.id)?.linkCopied ? 'Скопировано!' : 'Скопировать'"
                 @click="copyLink(brand.id)"
               />
             </div>
@@ -503,10 +518,10 @@ onUnmounted(() => {
           <!-- Actions -->
           <div class="flex flex-wrap gap-2 items-start">
             <B24Button
-              :color="ensureEditState(brand).link ? 'air-secondary' : 'air-primary'"
+              :color="getBrandState(brand.id)?.link ? 'air-secondary' : 'air-primary'"
               size="sm"
-              :label="ensureEditState(brand).link ? 'Обновить ссылку' : 'Получить ссылку'"
-              :loading="ensureEditState(brand).isLinkLoading"
+              :label="getBrandState(brand.id)?.link ? 'Обновить ссылку' : 'Получить ссылку'"
+              :loading="getBrandState(brand.id)?.isLinkLoading"
               loading-auto
               @click="getExternalLink(brand)"
             />
