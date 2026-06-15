@@ -264,10 +264,13 @@ const loadRemarkTemplates = async () => {
 
 // ── Отправка (С1/С2) ─────────────────────────────────────────────────────
 const isSending = ref(false)
+// Ошибка отправки замечания — показываем ВНУТРИ панели (видна при открытом лайтбоксе)
+const sendError = ref('')
 
 const handleSend = async ({ recipientRole }: { recipientRole: 'manager' | 'admin' }) => {
   if (isSending.value || marks.value.size === 0) return
   isSending.value = true
+  sendError.value = ''
   try {
     const photos = [...marks.value.values()].map(m => ({
       reportId: m.reportId,
@@ -297,7 +300,12 @@ const handleSend = async ({ recipientRole }: { recipientRole: 'manager' | 'admin
       }
     }
     const n = marks.value.size
-    toast.success(`Отправлено: ${rec.recipientName} (АЗС ${rec.azsId}) — ${n} фото`)
+    if (rec.deliveryStatus === 'failed') {
+      toast.warning(`Отправлено частично: часть фото не доставлена — см. журнал замечаний`)
+    } else {
+      toast.success(`Отправлено: ${rec.recipientName} (АЗС ${rec.azsId}) — ${n} фото`)
+    }
+    sendError.value = ''
     // Закрыть лайтбокс если открыт (тост невидим под z-[210])
     if (lightboxOpen.value) {
       lightboxIndex.value = -1
@@ -308,7 +316,9 @@ const handleSend = async ({ recipientRole }: { recipientRole: 'manager' | 'admin
     draftAdmin.value = null
     draftRole.value = 'manager'
   } catch (e: unknown) {
-    toast.error(useErrorTextFn(e, 'Не удалось отправить замечание'))
+    const msg = useErrorTextFn(e, 'Не удалось отправить замечание')
+    sendError.value = msg
+    toast.error(msg)
     // Черновик НЕ теряем при ошибке
   } finally {
     isSending.value = false
@@ -734,6 +744,7 @@ watch(filters, () => {
       :draft-recipients-loading="recipientsLoading"
       :draft-templates="remarkTemplates"
       :draft-is-sending="isSending"
+      :draft-send-error="sendError"
       :has-more="Boolean(nextCursor)"
       :conflict-item="conflictItem"
       :conflict-message="conflictMessage"
