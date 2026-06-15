@@ -83,17 +83,22 @@ export const useAppInit = (loggerTitle?: string) => {
     // $logger.log('Init data >>', data)
 
     // Update stores with received data
+    // ВАЖНО: `?.` нужен и на `.data` — b24Helper может вернуть профиль/опции,
+    // где сам объект-обёртка есть, а `.data` ещё/уже undefined (transient при
+    // ре-инициализации хелпера во время SPA-навигации между страницами).
+    // Без второго `?.` чтение `.id`/`.version` падает с
+    // "Cannot read properties of undefined (reading 'id')" в initApp (mounted).
     user.initFromBatch({
-      id: data.profileData?.data.id ?? undefined,
-      name: data.profileData?.data.name ?? undefined,
-      lastName: data.profileData?.data.lastName ?? undefined,
-      isAdmin: data.profileData?.data.isAdmin
+      id: data.profileData?.data?.id ?? undefined,
+      name: data.profileData?.data?.name ?? undefined,
+      lastName: data.profileData?.data?.lastName ?? undefined,
+      isAdmin: data.profileData?.data?.isAdmin
     })
 
     appSettings.setB24($b24)
     appSettings.initFromBatch({
-      version: (data.appInfo?.data.version ?? 1),
-      status: data.appInfo?.data.status,
+      version: (data.appInfo?.data?.version ?? 1),
+      status: data.appInfo?.data?.status,
       configSettings: (data.appSettings?.data ?? new Map()).get('configSettings')
     })
 
