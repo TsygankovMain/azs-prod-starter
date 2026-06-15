@@ -145,14 +145,29 @@ export const createPhotoRemarkService = ({
       // commit mode: one call with all file IDs and a combined message
       const fileIds = [];
       const commentParts = [];
+      // Track which photos are included vs dropped (no diskObjectId)
+      const includedPhotos = [];
+      const droppedPhotos = [];
       for (const ph of photos) {
         const photoRow = await reportsStore.getPhoto(ph.reportId, ph.photoCode);
         if (photoRow?.diskObjectId) {
           fileIds.push(photoRow.diskObjectId);
           const text = String(ph.comment || '').trim();
           if (text) commentParts.push(`${ph.photoCode}: ${text}`);
+          includedPhotos.push(ph);
+        } else {
+          droppedPhotos.push(ph);
         }
       }
+
+      // Mark dropped photos as failed immediately — they were NOT sent
+      for (const ph of droppedPhotos) {
+        await remarkStore.markPhotoDelivery(
+          remarkId, ph.reportId, ph.photoCode,
+          'failed', `No disk object for ${ph.photoCode}`
+        );
+      }
+
       const combinedText = buildPhotoText({
         azsTitle,
         senderName,
@@ -164,14 +179,19 @@ export const createPhotoRemarkService = ({
           FILE_ID: fileIds,
           MESSAGE: combinedText
         }, adminContext);
-        // Mark all photos as sent
-        for (const ph of photos) {
+        // Mark only the actually-included photos as sent
+        for (const ph of includedPhotos) {
           await remarkStore.markPhotoDelivery(remarkId, ph.reportId, ph.photoCode, 'sent', null);
+        }
+        // Overall status: failed if any photos were dropped
+        if (droppedPhotos.length > 0) {
+          const dropError = `No disk object for ${droppedPhotos.map((p) => p.photoCode).join(', ')}`;
+          return { status: 'failed', error: dropError };
         }
         return { status: 'sent', error: null };
       } catch (err) {
         const errorText = String(err?.message || err || 'unknown error').slice(0, 1000);
-        for (const ph of photos) {
+        for (const ph of includedPhotos) {
           await remarkStore.markPhotoDelivery(remarkId, ph.reportId, ph.photoCode, 'failed', errorText);
         }
         return { status: 'failed', error: errorText };

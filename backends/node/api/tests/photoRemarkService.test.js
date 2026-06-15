@@ -397,6 +397,87 @@ test('UX-2: retryPhoto re-sends single photo with its stored comment', async () 
   assert.ok(uploadCalls[0].fields.message.includes('Сломан'), 'retry uses the stored per-photo comment');
 });
 
+// ---------------------------------------------------------------------------
+// BUG-P4: commit-mode must mark ONLY actually-included photos as 'sent';
+//         photos dropped because they lack diskObjectId must be marked 'failed'.
+// ---------------------------------------------------------------------------
+
+// Test A — RED: commit-mode batch with 2 photos: one WITH diskObjectId, one WITHOUT.
+// The without-diskObjectId photo must be marked 'failed', NOT 'sent'.
+test('BUG-P4 commit mode: photo without diskObjectId is marked failed, not sent', async () => {
+  const commitCalls = [];
+  const bitrixClient = createFakeBitrixClient({ commitCalls });
+  const remarkStore = createFakeRemarkStore();
+
+  // reportsStore: 'front' has diskObjectId, 'side' does NOT
+  const reportsStore = createFakeReportsStore({
+    '10:front': { diskObjectId: 1001, fileName: 'front.jpg', fileId: 9001 }
+    // '10:side' is absent → getPhoto returns null → no diskObjectId
+  });
+
+  const { svc } = makeService({ bitrixClient, remarkStore, reportsStore, mode: 'commit' });
+
+  const result = await svc.sendRemark({
+    azsId: '42', azsTitle: 'АЗС Тест', recipientRole: 'admin',
+    photos: [
+      { reportId: 10, photoCode: 'front', comment: 'Есть фото' },
+      { reportId: 10, photoCode: 'side',  comment: 'Нет фото на диске' }
+    ],
+    sender: { id: 5, name: 'Ревизор' }
+  });
+
+  // Overall status: failed because not all photos could be included
+  assert.equal(result.deliveryStatus, 'failed', 'overall status should be failed when a photo is dropped');
+
+  // im.disk.file.commit was still called (with the 1 file that had diskObjectId)
+  assert.equal(commitCalls.length, 1, 'commit called once');
+  assert.deepEqual(commitCalls[0].FILE_ID, [1001], 'only the photo with diskObjectId included');
+
+  const stored = remarkStore.records.get(result.id);
+  assert.ok(stored, 'record exists in store');
+
+  const frontPhoto = stored.photos.find((p) => p.photoCode === 'front');
+  assert.ok(frontPhoto, 'front photo is in record');
+  assert.equal(frontPhoto.deliveryStatus, 'sent', 'front photo (with diskObjectId) is marked sent');
+
+  const sidePhoto = stored.photos.find((p) => p.photoCode === 'side');
+  assert.ok(sidePhoto, 'side photo is in record');
+  assert.equal(sidePhoto.deliveryStatus, 'failed', 'side photo (no diskObjectId) must be marked failed, NOT sent');
+  assert.ok(sidePhoto.deliveryError, 'side photo has an error message');
+});
+
+// Test B — regression guard: all photos have diskObjectId → all marked sent.
+test('BUG-P4 commit mode: all photos with diskObjectId → all marked sent (no regression)', async () => {
+  const commitCalls = [];
+  const bitrixClient = createFakeBitrixClient({ commitCalls });
+  const remarkStore = createFakeRemarkStore();
+  const reportsStore = createFakeReportsStore({
+    '10:front': { diskObjectId: 1001, fileName: 'front.jpg', fileId: 9001 },
+    '10:back':  { diskObjectId: 1003, fileName: 'back.jpg',  fileId: 9003 }
+  });
+
+  const { svc } = makeService({ bitrixClient, remarkStore, reportsStore, mode: 'commit' });
+
+  const result = await svc.sendRemark({
+    azsId: '42', azsTitle: 'АЗС Юг', recipientRole: 'admin',
+    photos: [
+      { reportId: 10, photoCode: 'front', comment: 'Ок' },
+      { reportId: 10, photoCode: 'back',  comment: 'Ок' }
+    ],
+    sender: { id: 5, name: 'Ревизор' }
+  });
+
+  assert.equal(result.deliveryStatus, 'sent', 'overall status sent when all photos included');
+  assert.equal(commitCalls.length, 1, 'one commit call');
+  assert.deepEqual(commitCalls[0].FILE_ID, [1001, 1003], 'both file IDs included');
+
+  const stored = remarkStore.records.get(result.id);
+  const frontPhoto = stored.photos.find((p) => p.photoCode === 'front');
+  const backPhoto  = stored.photos.find((p) => p.photoCode === 'back');
+  assert.equal(frontPhoto.deliveryStatus, 'sent', 'front photo marked sent');
+  assert.equal(backPhoto.deliveryStatus,  'sent', 'back photo marked sent');
+});
+
 test('retryRemark: sends to stored recipientUserId, no new insertRemark', async () => {
   const uploadCalls = [];
   const remarkStore = createFakeRemarkStore();
