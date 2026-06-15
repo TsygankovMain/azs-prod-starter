@@ -1468,7 +1468,7 @@ export const createReportsRouter = ({
       const currentPhotos = await reportsStore.listPhotos(reportId);
       const uploadedCodes = new Set(currentPhotos.map((photo) => normalizePhotoCode(photo.photoCode)));
       const allRequiredUploaded = requiredCodes.every((code) => uploadedCodes.has(code));
-      const nextStatus = 'in_progress';
+      const nextStatus = allRequiredUploaded ? 'done' : 'in_progress';
       await reportsStore.setReportStatus({
         reportId,
         status: nextStatus
@@ -1494,7 +1494,7 @@ export const createReportsRouter = ({
           fileName: uploaded.fileName,
           folderId: uploaded.folderId,
           status: nextStatus,
-          completed: false,
+          completed: allRequiredUploaded,
           allUploaded: allRequiredUploaded,
           uploadedCount: uploadedCodes.size,
           requiredCount: requiredCodes.length,
