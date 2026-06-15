@@ -10,9 +10,17 @@
  *   POST   /:id/external-link   — получить/обновить внешнюю ссылку на папку Диска
  *
  * Гейт: capabilities.settings (admin). BUG-A8: disk-вызовы — под admin-OAuth (getAdminContext).
+ *
+ * S8-B2a: корень папки бренда резолвится через ensureRootFolder (тот же механизм,
+ * что photo-upload) на основе settings.disk.rootFolderId + BITRIX_DISK_STORAGE_ROOT_ID.
+ * Имя папки санитизируется через sanitizeSegment перед созданием.
  */
 
 import express from 'express';
+import {
+  ensureRootFolder as defaultEnsureRootFolder,
+  sanitizeSegment
+} from '../disk/diskService.js';
 
 // ---------------------------------------------------------------------------
 // Guard
@@ -36,7 +44,8 @@ export const createBrandRouter = ({
   brandStore,
   bitrixClient,
   getAdminContext,
-  diskRootFolderId = 0
+  settingsStore = null,
+  ensureRootFolder = defaultEnsureRootFolder
 } = {}) => {
   if (!brandStore) throw new Error('brandStore is required');
   if (!bitrixClient) throw new Error('bitrixClient is required');
@@ -136,8 +145,10 @@ export const createBrandRouter = ({
   // Алгоритм:
   //   1. Получить бренд из БД.
   //   2. Если нет папки Диска (disk_folder_id = null):
-  //      a. Создать папку через diskApi.createFolder(diskRootFolderId, brandName, adminCtx)
-  //      b. Сохранить setBrandDiskFolder(brandId, folderId, brandName)
+  //      a. Резолвить корневую папку через ensureRootFolder (settings.disk.rootFolderId /
+  //         BITRIX_DISK_STORAGE_ROOT_ID) — тот же механизм, что photo-upload (S8-B2a).
+  //      b. Создать папку через diskApi.createFolder(rootId, sanitizedName, adminCtx)
+  //      c. Сохранить setBrandDiskFolder(brandId, folderId, sanitizedName)
   //   3. Вызвать diskApi.getExternalLink(folderId, adminCtx)
   //   4. Сохранить setBrandExternalLink(brandId, link)
   //   5. Вернуть { link }
@@ -159,8 +170,20 @@ export const createBrandRouter = ({
 
       // Шаг 2: создать папку если нет
       if (!folderId) {
-        const folderName = String(brand.name || `brand_${id}`).trim();
-        const rootId = Number(diskRootFolderId) || 0;
+        // S8-B2a: корень резолвится через ensureRootFolder (как photo-upload),
+        // а не через env DISK_ROOT_FOLDER_ID.
+        const settings = settingsStore ? await settingsStore.read({ context: adminCtx }) : {};
+        const rootId = await ensureRootFolder(
+          diskApi,
+          {
+            configuredRootFolderId: Number(settings.disk?.rootFolderId || 0),
+            storageRootId: Number(process.env.BITRIX_DISK_STORAGE_ROOT_ID || 1),
+            appFolderName: process.env.BITRIX_DISK_APP_FOLDER || 'AZS-Photo-Reports'
+          },
+          adminCtx
+        );
+        // S8-B2a ISSUE-3: санитизируем имя перед созданием папки
+        const folderName = sanitizeSegment(String(brand.name || `brand_${id}`).trim(), `brand_${id}`);
         const created = await diskApi.createFolder(rootId, folderName, adminCtx);
         folderId = Number(created.id);
         await brandStore.setBrandDiskFolder(id, folderId, folderName);

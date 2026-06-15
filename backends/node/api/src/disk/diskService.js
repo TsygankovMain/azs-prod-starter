@@ -329,6 +329,8 @@ export const uploadPhoto = async (diskApi, {
   };
 };
 
+export { sanitizeSegment };
+
 export const diskNaming = {
   DEFAULT_FOLDER_TEMPLATE,
   sanitizeSegment
