@@ -380,3 +380,180 @@ test('computeExecuteAt: jitter applied after tz conversion — base 0900 MSK + j
   });
   assert.equal(executeAt.toISOString(), '2026-06-10T05:00:00.000Z');
 });
+
+// ---------------------------------------------------------------------------
+// S8-A2: generateDailyPlan — режим A из профиля
+// ---------------------------------------------------------------------------
+
+// Хелперы для A2-тестов
+const makeSettingsWithProfileA = (overrides = {}) => ({
+  timezone: 'Europe/Moscow',
+  report: {
+    dispatchTimes: ['09:00', '12:00'],   // глобальные — НЕ должны влиять на профильную АЗС
+    dispatchJitterMinutes: 15,
+    workWindow: { start: '07:00', end: '14:00' }
+  },
+  dispatchProfiles: [
+    {
+      id: 'profile-a',
+      name: 'Тестовый профиль A',
+      azsIds: ['azs-profile'],
+      mode: 'A',
+      config: {
+        slots: ['14:00', '22:00'],
+        jitterMinutes: 0
+      }
+    }
+  ],
+  ...overrides
+});
+
+test('S8-A2: АЗС в профиле режима A → план строится по slots профиля, не по глобальным dispatchTimes', async () => {
+  const store = makeFakePlanStore();
+  await generateDailyPlan({
+    planDate: '2026-06-20',
+    candidates: [{ azsId: 'azs-profile', adminUserId: 201 }],
+    settings: makeSettingsWithProfileA(),
+    planStore: store,
+    rng: () => 0.5   // jitter=0, rng не влияет
+  });
+
+  // Должны быть ровно 2 записи — по слотам профиля ['14:00', '22:00']
+  assert.equal(store.calls.length, 2, 'ровно 2 точки по slots профиля');
+
+  const baseTimes = store.calls.map((c) => c.baseTime).sort();
+  assert.deepEqual(baseTimes, ['1400', '2200'], 'baseTimes из slots профиля');
+
+  // executeAt для 14:00 MSK = 11:00 UTC
+  const call14 = store.calls.find((c) => c.baseTime === '1400');
+  assert.ok(call14, 'должна быть запись для baseTime=1400');
+  assert.equal(call14.executeAt.toISOString(), '2026-06-20T11:00:00.000Z',
+    '14:00 MSK (UTC+3) = 11:00 UTC');
+
+  // executeAt для 22:00 MSK = 19:00 UTC
+  const call22 = store.calls.find((c) => c.baseTime === '2200');
+  assert.ok(call22, 'должна быть запись для baseTime=2200');
+  assert.equal(call22.executeAt.toISOString(), '2026-06-20T19:00:00.000Z',
+    '22:00 MSK (UTC+3) = 19:00 UTC');
+});
+
+test('S8-A2: АЗС без профиля (null) → глобальные dispatchTimes (регресс-гард)', async () => {
+  const store = makeFakePlanStore();
+  // settings с профилем, но АЗС НЕ в нём
+  await generateDailyPlan({
+    planDate: '2026-06-20',
+    candidates: [{ azsId: 'azs-global', adminUserId: 202 }],
+    settings: makeSettingsWithProfileA(),   // профиль только для 'azs-profile'
+    planStore: store,
+    rng: () => 0
+  });
+
+  // Должны быть 2 записи из глобальных ['09:00', '12:00']
+  assert.equal(store.calls.length, 2, 'ровно 2 точки по глобальным dispatchTimes');
+  const baseTimes = store.calls.map((c) => c.baseTime).sort();
+  assert.deepEqual(baseTimes, ['0900', '1200'], 'baseTimes из глобального settings.report.dispatchTimes');
+});
+
+test('S8-A2: АЗС в профиле режима B → пропускается (TODO A3), нет точек, не падает', async () => {
+  const store = makeFakePlanStore();
+  const settingsWithB = {
+    timezone: 'Europe/Moscow',
+    report: {
+      dispatchTimes: ['09:00'],
+      dispatchJitterMinutes: 0
+    },
+    dispatchProfiles: [{
+      id: 'profile-b',
+      name: 'Режим B тест',
+      azsIds: ['azs-mode-b'],
+      mode: 'B',
+      config: {
+        windows: [{ from: '06:00', to: '10:00' }],
+        escalateUntilDone: true
+      }
+    }]
+  };
+
+  // НЕ должно бросать исключение
+  let thrown = null;
+  try {
+    await generateDailyPlan({
+      planDate: '2026-06-20',
+      candidates: [{ azsId: 'azs-mode-b', adminUserId: 203 }],
+      settings: settingsWithB,
+      planStore: store
+    });
+  } catch (e) {
+    thrown = e;
+  }
+
+  assert.equal(thrown, null, 'не должно бросать исключение для режима B');
+  // Режим B ещё не реализован (A3) → 0 точек плана от этой АЗС
+  assert.equal(store.calls.length, 0, 'режим B пока не генерирует точки (A3)');
+});
+
+test('S8-A2: несколько АЗС — часть в профиле A, часть без — каждая по своему источнику', async () => {
+  const store = makeFakePlanStore();
+  await generateDailyPlan({
+    planDate: '2026-06-20',
+    candidates: [
+      { azsId: 'azs-profile', adminUserId: 201 },  // в профиле A → slots ['14:00','22:00']
+      { azsId: 'azs-global', adminUserId: 202 }    // без профиля → глобальные ['09:00','12:00']
+    ],
+    settings: makeSettingsWithProfileA(),
+    planStore: store,
+    rng: () => 0
+  });
+
+  // Всего 4 записи: 2 от профильной + 2 от глобальной
+  assert.equal(store.calls.length, 4, '2 кандидата × 2 слота каждый = 4 точки');
+
+  const profileCalls = store.calls.filter((c) => c.azsId === 'azs-profile');
+  const globalCalls = store.calls.filter((c) => c.azsId === 'azs-global');
+
+  assert.equal(profileCalls.length, 2, 'профильная АЗС — 2 точки');
+  assert.equal(globalCalls.length, 2, 'глобальная АЗС — 2 точки');
+
+  const profileBaseTimes = profileCalls.map((c) => c.baseTime).sort();
+  assert.deepEqual(profileBaseTimes, ['1400', '2200'], 'профильная АЗС — slots из профиля');
+
+  const globalBaseTimes = globalCalls.map((c) => c.baseTime).sort();
+  assert.deepEqual(globalBaseTimes, ['0900', '1200'], 'глобальная АЗС — из settings.report.dispatchTimes');
+});
+
+test('S8-A2: профиль режима A использует jitterMinutes из профиля, а не глобальный', async () => {
+  const store = makeFakePlanStore();
+  // Профиль с jitterMinutes=30, глобальный jitter=0
+  const settings = {
+    timezone: 'Europe/Moscow',
+    report: {
+      dispatchTimes: ['09:00'],
+      dispatchJitterMinutes: 0   // глобальный jitter = 0
+    },
+    dispatchProfiles: [{
+      id: 'p-jitter',
+      name: 'С джиттером',
+      azsIds: ['azs-jitter'],
+      mode: 'A',
+      config: {
+        slots: ['14:00'],
+        jitterMinutes: 30    // профильный jitter = 30
+      }
+    }]
+  };
+
+  // rng=0.99 → jitter≈+30 мин
+  await generateDailyPlan({
+    planDate: '2026-06-20',
+    candidates: [{ azsId: 'azs-jitter', adminUserId: 204 }],
+    settings,
+    planStore: store,
+    rng: () => 0.99
+  });
+
+  assert.equal(store.calls.length, 1);
+  const call = store.calls[0];
+  // jitterMinutes должен быть ненулевым (из профиля), а не 0 (глобальный)
+  assert.notEqual(call.jitterMinutes, 0, 'jitter берётся из профиля (30), а не из глобального (0)');
+  assert.ok(call.jitterMinutes > 0, 'положительный jitter при rng=0.99 и профильном jitter=30');
+});
