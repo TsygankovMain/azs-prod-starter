@@ -120,7 +120,6 @@ export const createBotCommandHandler = ({
    */
   const handleCommand = async ({ userId, dialogId, reportId, azsId, context = {} }) => {
     reasonCaptureStore.setAwaiting({ userId, dialogId, reportId, azsId });
-    console.log('bot_reason_dbg cmd_await_set', { userId, dialogId, reportId }); // TEMP DEBUG (reason-flow) — удалить после диагностики
 
     // Quick-reply buttons from the reason catalog (ACTION:SEND sends the label as
     // a message → handleMessage maps it back to a code). Faster than typing; the
@@ -155,9 +154,7 @@ export const createBotCommandHandler = ({
    */
   const handleMessage = async ({ userId, dialogId, text, context = {} }) => {
     const state = reasonCaptureStore.getAwaiting({ userId, dialogId });
-    console.log('bot_reason_dbg msg_awaiting', { found: Boolean(state), userId, dialogId }); // TEMP DEBUG (reason-flow) — удалить после диагностики
     if (!state) {
-      console.log('bot_reason_dbg msg_no_awaiting', { userId, dialogId }); // TEMP DEBUG (reason-flow) — удалить после диагностики
       return false; // not awaiting — ignore
     }
 
@@ -173,7 +170,6 @@ export const createBotCommandHandler = ({
     // Map the text to a catalog reason code when it matches a known label.
     const reasons = await loadReasons();
     const { reasonCode, reasonText } = resolveReason(trimmed, reasons);
-    console.log('bot_reason_dbg msg_reason_resolved', { reportId: state.reportId, code: reasonCode }); // TEMP DEBUG (reason-flow) — удалить после диагностики
 
     try {
       await reasonStore.upsert({
