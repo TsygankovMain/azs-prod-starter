@@ -200,7 +200,7 @@ test('pre-computed scheduledAt is used verbatim, jitter NOT re-applied', async (
     // Without this, the real wall clock (2026-06-15) would be > scheduledAt and the
     // deadline would shift to now+30min, which is not what this test validates.
     // (BUG-024 fix: if nowFn > scheduledAt the deadline uses now instead — correct)
-    nowFn: () => new Date('2026-05-04T00:00:00.000Z'),
+    nowFn: () => new Date('2026-05-03T00:00:00.000Z'),
     rng: () => { rngCallCount += 1; return 0; } // would give -240 if called
   });
 

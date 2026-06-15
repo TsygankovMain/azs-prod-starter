@@ -34,19 +34,6 @@ const makeSettings = (timeoutMinutes = 60) => ({
   }
 });
 
-/** Вспомогательная ф-ция: строит сервис с фиксированным nowFn. */
-const makeService = ({ nowFn, rng, store }) =>
-  createDispatchService({
-    dispatchLogStore: store,
-    settingsStore: { async read() { return makeSettings(60); } },
-    bitrixClient: {
-      async createReportItem() { return { reportItemId: 5555 }; }
-    },
-    notificationService: { async notifyDispatch() {} },
-    nowFn,
-    rng: rng ?? (() => 0.5)
-  });
-
 // ---------------------------------------------------------------------------
 // Test A: опоздавший воркер, non-precomputed ветка
 // Плановый слот 12:00 UTC, now = 14:00 UTC, timeout = 60 мин.
