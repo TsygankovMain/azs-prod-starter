@@ -180,3 +180,146 @@ test('BUG-024-C: precomputed branch, stale scheduledAt — deadline must be now+
     `deadlineAt (${deadlineAt.toISOString()}) must be after now (${now.toISOString()})`
   );
 });
+
+// ---------------------------------------------------------------------------
+// LOGIC-D2: непредвычисленный dispatch считает слот в таймзоне настроек
+//
+// Test D: non-precomputed кандидат, timezone='Europe/Moscow' (UTC+3)
+// Слот 09:00 по Москве = 06:00 UTC.
+// При tz-корректном расчёте scheduledAt/begindate должен быть 06:00 UTC.
+// При текущем коде (parseSlotDateTimeUtc) будет 09:00 UTC — БАГ.
+// ---------------------------------------------------------------------------
+test('LOGIC-D2-D: non-precomputed, timezone=Europe/Moscow → scheduledAt=06:00 UTC (09:00 Moscow)', async () => {
+  const markDoneCalls = [];
+  const createdReports = [];
+
+  const store = {
+    async reserve() { return { reserved: true, id: 200 }; },
+    async markDone(args) { markDoneCalls.push(args); },
+    async markFailed() {}
+  };
+
+  // nowFn is before the slot so effectiveBase = scheduledAt (no late-dispatch distortion)
+  const now = new Date('2026-06-10T03:00:00.000Z'); // well before 06:00 UTC
+  const timeoutMinutes = 60;
+
+  const service = createDispatchService({
+    dispatchLogStore: store,
+    settingsStore: { async read() { return {}; } },
+    bitrixClient: {
+      async createReportItem(payload) {
+        createdReports.push(payload);
+        return { reportItemId: 6001 };
+      }
+    },
+    notificationService: { async notifyDispatch() {} },
+    nowFn: () => now,
+    rng: () => 0 // jitter = 0
+  });
+
+  const settings = {
+    timezone: 'Europe/Moscow', // UTC+3
+    report: {
+      entityTypeId: 163,
+      timeoutMinutes,
+      dispatchJitterMinutes: 0,
+      fields: {},
+      stages: { new: 'DT163_1:NEW' }
+    }
+  };
+
+  const candidate = {
+    azsId: 'azs-D',
+    adminUserId: 10,
+    slotDate: '2026-06-10',
+    slotHHmm: '0900' // 09:00 Moscow = 06:00 UTC
+    // NO scheduledAt → non-precomputed branch
+  };
+
+  const result = await service.dispatchCandidate({ candidate, settings, trigger: 'auto' });
+
+  assert.equal(result.ok, true, 'dispatch must succeed');
+  assert.equal(markDoneCalls.length, 1);
+  assert.equal(createdReports.length, 1);
+
+  // 09:00 Moscow (UTC+3) = 06:00 UTC
+  const expectedScheduledAt = '2026-06-10T06:00:00.000Z';
+  assert.equal(
+    markDoneCalls[0].scheduledAt.toISOString(),
+    expectedScheduledAt,
+    `scheduledAt must be 06:00 UTC (09:00 Moscow), got ${markDoneCalls[0].scheduledAt.toISOString()}`
+  );
+  assert.equal(
+    createdReports[0].fields.begindate,
+    expectedScheduledAt,
+    `begindate must be 06:00 UTC (09:00 Moscow), got ${createdReports[0].fields.begindate}`
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Test E: legacy fallback — без timezone (или пустая строка) → поведение UTC
+// Слот 09:00, timezone не задан → scheduledAt = 09:00 UTC (прежнее поведение).
+// ---------------------------------------------------------------------------
+test('LOGIC-D2-E: non-precomputed, no timezone → legacy UTC (scheduledAt=09:00 UTC)', async () => {
+  const markDoneCalls = [];
+  const createdReports = [];
+
+  const store = {
+    async reserve() { return { reserved: true, id: 201 }; },
+    async markDone(args) { markDoneCalls.push(args); },
+    async markFailed() {}
+  };
+
+  const now = new Date('2026-06-10T03:00:00.000Z');
+
+  const service = createDispatchService({
+    dispatchLogStore: store,
+    settingsStore: { async read() { return {}; } },
+    bitrixClient: {
+      async createReportItem(payload) {
+        createdReports.push(payload);
+        return { reportItemId: 6002 };
+      }
+    },
+    notificationService: { async notifyDispatch() {} },
+    nowFn: () => now,
+    rng: () => 0
+  });
+
+  const settings = {
+    // No timezone — legacy UTC path
+    report: {
+      entityTypeId: 163,
+      timeoutMinutes: 60,
+      dispatchJitterMinutes: 0,
+      fields: {},
+      stages: { new: 'DT163_1:NEW' }
+    }
+  };
+
+  const candidate = {
+    azsId: 'azs-E',
+    adminUserId: 11,
+    slotDate: '2026-06-10',
+    slotHHmm: '0900'
+    // NO scheduledAt → non-precomputed branch
+  };
+
+  const result = await service.dispatchCandidate({ candidate, settings, trigger: 'auto' });
+
+  assert.equal(result.ok, true, 'dispatch must succeed');
+  assert.equal(markDoneCalls.length, 1);
+
+  // Without timezone, slot is treated as UTC: 09:00 UTC
+  const expectedScheduledAt = '2026-06-10T09:00:00.000Z';
+  assert.equal(
+    markDoneCalls[0].scheduledAt.toISOString(),
+    expectedScheduledAt,
+    `scheduledAt must be 09:00 UTC (legacy fallback), got ${markDoneCalls[0].scheduledAt.toISOString()}`
+  );
+  assert.equal(
+    createdReports[0].fields.begindate,
+    expectedScheduledAt,
+    `begindate must be 09:00 UTC (legacy fallback), got ${createdReports[0].fields.begindate}`
+  );
+});
