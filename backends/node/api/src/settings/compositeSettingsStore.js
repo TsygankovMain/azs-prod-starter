@@ -90,9 +90,9 @@ export const createCompositeSettingsStore = ({
       // All attempts exhausted — throw a clear typed error.
       // Do NOT write DB: a DB-only write would be clobbered by stale Bitrix data
       // on the next successful read() (Bitrix is source-of-truth).
-      const err = new Error('Не удалось сохранить настройки в Bitrix (источник истины). Повторите попытку.');
+      logger.error('settings.bitrix_write_failed', { attempts: maxWriteAttempts, message: lastError?.message });
+      const err = new Error('Не удалось сохранить настройки в Bitrix (источник истины). Повторите попытку.', { cause: lastError });
       err.code = 'settings_bitrix_write_failed';
-      err.cause = lastError;
       throw err;
     }
   };
