@@ -2,11 +2,15 @@
  * Security tests for POST /api/bot/event shared-secret gate and
  * botRegistryService event handler URL construction.
  *
- * TDD: tests written FIRST — all must fail before the implementation is added.
+ * The gate decision is delegated to the REAL checkBotEventSecret from
+ * src/security/botEventGate.js — no inline duplicate logic here.
+ * Authoritative unit tests for the gate function itself live in
+ * tests/botEventGate.test.js.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createBotRegistryService } from '../src/notifications/botRegistryService.js';
+import { checkBotEventSecret } from '../src/security/botEventGate.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -14,27 +18,22 @@ import { createBotRegistryService } from '../src/notifications/botRegistryServic
  * Build a minimal route handler that mirrors the /api/bot/event logic in
  * server.js, but is importable without a running server.
  *
- * The real guard is a few lines in server.js; we test the same logic here by
- * extracting it into a verifyBotEventSecret() helper that server.js will call.
- */
-
-/**
- * Inline copy of the guard logic (kept deliberately simple).
- * The actual implementation in server.js must follow the same semantics:
+ * Uses the REAL checkBotEventSecret for the gate decision — identical semantics
+ * to production.
  *
- *   const secret = process.env.JOB_SECRET;
- *   if (secret && req.query.s !== secret) → 200 {ok:true, handled:false}
- *   if (!secret) → log warning once, proceed
+ * Gate decisions:
+ *   'reject'    → JOB_SECRET set but ?s missing/wrong → 200 {ok:true, handled:false}
+ *   'no-secret' → JOB_SECRET unset → log once, return 200 {ok:true, handled:false}
+ *   'ok'        → JOB_SECRET set and ?s matches → fall through to event processing
  */
 function makeEventHandler({ jobSecret } = {}) {
   const recorded = [];
-  let warnLogged = false;
+  let _botEventUnverifiedWarned = false;
   const warns = [];
 
   const logger = {
     warn(...args) {
       warns.push(args.join(' '));
-      warnLogged = true;
     }
   };
 
@@ -59,25 +58,22 @@ function makeEventHandler({ jobSecret } = {}) {
     async getById() { return { azsId: 'azs-1' }; }
   };
 
-  // Mirror of the guard + route logic from server.js
+  // Mirror of the guard + route logic from server.js — uses production gate.
   const handler = async (req, res) => {
-    const secret = jobSecret !== undefined ? jobSecret : '';
-
-    // ── SECURITY GATE ──
-    if (secret) {
-      if (req.query.s !== secret) {
-        // Fail-closed: wrong or missing secret → silently ignore
-        logger.warn('bot event request rejected: wrong or missing ?s param');
-        return res.json({ ok: true, handled: false });
-      }
-    } else {
-      // No secret configured — log once and REJECT (fail-closed, BUG-S2)
-      if (!warnLogged) {
+    // ── SECURITY GATE (uses real checkBotEventSecret) ──
+    const decision = checkBotEventSecret(jobSecret, req.query.s);
+    if (decision === 'reject') {
+      logger.warn('bot event request rejected: wrong or missing ?s param');
+      return res.json({ ok: true, handled: false });
+    }
+    if (decision === 'no-secret') {
+      if (!_botEventUnverifiedWarned) {
+        _botEventUnverifiedWarned = true;
         logger.warn('JOB_SECRET not set — /api/bot/event is UNVERIFIED');
-        warnLogged = true;
       }
       return res.json({ ok: true, handled: false });
     }
+    // decision === 'ok' → fall through and process the event
 
     const body = req.body || {};
     const params = body?.data?.PARAMS || body?.PARAMS || {};
@@ -228,27 +224,6 @@ test('/api/bot/event: no JOB_SECRET configured → fail-closed, handler NOT call
   assert.equal(recorded.length, 0, 'handleCommand/handleMessage must NOT be called');
   assert.ok(warns.some((w) => w.toLowerCase().includes('unverified') || w.toLowerCase().includes('job_secret')),
     'must still log a one-time warning about missing JOB_SECRET');
-});
-
-// Flipped from old open-fallback behavior: originally asserted handled:true (OPEN),
-// now correctly asserts fail-closed. Keeping as a named regression guard.
-test('/api/bot/event: no JOB_SECRET configured → logs warning and does NOT process (regression guard)', async () => {
-  const { handler, recorded, warns } = makeEventHandler({ jobSecret: '' });
-
-  const req = makeReq({
-    body: {
-      EVENT: 'ONIMBOTMESSAGEADD',
-      PARAMS: { FROM_USER_ID: 9, DIALOG_ID: 'u9', COMMAND: 'REASON:10' }
-    },
-    query: {}  // no ?s — must be rejected even without a secret configured
-  });
-  const res = makeRes();
-  await handler(req, res);
-
-  assert.equal(res.state.payload?.handled, false, 'fail-closed: must reject when no secret configured');
-  assert.equal(recorded.length, 0, 'must NOT record the command');
-  assert.ok(warns.some((w) => w.toLowerCase().includes('unverified') || w.toLowerCase().includes('job_secret')),
-    'must log a warning about unverified endpoint');
 });
 
 // ─── botRegistryService: handler URL includes ?s=<SECRET> ────────────────────

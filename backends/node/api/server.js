@@ -42,6 +42,7 @@ import { createBotCommandHandler } from './src/notifications/botCommandHandler.j
 import { createReasonCaptureStore } from './src/notifications/reasonCaptureStore.js';
 import { resolveIsAdmin } from './src/auth/resolveIsAdmin.js';
 import { resolveInstallAdmin } from './src/auth/resolveInstallAdmin.js';
+import { checkBotEventSecret } from './src/security/botEventGate.js';
 import { validateRequiredEnv } from './utils/validateEnv.js';
 import { resolvePgSslConfig } from './utils/dbSsl.js';
 import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from './src/shared/transientErrors.js';
@@ -618,24 +619,19 @@ let _botEventUnverifiedWarned = false;
 app.post('/api/bot/event', async (req, res) => {
   try {
     // ── SECURITY GATE ─────────────────────────────────────────────────────────
-    const jobSecret = String(process.env.JOB_SECRET || '').trim();
-    if (jobSecret) {
-      // Secret IS configured → fail-closed: reject any request whose ?s param
-      // is missing or does not match. Return 200 so Bitrix24 does not retry.
-      if (req.query.s !== jobSecret) {
-        console.warn('/api/bot/event: rejected — wrong or missing ?s param (possible spoofed request)');
-        return res.json({ ok: true, handled: false });
-      }
-    } else {
-      // Secret NOT configured → fail-closed (BUG-S2): log once, then reject.
-      // The bot callback URL already embeds ?s=JOB_SECRET; without it the URL
-      // is misconfigured so failing closed does not break a correctly-configured bot.
+    const decision = checkBotEventSecret(process.env.JOB_SECRET, req.query.s);
+    if (decision === 'reject') {
+      console.warn('/api/bot/event: rejected — wrong or missing ?s param (possible spoofed request)');
+      return res.json({ ok: true, handled: false });
+    }
+    if (decision === 'no-secret') {
       if (!_botEventUnverifiedWarned) {
         _botEventUnverifiedWarned = true;
         console.warn('/api/bot/event: JOB_SECRET is not set — endpoint is UNVERIFIED; set JOB_SECRET in production');
       }
       return res.json({ ok: true, handled: false });
     }
+    // decision === 'ok' → fall through and process the event
     // ── END SECURITY GATE ─────────────────────────────────────────────────────
 
     // Bitrix24 chat-bots 2.0 deliver events in webhook mode as
