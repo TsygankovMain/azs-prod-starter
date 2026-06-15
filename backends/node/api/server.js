@@ -47,6 +47,7 @@ import { validateRequiredEnv } from './utils/validateEnv.js';
 import { resolvePgSslConfig } from './utils/dbSsl.js';
 import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from './src/shared/transientErrors.js';
 import { maskAuthFields } from './utils/maskSecret.js';
+import { resolveBotSettingsContext } from './src/notifications/botSettingsContext.js';
 
 try {
   validateRequiredEnv();
@@ -270,9 +271,15 @@ const backgroundContextForBot = async () => (
   webhookBackgroundContext ? webhookBackgroundContext : await getAdminContext()
 );
 // Reason catalog for the bot's quick-reply buttons (from settings).
+// BUG-A8: читаем настройки под adminContext (OAuth-приложение), т.к. app.option.get
+// требует контекст приложения — webhook получает 403 ACCESS_DENIED.
 const getBotReasons = async () => {
   try {
-    const settings = await settingsStore.read({ context: await backgroundContextForBot() });
+    const context = resolveBotSettingsContext({
+      adminContext: await getAdminContext(),
+      webhookContext: webhookBackgroundContext
+    });
+    const settings = await settingsStore.read({ context });
     return Array.isArray(settings.report?.reasons) ? settings.report.reasons : [];
   } catch {
     return [];
@@ -287,7 +294,13 @@ const onBotReasonCaptured = async ({ reportId, reasonCode = 'other', reasonText 
   }
   console.log('bot_reason_dbg report_found', { reportId, reportItemId: report.reportItemId, azsId: report.azsId, status: report.status }); // TEMP DEBUG (reason-flow) — удалить после диагностики
   const context = await backgroundContextForBot();
-  const settings = await settingsStore.read({ context });
+  // BUG-A8: читаем настройки под adminContext (OAuth) — app.option.get требует контекст
+  // приложения; вебхук возвращает 403. CRM-апдейт и forward остаются под context (webhook).
+  const settingsContext = resolveBotSettingsContext({
+    adminContext: await getAdminContext(),
+    webhookContext: webhookBackgroundContext
+  });
+  const settings = await settingsStore.read({ context: settingsContext });
   const { createReasonCatalog } = await import('./src/reports/reasonCatalog.js');
   const catalog = createReasonCatalog(Array.isArray(settings.report?.reasons) ? settings.report.reasons : []);
   const code = catalog.isValidCode(reasonCode) ? reasonCode : 'other';
