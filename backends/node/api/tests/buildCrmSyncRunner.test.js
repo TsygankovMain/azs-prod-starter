@@ -250,3 +250,130 @@ test('runner rejects on malformed JSON payload', async () => {
   const runSync = buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore });
   await assert.rejects(() => runSync({ report_id: 1, payload: 'not-json' }));
 });
+
+// ---------------------------------------------------------------------------
+// FIX 3: Test the REAL production path — contextKey-only (no explicit domain/memberId).
+// Before FIX 1, jobs were enqueued with only contextKey. This test proves that
+// parsePortalFromContextKey is exercised correctly: portal A is resolved from the
+// contextKey even when portal B's admin is the globally-last stored admin.
+// ---------------------------------------------------------------------------
+
+test('FIX-3 contextKey-only path: runner resolves portal A admin via contextKey, not globally-last portal B admin', async () => {
+  const calls = { updates: [], portalLookups: [] };
+  const reportsStore = {
+    async getById(id) {
+      return { id, reportItemId: 88, status: 'in_progress', diskFolderId: 111 };
+    },
+    async listPhotos() { return []; }
+  };
+  const settingsStore = { async read() { return baseSettings; } };
+
+  const adminA = { key: 'memberA:domaina.bitrix24.ru:99', context: { authId: 'admin-tok-A', domain: 'domaina.bitrix24.ru', memberId: 'memberA', isAdmin: true } };
+  const adminB = { key: 'memberB:domainb.bitrix24.ru:1', context: { authId: 'admin-tok-B', domain: 'domainb.bitrix24.ru', memberId: 'memberB', isAdmin: true } };
+
+  const authContextStore = {
+    // Unscoped: returns B (stored last) — would be used by the broken legacy path
+    async getLastAdminContext() { return adminB; },
+    // Portal-scoped: returns correct admin per portal
+    async getLastAdminContextForPortal({ domain, memberId }) {
+      calls.portalLookups.push({ domain, memberId });
+      if (domain === 'domaina.bitrix24.ru' && memberId === 'memberA') return adminA;
+      if (domain === 'domainb.bitrix24.ru' && memberId === 'memberB') return adminB;
+      return null;
+    },
+    async getContextByKey() { return null; }
+  };
+
+  const bitrixClient = {
+    async updateReportItem(args) { calls.updates.push(args); return { id: 88 }; },
+    async getCrmItem() { return { UF_FOLDER: '111' }; }
+  };
+
+  // REAL production job shape (pre-FIX-1): only contextKey, NO explicit domain/memberId.
+  // contextKey encodes portal A identity: 'memberA:domaina.bitrix24.ru:99'
+  const runSync = buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore });
+  await runSync({
+    report_id: 42,
+    payload: JSON.stringify({
+      status: 'in_progress',
+      diskFolderId: 111,
+      contextKey: 'memberA:domaina.bitrix24.ru:99'
+      // NO explicit domain / memberId — the old enqueue shape
+    })
+  });
+
+  // Must have used portal-scoped lookup (not legacy unscoped)
+  assert.ok(
+    calls.portalLookups.length >= 1,
+    'getLastAdminContextForPortal must be called (contextKey was parsed into domain+memberId)'
+  );
+  assert.ok(
+    calls.portalLookups.some((l) => l.domain === 'domaina.bitrix24.ru' && l.memberId === 'memberA'),
+    'portal lookup must be for portal A (parsed from contextKey)'
+  );
+
+  // Must have used portal A's admin token, NOT portal B's
+  assert.equal(calls.updates.length, 1, 'exactly one CRM update expected');
+  assert.equal(
+    calls.updates[0].context.authId,
+    'admin-tok-A',
+    'must use portal A admin token (from contextKey parse), NOT globally-last portal B admin'
+  );
+  assert.notEqual(
+    calls.updates[0].context.authId,
+    'admin-tok-B',
+    'portal B admin (globally last) must NOT be used for a portal A job'
+  );
+});
+
+// FIX 3 (bonus): Legacy warn fires when contextKey is empty/unparseable (no portal identity at all).
+test('FIX-3 legacy warn: runner emits crm_sync_legacy_unscoped_context when contextKey is empty', async () => {
+  const calls = { updates: [], warns: [] };
+  const reportsStore = {
+    async getById(id) {
+      return { id, reportItemId: 55, status: 'in_progress', diskFolderId: 222 };
+    },
+    async listPhotos() { return []; }
+  };
+  const settingsStore = { async read() { return baseSettings; } };
+
+  const singleAdmin = { key: 'mX:solo.bitrix24.ru:1', context: { authId: 'solo-tok', domain: 'solo.bitrix24.ru', memberId: 'mX', isAdmin: true } };
+
+  const authContextStore = {
+    async getLastAdminContext() { return singleAdmin; },
+    async getLastAdminContextForPortal() { return null; },
+    async getContextByKey() { return null; }
+  };
+
+  const bitrixClient = {
+    async updateReportItem(args) { calls.updates.push(args); return { id: 55 }; },
+    async getCrmItem() { return { UF_FOLDER: '222' }; }
+  };
+
+  const logger = {
+    warn(...args) { calls.warns.push(args); },
+    info() {},
+    error() {}
+  };
+
+  // Job has NO contextKey (empty), NO domain, NO memberId — true legacy job
+  const runSync = buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore, logger });
+  await runSync({
+    report_id: 77,
+    payload: JSON.stringify({
+      status: 'in_progress',
+      diskFolderId: 222,
+      contextKey: ''
+    })
+  });
+
+  // Legacy path must warn before using unscoped context
+  assert.ok(
+    calls.warns.some((args) => String(args[0] || '') === 'crm_sync_legacy_unscoped_context'),
+    'must emit crm_sync_legacy_unscoped_context warning on legacy fallback'
+  );
+
+  // Still performs the CRM update (single-portal safe behavior is preserved)
+  assert.equal(calls.updates.length, 1, 'CRM update must still happen on single-portal legacy path');
+  assert.equal(calls.updates[0].context.authId, 'solo-tok', 'must use the unscoped admin token');
+});
