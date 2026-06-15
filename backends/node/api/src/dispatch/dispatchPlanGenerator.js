@@ -31,6 +31,76 @@ import { resolveProfileForAzs } from './dispatchProfileResolver.js';
 const MINUTES_TO_MS = 60 * 1000;
 
 // ---------------------------------------------------------------------------
+// S8-A3: Детерминированный PRNG (djb2 seed → mulberry32)
+// ---------------------------------------------------------------------------
+
+/**
+ * djb2 hash функция для строки.
+ * Возвращает 32-битное беззнаковое число (0..2^32-1).
+ * @param {string} str
+ * @returns {number}
+ */
+const djb2Hash = (str) => {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    // hash * 33 ^ char
+    hash = ((hash << 5) + hash) ^ str.charCodeAt(i);
+    hash = hash >>> 0; // force unsigned 32-bit
+  }
+  return hash >>> 0;
+};
+
+/**
+ * Mulberry32 PRNG — возвращает функцию rng() → [0, 1).
+ * Детерминирован при одном seed.
+ * @param {number} seed Unsigned 32-bit integer
+ * @returns {() => number}
+ */
+const makeMulberry32 = (seed) => {
+  let s = seed >>> 0;
+  return () => {
+    s |= 0;
+    s = s + 0x6D2B79F5 | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = t + Math.imul(t ^ (t >>> 7), 61 | t) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+/**
+ * Выбирает детерминированный случайный момент (HHMM) внутри одного окна.
+ * Seed = djb2(planDate + ':' + azsId + ':' + windowIndex).
+ *
+ * @param {string} planDate       'YYYY-MM-DD'
+ * @param {string} azsId          ID АЗС
+ * @param {{ from: string, to: string }} window  { from: 'HH:MM', to: 'HH:MM' }
+ * @param {number} windowIndex    Индекс окна (0 = primary, 1..N = reminder)
+ * @returns {string}              HHMM, детерминированный момент внутри окна
+ */
+export const pickRandomMomentInWindow = (planDate, azsId, window, windowIndex) => {
+  const seedStr = `${planDate}:${azsId}:${windowIndex}`;
+  const seed = djb2Hash(seedStr);
+  const rng = makeMulberry32(seed);
+
+  const fromHHMM = String(window.from || '').replace(':', '');
+  const toHHMM = String(window.to || '').replace(':', '');
+  const fromMinutes = Number(fromHHMM.slice(0, 2)) * 60 + Number(fromHHMM.slice(2, 4));
+  const toMinutes = Number(toHHMM.slice(0, 2)) * 60 + Number(toHHMM.slice(2, 4));
+
+  if (fromMinutes >= toMinutes) {
+    // Защита: вернуть начало окна если окно некорректное
+    return fromHHMM.padStart(4, '0');
+  }
+
+  const rangeMinutes = toMinutes - fromMinutes;
+  const pickedMinute = fromMinutes + Math.floor(rng() * rangeMinutes);
+
+  const h = Math.floor(pickedMinute / 60);
+  const m = pickedMinute % 60;
+  return `${String(h).padStart(2, '0')}${String(m).padStart(2, '0')}`;
+};
+
+// ---------------------------------------------------------------------------
 // Timezone helpers
 // ---------------------------------------------------------------------------
 
@@ -243,11 +313,158 @@ export const generateDailyPlan = async ({
     // S8-A2: резолвим профиль per-AZS
     const profile = resolveProfileForAzs(candidate.azsId, settings);
 
-    if (profile !== null && profile.mode === 'B') {
-      // TODO (A3): режим B — эскалация по окнам. Пока пропускаем без точек в плане.
-      // Не падаем, не дублируем. A3 реализует логику окон и escalateUntilDone.
-      continue;
+    // ---------------------------------------------------------------------------
+    // S8-A3: защитный гвард — неизвестный mode или невалидный config → warn + фоллбэк
+    // ---------------------------------------------------------------------------
+    if (profile !== null) {
+      const profileMode = profile.mode;
+      const profileConfig = profile.config;
+
+      // Проверяем: mode должен быть A или B, config должен быть непустым объектом
+      const hasValidMode = profileMode === 'A' || profileMode === 'B';
+      const hasValidConfig = profileConfig !== null && typeof profileConfig === 'object';
+
+      if (!hasValidMode || !hasValidConfig) {
+        logger.warn(
+          `[generateDailyPlan] Profile '${profile.id}' has invalid mode='${profileMode}' or missing config. ` +
+          `Falling back to global schedule for azsId='${candidate.azsId}'.`
+        );
+        // Фоллбэк: использовать глобальное расписание (то же что при profile=null)
+        for (const baseTime of baseTimes) {
+          const jitterMinutes = pickJitterMinutes(jitterLimit, rng);
+          const { executeAt } = computeExecuteAt({
+            planDate,
+            baseTime,
+            jitterMinutes,
+            workWindow,
+            timezone
+          });
+          await planStore.upsertPlanned({
+            planDate,
+            azsId: candidate.azsId,
+            adminUserId: Number(candidate.adminUserId),
+            baseTime,
+            executeAt,
+            jitterMinutes
+          });
+          planned += 1;
+        }
+        continue;
+      }
+
+      // Проверяем: режим A требует непустых slots, режим B — непустых windows
+      if (profileMode === 'A') {
+        const slots = normalizeBaseTimes(profileConfig.slots);
+        if (slots.length === 0) {
+          logger.warn(
+            `[generateDailyPlan] Profile '${profile.id}' mode A has no valid slots. ` +
+            `Falling back to global schedule for azsId='${candidate.azsId}'.`
+          );
+          for (const baseTime of baseTimes) {
+            const jitterMinutes = pickJitterMinutes(jitterLimit, rng);
+            const { executeAt } = computeExecuteAt({
+              planDate, baseTime, jitterMinutes, workWindow, timezone
+            });
+            await planStore.upsertPlanned({
+              planDate,
+              azsId: candidate.azsId,
+              adminUserId: Number(candidate.adminUserId),
+              baseTime,
+              executeAt,
+              jitterMinutes
+            });
+            planned += 1;
+          }
+          continue;
+        }
+      }
+
+      if (profileMode === 'B') {
+        const windows = Array.isArray(profileConfig.windows) ? profileConfig.windows : [];
+        if (windows.length === 0) {
+          logger.warn(
+            `[generateDailyPlan] Profile '${profile.id}' mode B has no valid windows. ` +
+            `Falling back to global schedule for azsId='${candidate.azsId}'.`
+          );
+          for (const baseTime of baseTimes) {
+            const jitterMinutes = pickJitterMinutes(jitterLimit, rng);
+            const { executeAt } = computeExecuteAt({
+              planDate, baseTime, jitterMinutes, workWindow, timezone
+            });
+            await planStore.upsertPlanned({
+              planDate,
+              azsId: candidate.azsId,
+              adminUserId: Number(candidate.adminUserId),
+              baseTime,
+              executeAt,
+              jitterMinutes
+            });
+            planned += 1;
+          }
+          continue;
+        }
+
+        // -----------------------------------------------------------------------
+        // S8-A3: Режим B — генерация точек по окнам
+        // -----------------------------------------------------------------------
+        const escalate = profileConfig.escalateUntilDone !== false; // дефолт true
+
+        // Дедлайн = конец ПОСЛЕДНЕГО окна (§4.2.2)
+        const lastWindow = windows[windows.length - 1];
+        const lastWindowEndHHMM = String(lastWindow.to || '').replace(':', '').padStart(4, '0');
+        const deadlineAt = buildZonedDatetime(planDate, lastWindowEndHHMM, timezone);
+
+        // Первичная точка: окно[0] (§4.2.2)
+        const primaryWindow = windows[0];
+        const primaryBaseTime = pickRandomMomentInWindow(
+          planDate, candidate.azsId, primaryWindow, 0
+        );
+        const primaryExecuteAt = buildZonedDatetime(planDate, primaryBaseTime, timezone);
+
+        await planStore.upsertPlanned({
+          planDate,
+          azsId: candidate.azsId,
+          adminUserId: Number(candidate.adminUserId),
+          baseTime: primaryBaseTime,
+          executeAt: primaryExecuteAt,
+          jitterMinutes: 0,
+          entryType: 'primary',
+          windowIndex: 0,
+          deadlineAt
+        });
+        planned += 1;
+
+        // Напоминание-точки: окна[1..N-1] если escalateUntilDone
+        if (escalate) {
+          for (let i = 1; i < windows.length; i++) {
+            const reminderWindow = windows[i];
+            const reminderBaseTime = pickRandomMomentInWindow(
+              planDate, candidate.azsId, reminderWindow, i
+            );
+            const reminderExecuteAt = buildZonedDatetime(planDate, reminderBaseTime, timezone);
+
+            await planStore.upsertPlanned({
+              planDate,
+              azsId: candidate.azsId,
+              adminUserId: Number(candidate.adminUserId),
+              baseTime: reminderBaseTime,
+              executeAt: reminderExecuteAt,
+              jitterMinutes: 0,
+              entryType: 'reminder',
+              windowIndex: i,
+              deadlineAt
+            });
+            planned += 1;
+          }
+        }
+
+        continue; // режим B обработан — не падать в режим A ниже
+      }
     }
+
+    // ---------------------------------------------------------------------------
+    // Режим A (профиль) или глобальный (нет профиля)
+    // ---------------------------------------------------------------------------
 
     // Определяем источник слотов, джиттера и workWindow:
     //   - профиль режима A → profile.config.slots + profile.config.jitterMinutes;
@@ -294,4 +511,4 @@ export const generateDailyPlan = async ({
   };
 };
 
-export default { computeExecuteAt, normalizeBaseTimes, generateDailyPlan, buildZonedDatetime };
+export default { computeExecuteAt, normalizeBaseTimes, generateDailyPlan, buildZonedDatetime, pickRandomMomentInWindow };
