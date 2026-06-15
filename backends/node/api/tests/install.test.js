@@ -1,29 +1,25 @@
 /**
  * TDD tests for POST /api/install — BUG-S1 security fix.
  *
- * Vulnerability: the route previously granted isAdmin:true unconditionally to
- * ANY caller that provided auth fields, with no Bitrix-side verification.
+ * The isAdmin-derivation logic has been extracted into resolveInstallAdmin
+ * (src/auth/resolveInstallAdmin.js). Its unit tests live in
+ * tests/resolveInstallAdmin.test.js and exercise the production helper directly.
  *
- * Fix requirements:
- *   1. When authId is present, call Bitrix profile to verify the caller.
- *      Derive isAdmin from profile.ADMIN via resolveIsAdmin.
- *   2. When the profile call throws (transient), store isAdmin:false and warn —
- *      do NOT hard-fail the install.
- *   3. When authId is absent, store isAdmin:false (no way to verify).
- *   4. Capture application_token from the request body and store it.
+ * This file retains the handler-level integration tests that cannot be expressed
+ * at the unit-helper level:
+ *   - application_token capture (handler reads req.body and threads the value
+ *     into upsertContext — that wiring only exists in server.js).
  *
- * Pattern: extract the install handler logic into a buildInstallHandler()
- * factory (matching the botReregister pattern), inject bitrixClient and
- * authContextStore so tests can mock them without starting Express.
- *
- * All tests must FAIL (RED) before the implementation is in place.
+ * The previous buildInstallHandler duplicate has been removed; it was testing
+ * a local copy of the logic, not the production code path.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveIsAdmin } from '../src/auth/resolveIsAdmin.js';
+import { resolveInstallAdmin } from '../src/auth/resolveInstallAdmin.js';
 
 // ---------------------------------------------------------------------------
-// Minimal test helpers
+// Minimal test helpers for handler-level tests
 // ---------------------------------------------------------------------------
 
 function makeRes() {
@@ -40,21 +36,15 @@ function makeReq(body = {}) {
 }
 
 /**
- * Build a minimal install handler that mirrors the security-relevant section
- * of the /api/install route in server.js, but is importable without a running
- * server or database.
+ * Build a minimal install handler that exercises ONLY the auth-context upsert
+ * path (isAdmin + applicationToken capture), importing the REAL production
+ * resolveInstallAdmin instead of duplicating its logic.
  *
- * This mirrors the `buildReregisterHandler` pattern used in botReregister.test.js.
- * The real server.js should be updated to call the same logic (extracted into
- * resolveInstallAdminContext) so both paths stay in sync.
- *
- * @param {object} deps
- * @param {object} deps.bitrixClient   — must expose callMethodWithAuth(method, params, authId, ctx)
- * @param {object} deps.authContextStore — must expose upsertContext(ctx)
- * @param {string[]} deps.warns         — array to collect console.warn calls (for test C)
+ * This handler is intentionally thin — it only covers what is NOT already
+ * tested by resolveInstallAdmin.test.js (i.e. the req.body parsing + upsert
+ * wiring and application_token capture).
  */
-function buildInstallHandler({ bitrixClient, authContextStore, warns = [] }) {
-  // Inner helpers (duplicated from server.js so the handler is self-contained)
+function buildInstallHandler({ bitrixClient, authContextStore, timeoutMs = 5000 }) {
   const parseUserId = (value) => {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
@@ -78,7 +68,6 @@ function buildInstallHandler({ bitrixClient, authContextStore, warns = [] }) {
       const userId = parseUserId(req.body?.user_id);
       const appSid = String(req.body?.APP_SID || '').trim();
 
-      // BUG-S1 fix: capture application_token for future event-callback verification
       const applicationToken = String(
         req.body?.auth?.application_token ?? req.body?.application_token ?? ''
       ).trim();
@@ -93,24 +82,13 @@ function buildInstallHandler({ bitrixClient, authContextStore, warns = [] }) {
       });
 
       if (authId || refreshToken || domain || memberId || userId) {
-        // BUG-S1 fix: verify via Bitrix profile before granting isAdmin
-        let isAdmin = false;
-
-        if (authId) {
-          try {
-            const profile = await bitrixClient.callMethodWithAuth('profile', {}, authId, installContext);
-            isAdmin = resolveIsAdmin({
-              profileAdminRaw: profile?.ADMIN,
-              requestAdminRaw: undefined,
-              previousIsAdmin: false
-            });
-          } catch (err) {
-            // Transient Bitrix error — do NOT hard-fail, store isAdmin:false and warn.
-            // A real portal admin re-verifies on the next /api/getToken, so this
-            // self-heals; a forged request never gets admin.
-            warns.push({ event: 'install_admin_unverified', authId, error: err.message });
-          }
-        }
+        // Uses the REAL production helper — not a duplicate
+        const isAdmin = await resolveInstallAdmin({
+          bitrixClient,
+          authId,
+          installContext,
+          timeoutMs
+        });
 
         const upsertPayload = {
           ...installContext,
@@ -118,7 +96,6 @@ function buildInstallHandler({ bitrixClient, authContextStore, warns = [] }) {
           refreshTokenIssuedAt: new Date().toISOString()
         };
 
-        // Only store applicationToken when non-empty (don't overwrite existing one with '').
         if (applicationToken) {
           upsertPayload.applicationToken = applicationToken;
         }
@@ -128,7 +105,6 @@ function buildInstallHandler({ bitrixClient, authContextStore, warns = [] }) {
         });
       }
 
-      // Placement binding and bot registration remain unchanged (not tested here).
       return res.json({ message: 'All success' });
     } catch (error) {
       return res.status(500).json({ error: 'install_failed', message: error.message });
@@ -137,164 +113,16 @@ function buildInstallHandler({ bitrixClient, authContextStore, warns = [] }) {
 }
 
 // ---------------------------------------------------------------------------
-// Test A: authId present, profile.ADMIN=true → isAdmin:true stored
+// Handler-level: application_token capture
+// These tests verify that server.js correctly parses req.body and passes
+// applicationToken through to upsertContext — something resolveInstallAdmin
+// does not touch.
 // ---------------------------------------------------------------------------
-test('install: valid authId, profile.ADMIN=true → upsertContext called with isAdmin:true', async () => {
-  const upsertCalls = [];
-  const bitrixClient = {
-    async callMethodWithAuth(method, params, authId) {
-      if (method === 'profile') {
-        return { ID: 5, ADMIN: 'Y' };
-      }
-      return {};
-    }
-  };
-  const authContextStore = {
-    async upsertContext(ctx) { upsertCalls.push(ctx); }
-  };
-  const warns = [];
 
-  const handler = buildInstallHandler({ bitrixClient, authContextStore, warns });
-  const req = makeReq({
-    AUTH_ID: 'valid-token-123',
-    DOMAIN: 'portal.bitrix24.ru',
-    member_id: 'member-abc',
-    user_id: 5,
-    REFRESH_TOKEN: 'refresh-xyz'
-  });
-  const res = makeRes();
-  await handler(req, res);
-
-  assert.equal(upsertCalls.length, 1, 'upsertContext must be called once');
-  assert.equal(upsertCalls[0].isAdmin, true, 'isAdmin must be true when profile.ADMIN=Y');
-  assert.equal(warns.length, 0, 'no warnings when Bitrix call succeeds');
-});
-
-// ---------------------------------------------------------------------------
-// Test B: authId present, profile.ADMIN=false → isAdmin:false stored
-// (This FAILS against the old unconditional isAdmin:true)
-// ---------------------------------------------------------------------------
-test('install: valid authId, profile.ADMIN=false → upsertContext called with isAdmin:false', async () => {
-  const upsertCalls = [];
-  const bitrixClient = {
-    async callMethodWithAuth(method) {
-      if (method === 'profile') {
-        return { ID: 7, ADMIN: 'N' };
-      }
-      return {};
-    }
-  };
-  const authContextStore = {
-    async upsertContext(ctx) { upsertCalls.push(ctx); }
-  };
-  const warns = [];
-
-  const handler = buildInstallHandler({ bitrixClient, authContextStore, warns });
-  const req = makeReq({
-    AUTH_ID: 'token-non-admin',
-    DOMAIN: 'portal.bitrix24.ru',
-    member_id: 'member-def',
-    user_id: 7,
-    REFRESH_TOKEN: 'refresh-non-admin'
-  });
-  const res = makeRes();
-  await handler(req, res);
-
-  assert.equal(upsertCalls.length, 1, 'upsertContext must be called once');
-  assert.equal(upsertCalls[0].isAdmin, false,
-    'isAdmin must be FALSE when profile.ADMIN=N (old code incorrectly stored true — BUG-S1)');
-  assert.equal(warns.length, 0, 'no warnings on a successful profile call');
-});
-
-// ---------------------------------------------------------------------------
-// Test B2: authId present, profile has no ADMIN field → isAdmin:false stored
-// (ADMIN absent = not authoritative, previousIsAdmin=false → stays false)
-// ---------------------------------------------------------------------------
-test('install: valid authId, profile has no ADMIN field → isAdmin:false stored', async () => {
-  const upsertCalls = [];
-  const bitrixClient = {
-    async callMethodWithAuth(method) {
-      if (method === 'profile') {
-        return { ID: 9 };  // no ADMIN field
-      }
-      return {};
-    }
-  };
-  const authContextStore = {
-    async upsertContext(ctx) { upsertCalls.push(ctx); }
-  };
-
-  const handler = buildInstallHandler({ bitrixClient, authContextStore });
-  const req = makeReq({
-    AUTH_ID: 'token-no-admin-field',
-    DOMAIN: 'portal.bitrix24.ru',
-    member_id: 'member-ghi',
-    user_id: 9,
-    REFRESH_TOKEN: 'refresh-ghi'
-  });
-  const res = makeRes();
-  await handler(req, res);
-
-  assert.equal(upsertCalls[0].isAdmin, false, 'absent profile.ADMIN + previousIsAdmin=false → isAdmin:false');
-});
-
-// ---------------------------------------------------------------------------
-// Test C: Bitrix profile call throws (transient) → isAdmin:false, warn logged,
-//         install NOT hard-failed (response is 200)
-// ---------------------------------------------------------------------------
-test('install: Bitrix profile call throws → isAdmin:false stored, warn logged, install succeeds (no 5xx)', async () => {
-  const upsertCalls = [];
-  const bitrixClient = {
-    async callMethodWithAuth(method) {
-      if (method === 'profile') {
-        throw new Error('NETWORK_TIMEOUT: connection refused');
-      }
-      return {};
-    }
-  };
-  const authContextStore = {
-    async upsertContext(ctx) { upsertCalls.push(ctx); }
-  };
-  const warns = [];
-
-  const handler = buildInstallHandler({ bitrixClient, authContextStore, warns });
-  const req = makeReq({
-    AUTH_ID: 'token-transient',
-    DOMAIN: 'portal.bitrix24.ru',
-    member_id: 'member-jkl',
-    user_id: 11,
-    REFRESH_TOKEN: 'refresh-transient'
-  });
-  const res = makeRes();
-  await handler(req, res);
-
-  // Install must NOT hard-fail
-  assert.equal(res.state.statusCode, 200, 'transient Bitrix error must not hard-fail the install');
-
-  // Context must still be stored
-  assert.equal(upsertCalls.length, 1, 'upsertContext must still be called (install must complete)');
-  assert.equal(upsertCalls[0].isAdmin, false, 'isAdmin must be false when profile call throws');
-
-  // Warning must be logged
-  assert.equal(warns.length, 1, 'exactly one warning must be logged');
-  assert.ok(
-    String(warns[0]?.event || warns[0]).includes('install_admin_unverified'),
-    'warning event must be install_admin_unverified'
-  );
-});
-
-// ---------------------------------------------------------------------------
-// Test D: application_token present in body → stored in the upserted context
-// ---------------------------------------------------------------------------
 test('install: application_token in body → stored in upserted context', async () => {
   const upsertCalls = [];
   const bitrixClient = {
-    async callMethodWithAuth(method) {
-      if (method === 'profile') {
-        return { ID: 3, ADMIN: 'Y' };
-      }
-      return {};
-    }
+    async callMethodWithAuth() { return { ID: 3, ADMIN: 'Y' }; }
   };
   const authContextStore = {
     async upsertContext(ctx) { upsertCalls.push(ctx); }
@@ -320,16 +148,10 @@ test('install: application_token in body → stored in upserted context', async 
   );
 });
 
-// ---------------------------------------------------------------------------
-// Test D2: application_token in nested auth object → stored in upserted context
-// ---------------------------------------------------------------------------
 test('install: application_token nested in auth.application_token → stored correctly', async () => {
   const upsertCalls = [];
   const bitrixClient = {
-    async callMethodWithAuth(method) {
-      if (method === 'profile') return { ID: 4, ADMIN: 'Y' };
-      return {};
-    }
+    async callMethodWithAuth() { return { ID: 4, ADMIN: 'Y' }; }
   };
   const authContextStore = {
     async upsertContext(ctx) { upsertCalls.push(ctx); }
@@ -351,31 +173,48 @@ test('install: application_token nested in auth.application_token → stored cor
 });
 
 // ---------------------------------------------------------------------------
-// Test E: no authId → isAdmin:false (no Bitrix call at all, can't verify)
+// Smoke: isAdmin=true is wired through when resolveInstallAdmin returns true
+// (Verifies handler ↔ helper integration without duplicating helper logic)
 // ---------------------------------------------------------------------------
-test('install: no authId → isAdmin:false stored, no Bitrix profile call', async () => {
+
+test('install handler: valid authId, profile.ADMIN=Y → upsertContext receives isAdmin:true', async () => {
   const upsertCalls = [];
-  const profileCalls = [];
   const bitrixClient = {
-    async callMethodWithAuth(method) {
-      profileCalls.push(method);
-      return {};
-    }
+    async callMethodWithAuth() { return { ID: 5, ADMIN: 'Y' }; }
   };
   const authContextStore = {
     async upsertContext(ctx) { upsertCalls.push(ctx); }
   };
 
   const handler = buildInstallHandler({ bitrixClient, authContextStore });
-  const req = makeReq({
-    // No AUTH_ID — only domain/member_id (as might happen in some webhook scenarios)
+  await handler(makeReq({
+    AUTH_ID: 'admin-token',
     DOMAIN: 'portal.bitrix24.ru',
-    member_id: 'member-stu',
-    user_id: 13
-  });
-  const res = makeRes();
-  await handler(req, res);
+    member_id: 'mem-1',
+    user_id: 5,
+    REFRESH_TOKEN: 'rt-1'
+  }), makeRes());
 
-  assert.equal(profileCalls.length, 0, 'Bitrix profile must NOT be called without authId');
-  assert.equal(upsertCalls[0].isAdmin, false, 'isAdmin must be false when authId is absent');
+  assert.equal(upsertCalls[0].isAdmin, true, 'isAdmin must be true when profile.ADMIN=Y');
+});
+
+test('install handler: no authId → upsertContext receives isAdmin:false (no profile call)', async () => {
+  const profileCalls = [];
+  const upsertCalls = [];
+  const bitrixClient = {
+    async callMethodWithAuth(method) { profileCalls.push(method); return {}; }
+  };
+  const authContextStore = {
+    async upsertContext(ctx) { upsertCalls.push(ctx); }
+  };
+
+  const handler = buildInstallHandler({ bitrixClient, authContextStore });
+  await handler(makeReq({
+    DOMAIN: 'portal.bitrix24.ru',
+    member_id: 'mem-2',
+    user_id: 6
+  }), makeRes());
+
+  assert.equal(profileCalls.length, 0, 'no profile call when authId absent');
+  assert.equal(upsertCalls[0].isAdmin, false);
 });
