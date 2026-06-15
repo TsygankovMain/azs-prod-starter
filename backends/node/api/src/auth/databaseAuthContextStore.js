@@ -69,6 +69,20 @@ const createPgStore = (pool) => ({
     return result.rows[0] || null;
   },
 
+  async getLastAdminForPortal(domain, memberId) {
+    const result = await pool.query(
+      `SELECT key, payload, is_admin, last_admin_at, updated_at
+       FROM auth_context
+       WHERE is_admin = TRUE
+         AND payload::jsonb->>'domain' = $1
+         AND payload::jsonb->>'memberId' = $2
+       ORDER BY last_admin_at DESC NULLS LAST
+       LIMIT 1`,
+      [domain, memberId]
+    );
+    return result.rows[0] || null;
+  },
+
   async listAll() {
     const result = await pool.query(
       'SELECT key, payload, is_admin, last_admin_at, updated_at FROM auth_context'
@@ -121,6 +135,20 @@ const createMysqlStore = (pool) => ({
        WHERE is_admin = 1
        ORDER BY last_admin_at DESC
        LIMIT 1`
+    );
+    return rows[0] || null;
+  },
+
+  async getLastAdminForPortal(domain, memberId) {
+    const [rows] = await pool.execute(
+      `SELECT \`key\`, payload, is_admin, last_admin_at, updated_at
+       FROM auth_context
+       WHERE is_admin = 1
+         AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.domain')) = ?
+         AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.memberId')) = ?
+       ORDER BY last_admin_at DESC
+       LIMIT 1`,
+      [domain, memberId]
     );
     return rows[0] || null;
   },
@@ -205,6 +233,17 @@ export const createDatabaseAuthContextStore = ({ pool, dbType } = {}) => {
 
     async getLastAdminContext() {
       const row = await db.getLastAdmin();
+      if (!row) return null;
+      const entry = rowToEntry(row);
+      if (!entry || !entry.context?.isAdmin) return null;
+      return entry;
+    },
+
+    async getLastAdminContextForPortal({ domain, memberId } = {}) {
+      const normalizedDomain = String(domain || '').trim().toLowerCase();
+      const normalizedMemberId = String(memberId || '').trim();
+      if (!normalizedDomain || !normalizedMemberId) return null;
+      const row = await db.getLastAdminForPortal(normalizedDomain, normalizedMemberId);
       if (!row) return null;
       const entry = rowToEntry(row);
       if (!entry || !entry.context?.isAdmin) return null;
