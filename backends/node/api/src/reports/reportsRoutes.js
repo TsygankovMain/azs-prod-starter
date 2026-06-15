@@ -847,6 +847,7 @@ export const createReportsRouter = ({
   reasonForwardingService = null,
   getBackgroundContext = null,
   getAdminContext = null,
+  brandStore = null,
 }) => {
   if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService || !authContextStore || !crmSyncJobStore) {
     throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient, notificationService, authContextStore and crmSyncJobStore are required');
@@ -1466,11 +1467,25 @@ export const createReportsRouter = ({
 
       const diskContext = req.bitrixContext || {};
 
-      const rootFolderId = await ensureRootFolder(bitrixClient.diskApi, {
-        configuredRootFolderId: Number(settings.disk?.rootFolderId || 0),
-        storageRootId: Number(process.env.BITRIX_DISK_STORAGE_ROOT_ID || 1),
-        appFolderName: process.env.BITRIX_DISK_APP_FOLDER || 'AZS-Photo-Reports'
-      }, diskContext);
+      // S8-B2b: если АЗС принадлежит бренду с настроенной папкой на Диске —
+      // использовать папку бренда как корень (вместо общего AZS-Photo-Reports).
+      // Фоллбек: нет brandStore / АЗС не в бренде / у бренда нет disk_folder_id —
+      // поведение как прежде (общий корень). Регрессии для не-брендовых АЗС нет.
+      let brandRootFolderId = null;
+      if (brandStore && typeof brandStore.getBrandByAzsId === 'function') {
+        const brand = await brandStore.getBrandByAzsId(report.azsId).catch(() => null);
+        if (brand && brand.disk_folder_id) {
+          brandRootFolderId = Number(brand.disk_folder_id);
+        }
+      }
+
+      const rootFolderId = brandRootFolderId
+        ? brandRootFolderId
+        : await ensureRootFolder(bitrixClient.diskApi, {
+            configuredRootFolderId: Number(settings.disk?.rootFolderId || 0),
+            storageRootId: Number(process.env.BITRIX_DISK_STORAGE_ROOT_ID || 1),
+            appFolderName: process.env.BITRIX_DISK_APP_FOLDER || 'AZS-Photo-Reports'
+          }, diskContext);
 
       const { slotDate, slotHHmm } = parseReportSlotKey(report.slotKey);
       const requiredTitle = requiredPhotos.find((item) => item.code === photoCode)?.title || '';
