@@ -48,6 +48,8 @@ import { resolvePgSslConfig } from './utils/dbSsl.js';
 import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from './src/shared/transientErrors.js';
 import { maskAuthFields } from './utils/maskSecret.js';
 import { resolveBotSettingsContext } from './src/notifications/botSettingsContext.js';
+import createBrandRouter from './src/brands/brandRoutes.js';
+import { createDatabaseBrandStore } from './src/brands/databaseBrandStore.js';
 
 try {
   validateRequiredEnv();
@@ -219,6 +221,7 @@ const dispatchPlanStore = createDispatchPlanStore({ pool, dbType });
 const dbSettingsStore = createDatabaseSettingsStore({ pool, dbType });
 const reasonStore = createReasonStore({ pool, dbType });
 const photoRemarkStore = createPhotoRemarkStore({ pool, dbType });
+const brandStore = createDatabaseBrandStore({ pool, dbType });
 const authContextStoreType = String(process.env.AUTH_CONTEXT_STORE || 'composite').trim().toLowerCase();
 const authContextStore = (() => {
   if (authContextStoreType === 'database') {
@@ -613,6 +616,13 @@ app.use('/api/photo-remarks', verifyToken, attachAccessContext, createPhotoRemar
   getAdminContext
 }));
 
+app.use('/api/brands', verifyToken, attachAccessContext, createBrandRouter({
+  brandStore,
+  bitrixClient,
+  getAdminContext,
+  diskRootFolderId: Number(process.env.DISK_ROOT_FOLDER_ID || 0)
+}));
+
 // ---------------------------------------------------------------------------
 // BUG-019: Bot event handler — receives ONIMBOTMESSAGEADD from Bitrix24.
 // Bitrix posts event data to the handler URL that was registered on install.
@@ -986,6 +996,10 @@ reasonStore.ensureSchema()
 photoRemarkStore.ensureSchema()
   .then(() => console.log('photo_remark schema is ready'))
   .catch((error) => console.error('Failed to prepare photo_remark schema', error));
+
+brandStore.ensureSchema()
+  .then(() => console.log('brand schema is ready'))
+  .catch((error) => console.error('Failed to prepare brand schema', error));
 
 if (typeof authContextStore.ensureSchema === 'function') {
   authContextStore.ensureSchema()
