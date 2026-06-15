@@ -10,7 +10,7 @@
 // We expose our wrapper as useAppToast to avoid colliding with the b24ui auto-import.
 import { useToast as useB24Toast } from '#imports'
 
-export type ToastKind = 'success' | 'error' | 'info'
+export type ToastKind = 'success' | 'error' | 'info' | 'warning'
 
 /**
  * Passthrough options for toast.add().
@@ -25,6 +25,7 @@ export type ToastOptions = {
 const DURATION: Record<ToastKind, number> = {
   success: 4000,
   info: 4000,
+  warning: 6000,
   error: 7000, // errors stay longer
 }
 
@@ -32,6 +33,7 @@ const COLOR: Record<ToastKind, string> = {
   success: 'air-primary-success',
   error: 'air-primary-alert',
   info: 'air-primary',
+  warning: 'air-primary-warning',
 }
 
 export function useAppToast() {
@@ -52,5 +54,6 @@ export function useAppToast() {
     success: (text: string, options?: ToastOptions) => push('success', text, options),
     error: (text: string, options?: ToastOptions) => push('error', text, options),
     info: (text: string, options?: ToastOptions) => push('info', text, options),
+    warning: (text: string, options?: ToastOptions) => push('warning', text, options),
   }
 }
