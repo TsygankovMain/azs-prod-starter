@@ -775,6 +775,26 @@ export const createBitrixRestClient = ({
           throw new Error('disk.file.markdeleted response does not include file id');
         }
         return { id: deletedId };
+      },
+
+      /**
+       * Получить (или сгенерировать) публичную внешнюю ссылку на папку Диска.
+       * Метод: disk.folder.getexternallink
+       * BUG-A8: вызывать под admin-OAuth контекстом (не вебхук).
+       */
+      async getExternalLink(folderId, context = {}) {
+        if (!Number(folderId)) {
+          throw new Error('disk.folder.getexternallink requires folderId');
+        }
+        const result = await call('disk.folder.getexternallink', {
+          id: Number(folderId)
+        }, context);
+        // Bitrix возвращает строку-ссылку как result напрямую
+        const link = String(result?.LINK ?? result?.link ?? result ?? '').trim();
+        if (!link) {
+          throw new Error('disk.folder.getexternallink response does not include link');
+        }
+        return link;
       }
     }
   };
