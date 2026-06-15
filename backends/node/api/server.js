@@ -599,6 +599,7 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
     const entry = await authContextStore.getLastAdminContext();
     return entry?.context ? { key: entry.key, ...entry.context } : {};
   },
+  brandStore,
 }));
 
 app.use('/api/reports/photos', verifyToken, attachAccessContext, createPhotoFeedRouter({
