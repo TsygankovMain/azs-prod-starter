@@ -436,7 +436,9 @@ test('photo route enqueues a durable CRM sync job with correct payload', async (
   assert.equal(responses[0]?.payload?.item?.syncQueued, true);
   assert.equal(enqueueCalls.length, 1, 'must enqueue exactly one durable job');
   assert.equal(enqueueCalls[0].reportId, 88);
-  assert.equal(enqueueCalls[0].payload.status, 'in_progress');
+  // LOGIC-D3: listPhotos returns photo '42' which is the only required photo (UF_PHOTO_SET:[42]),
+  // so allRequiredUploaded=true → nextStatus='done'. Flipped from in_progress (bug-encoding).
+  assert.equal(enqueueCalls[0].payload.status, 'done');
   assert.equal(enqueueCalls[0].payload.contextKey, 'user-ctx-key');
 });
 
