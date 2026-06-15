@@ -279,8 +279,13 @@ const getBotReasons = async () => {
   }
 };
 const onBotReasonCaptured = async ({ reportId, reasonCode = 'other', reasonText }) => {
+  console.log('bot_reason_dbg flow_start', { reportId, reasonCode, hasReasonText: Boolean(reasonText) }); // TEMP DEBUG (reason-flow) — удалить после диагностики
   const report = await reportsStore.getById(Number(reportId));
-  if (!report) return;
+  if (!report) {
+    console.warn('bot_reason_dbg report_not_found', { reportId }); // TEMP DEBUG (reason-flow) — удалить после диагностики
+    return;
+  }
+  console.log('bot_reason_dbg report_found', { reportId, reportItemId: report.reportItemId, azsId: report.azsId, status: report.status }); // TEMP DEBUG (reason-flow) — удалить после диагностики
   const context = await backgroundContextForBot();
   const settings = await settingsStore.read({ context });
   const { createReasonCatalog } = await import('./src/reports/reasonCatalog.js');
@@ -292,28 +297,36 @@ const onBotReasonCaptured = async ({ reportId, reasonCode = 'other', reasonText 
   // задана — фоллбек на «просрочено» (expired), чтобы карточка всё равно ушла из
   // работы. Локальный статус зеркалим в expired (в дашборде — «Не сдан»).
   const brakStatus = String(settings?.report?.stages?.rejected || '').trim() ? 'rejected' : 'expired';
+  const entityTypeId = Number(settings?.report?.entityTypeId || 0);
+  console.log('bot_reason_dbg stage_resolved', { brakStatus, stagesRejected: settings?.report?.stages?.rejected || '', stagesExpired: settings?.report?.stages?.expired || '', entityTypeId, hasReasonField: Boolean(settings?.report?.fields?.reason) }); // TEMP DEBUG (reason-flow) — удалить после диагностики
 
   // 1) CRM: «браковать» карточку + записать причину одним обновлением, и зеркалить
   //    статус локально. Стадия меняется даже если UF-поле причины не настроено.
   try {
     const { buildReportCrmUpdateFields } = await import('./src/reports/reportCrmSync.js');
-    const entityTypeId = Number(settings?.report?.entityTypeId || 0);
     const fields = buildReportCrmUpdateFields({
       settings,
       status: alreadyDone ? report.status : brakStatus,
       reasonValue
     });
+    console.log('bot_reason_dbg crm_fields', { fieldKeys: Object.keys(fields), willUpdate: Boolean(entityTypeId && Number(report.reportItemId) && Object.keys(fields).length), reportItemId: report.reportItemId }); // TEMP DEBUG (reason-flow) — удалить после диагностики
     if (entityTypeId && Number(report.reportItemId) && Object.keys(fields).length) {
       await bitrixClient.updateReportItem({ entityTypeId, id: Number(report.reportItemId), fields, context });
+      console.log('bot_reason_dbg crm_updated', { reportItemId: report.reportItemId }); // TEMP DEBUG (reason-flow) — удалить после диагностики
+    } else {
+      console.log('bot_reason_dbg crm_skipped', { entityTypeId, reportItemId: report.reportItemId, fieldCount: Object.keys(fields).length }); // TEMP DEBUG (reason-flow) — удалить после диагностики
     }
     if (!alreadyDone) {
-      await reportsStore.setReportStatus({ reportId: Number(reportId), status: 'expired' }).catch(() => {});
+      await reportsStore.setReportStatus({ reportId: Number(reportId), status: 'expired' })
+        .then(() => { console.log('bot_reason_dbg local_status_set', { reportId }); }) // TEMP DEBUG (reason-flow) — удалить после диагностики
+        .catch(() => { console.log('bot_reason_dbg local_status_failed', { reportId }); }); // TEMP DEBUG (reason-flow) — удалить после диагностики
     }
   } catch (crmError) {
-    console.warn('bot_reason_crm_update_failed', { reportId, message: crmError.message });
+    console.warn('bot_reason_crm_update_failed', { reportId, message: crmError.message, code: crmError.code, status: crmError.statusCode });
   }
 
   // 2) Forward to the responsible chat (best-effort)
+  console.log('bot_reason_dbg forward_start', { reportItemId: report.reportItemId, portalDomain: String(context.domain || '') }); // TEMP DEBUG (reason-flow) — удалить после диагностики
   try {
     const { createAzsTitleResolver } = await import('./src/reports/reportsRoutes.js');
     const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context });
@@ -331,9 +344,11 @@ const onBotReasonCaptured = async ({ reportId, reasonCode = 'other', reasonText 
       portalDomain: String(context.domain || ''),
       context
     });
+    console.log('bot_reason_dbg forward_done', {}); // TEMP DEBUG (reason-flow) — удалить после диагностики
   } catch (fwdError) {
-    console.warn('bot_reason_forward_failed', { reportId, message: fwdError.message });
+    console.warn('bot_reason_forward_failed', { reportId, message: fwdError.message, code: fwdError.code, status: fwdError.statusCode });
   }
+  console.log('bot_reason_dbg flow_end', { reportId, brakStatus }); // TEMP DEBUG (reason-flow) — удалить после диагностики
 };
 const botCommandHandler = createBotCommandHandler({
   bitrixClient,
@@ -620,6 +635,7 @@ app.post('/api/bot/event', async (req, res) => {
   try {
     // ── SECURITY GATE ─────────────────────────────────────────────────────────
     const decision = checkBotEventSecret(process.env.JOB_SECRET, req.query.s);
+    console.log('bot_reason_dbg gate', { decision, hasJobSecret: Boolean(process.env.JOB_SECRET), sParamPresent: req.query.s != null }); // TEMP DEBUG (reason-flow) — удалить после диагностики
     if (decision === 'reject') {
       console.warn('/api/bot/event: rejected — wrong or missing ?s param (possible spoofed request)');
       return res.json({ ok: true, handled: false });
@@ -668,7 +684,10 @@ app.post('/api/bot/event', async (req, res) => {
     const botSelfId = Number(data?.bot?.id || process.env.BITRIX_BOT_ID || 0);
     const authorIsBot = String(data?.user?.bot) === 'true' || String(data?.user?.bot) === '1'
       || (botSelfId > 0 && userId === botSelfId);
+    console.log('bot_reason_dbg event', { event, isMessageEvent, userId, dialogId, authorIsBot, textPreview: messageText.slice(0, 80) }); // TEMP DEBUG (reason-flow) — удалить после диагностики
     if (!isMessageEvent || !userId || authorIsBot) {
+      const ignoredReason = !isMessageEvent ? 'not_message' : !userId ? 'no_user' : 'author_is_bot'; // TEMP DEBUG (reason-flow) — удалить после диагностики
+      console.log('bot_reason_dbg ignored', { reason: ignoredReason }); // TEMP DEBUG (reason-flow) — удалить после диагностики
       return res.json({ ok: true, handled: false });
     }
 
@@ -677,6 +696,7 @@ app.post('/api/bot/event', async (req, res) => {
     const reasonTrigger = messageText.match(/^\/reason\s+(\d+)\s*$/i);
     if (reasonTrigger) {
       const reportId = Number(reasonTrigger[1]);
+      console.log('bot_reason_dbg trigger_reason', { reportId }); // TEMP DEBUG (reason-flow) — удалить после диагностики
       let azsId = '';
       try {
         const report = await reportsStore.getById(reportId);
@@ -690,10 +710,12 @@ app.post('/api/bot/event', async (req, res) => {
 
     if (messageText) {
       // Plain message — captured as the reason only if this user is awaiting.
+      console.log('bot_reason_dbg trigger_plain', {}); // TEMP DEBUG (reason-flow) — удалить после диагностики
       const handled = await botCommandHandler.handleMessage({ userId, dialogId, text: messageText, context });
       return res.json({ ok: true, handled, action: handled ? 'reason_captured' : 'ignored' });
     }
 
+    console.log('bot_reason_dbg ignored', { reason: 'no_match' }); // TEMP DEBUG (reason-flow) — удалить после диагностики
     return res.json({ ok: true, handled: false });
   } catch (error) {
     console.error('/api/bot/event error:', error);
