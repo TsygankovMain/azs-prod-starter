@@ -197,6 +197,21 @@ export class AuthContextStore {
     return { key, context };
   }
 
+  async getLastAdminContextForPortal({ domain, memberId } = {}) {
+    const normalizedDomain = String(domain || '').trim().toLowerCase();
+    const normalizedMemberId = String(memberId || '').trim();
+    if (!normalizedDomain || !normalizedMemberId) return null;
+    const state = await this.readState();
+    const adminEntry = Object.entries(state.contexts).find(([, value]) => {
+      return Boolean(value?.isAdmin)
+        && String(value?.domain || '').trim().toLowerCase() === normalizedDomain
+        && String(value?.memberId || '').trim() === normalizedMemberId;
+    });
+    if (!adminEntry) return null;
+    const [key, context] = adminEntry;
+    return { key, context };
+  }
+
   // Waits for all pending serialized writes to complete.
   // Call this during graceful shutdown to ensure no in-flight write is lost.
   async flush() {

@@ -650,7 +650,22 @@ const syncReportCrmStrict = async ({
   });
 };
 
-export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, authContextStore }) => async (job) => {
+// Parse domain and memberId from a contextKey of the form "memberId:domain:userId".
+// Returns { domain, memberId } with empty strings if the key is malformed.
+const parsePortalFromContextKey = (contextKey) => {
+  const parts = String(contextKey || '').trim().split(':');
+  // key format: memberId:domain:userId  (domain may itself contain colons, e.g. "sub.bitrix24.ru")
+  // The key is built by buildAuthContextKey as `${memberId}:${domain}:${userId}`.
+  // memberId is always first, userId is always last, domain is the middle segment(s).
+  if (parts.length < 3) return { domain: '', memberId: '' };
+  const memberId = parts[0].trim();
+  const userId = parts[parts.length - 1].trim();
+  const domain = parts.slice(1, parts.length - 1).join(':').trim().toLowerCase();
+  if (!memberId || !domain || !userId) return { domain: '', memberId: '' };
+  return { domain, memberId };
+};
+
+export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, authContextStore, logger = console }) => async (job) => {
   const reportId = Number(job.report_id ?? job.reportId);
   const payload = typeof job.payload === 'string' ? JSON.parse(job.payload || '{}') : (job.payload || {});
   const report = await reportsStore.getById(reportId);
@@ -662,23 +677,40 @@ export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, 
   const photos = await reportsStore.listPhotos(reportId);
   const folderFieldCode = String(settings.report?.fields?.folderId || '').trim();
 
-  // CRM writes to the report SPA require admin scope (regular AZS-user tokens
-  // hit insufficient_scope). Resolve the portal admin context for the sync.
-  // payload.contextKey (the uploader) is kept only as an audit/fallback key.
+  // BUG-P6 fix: CRM writes must use the admin context of THIS JOB's portal only.
+  // Never fall back to another portal's admin — that would write to the wrong tenant.
+  //
+  // Resolve portal identity from payload: explicit domain/memberId fields take
+  // priority (forward-compat); fall back to parsing from the contextKey.
+  const payloadDomain = String(payload.domain || '').trim().toLowerCase();
+  const payloadMemberId = String(payload.memberId || '').trim();
+  const parsed = parsePortalFromContextKey(payload.contextKey);
+  const portalDomain = payloadDomain || parsed.domain;
+  const portalMemberId = payloadMemberId || parsed.memberId;
+
   let context = {};
-  const adminEntry = await authContextStore.getLastAdminContext();
-  if (adminEntry?.context) {
-    context = { key: adminEntry.key, ...adminEntry.context };
-  } else if (payload.contextKey) {
-    // Fallback: no admin context available — try the uploader's stored context.
-    const stored = await authContextStore.getContextByKey(payload.contextKey);
-    if (stored) {
-      context = { ...stored, key: payload.contextKey };
+
+  if (portalDomain && portalMemberId && typeof authContextStore.getLastAdminContextForPortal === 'function') {
+    // Portal-scoped lookup: only returns an admin context belonging to THIS portal.
+    const adminEntry = await authContextStore.getLastAdminContextForPortal({ domain: portalDomain, memberId: portalMemberId });
+    if (adminEntry?.context) {
+      context = { key: adminEntry.key, ...adminEntry.context };
     } else {
-      console.warn('crm_sync_context_missing', { reportId, contextKey: payload.contextKey });
+      // No admin context for this portal — skip sync to avoid cross-tenant writes.
+      logger.warn('crm_sync_no_admin_context_for_portal', { domain: portalDomain, memberId: portalMemberId, reportId });
+      return;
     }
   } else {
-    console.warn('crm_sync_admin_context_missing', { reportId });
+    // Legacy path: portal identity not available in payload (old jobs pre-BUG-P6 fix)
+    // or store does not yet expose getLastAdminContextForPortal.
+    // Use unscoped getLastAdminContext only as a best-effort for single-portal installs.
+    const adminEntry = await authContextStore.getLastAdminContext();
+    if (adminEntry?.context) {
+      context = { key: adminEntry.key, ...adminEntry.context };
+    } else {
+      logger.warn('crm_sync_admin_context_missing', { reportId });
+      return;
+    }
   }
 
   await syncReportCrmStrict({

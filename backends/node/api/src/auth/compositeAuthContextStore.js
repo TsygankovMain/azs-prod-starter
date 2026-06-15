@@ -110,6 +110,18 @@ export const createCompositeAuthContextStore = ({
       return fileEntry;
     },
 
+    async getLastAdminContextForPortal({ domain, memberId } = {}) {
+      const dbEntry = await dbStore.getLastAdminContextForPortal({ domain, memberId });
+      if (dbEntry !== null) {
+        return dbEntry;
+      }
+      const fileEntry = await fileStore.getLastAdminContextForPortal({ domain, memberId });
+      if (fileEntry !== null) {
+        seedToDb(fileEntry.context);
+      }
+      return fileEntry;
+    },
+
     // listContexts always reads from DB (canonical). File is used only for
     // seeding. tokenRefreshScheduler uses listContexts — DB is sufficient.
     async listContexts() {
