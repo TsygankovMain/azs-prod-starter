@@ -50,6 +50,8 @@ const props = defineProps<{
   /** Шаблоны комментариев */
   draftTemplates: string[]
   draftIsSending: boolean
+  /** Текст ошибки отправки замечания — показывается инлайн в панели (видна при открытом лайтбоксе) */
+  draftSendError?: string
   /** true если есть ещё страницы */
   hasMore: boolean
   /** Конфликт-промпт (С3) */
@@ -500,6 +502,13 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
         v-if="showDraftPanel"
         class="flex-shrink-0"
       >
+        <!-- Ошибка отправки — инлайн внутри лайтбокса (тост невидим под z-[210]) -->
+        <div
+          v-if="draftSendError"
+          class="bg-red-50 border-t border-red-300 px-4 py-2 text-sm text-red-700 font-medium"
+        >
+          ✕ {{ draftSendError }}
+        </div>
         <RemarkDraftPanel
           v-model:selected-role="draftRole"
           :marks="marks"
