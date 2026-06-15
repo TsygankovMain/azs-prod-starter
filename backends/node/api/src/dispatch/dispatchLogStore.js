@@ -94,16 +94,19 @@ const createPostgresStore = (pool) => {
      * @returns {Promise<Array<{id, slot_key, azs_id, admin_user_id, status, created_at}>>}
      */
     async listStalePlanned({ staleBefore }) {
+      // S8-БЛОКЕР #3а: исключаем reminder-строки (slot_key вида '%:reminder:%')
+      // чтобы finishStalePlannedSlots не подобрал их и не создал вторую CRM-карточку (OR-1).
       const result = await query(
         `SELECT id, slot_key, azs_id, admin_user_id, status, created_at, scheduled_at
          FROM dispatch_log
          WHERE status = $1
+           AND slot_key NOT LIKE $2
            AND (
-             (scheduled_at IS NOT NULL AND scheduled_at < $2)
-             OR (scheduled_at IS NULL AND created_at < $2)
+             (scheduled_at IS NOT NULL AND scheduled_at < $3)
+             OR (scheduled_at IS NULL AND created_at < $3)
            )
          ORDER BY created_at ASC`,
-        ['reserved', staleBefore]
+        ['reserved', '%:reminder:%', staleBefore]
       );
       return result.rows || [];
     },
@@ -210,17 +213,20 @@ const createMysqlStore = (pool) => {
      * @returns {Promise<Array<{id, slot_key, azs_id, admin_user_id, status, created_at}>>}
      */
     async listStalePlanned({ staleBefore }) {
+      // S8-БЛОКЕР #3а: исключаем reminder-строки (slot_key вида '%:reminder:%')
+      // чтобы finishStalePlannedSlots не подобрал их и не создал вторую CRM-карточку (OR-1).
       const threshold = serializeDate(staleBefore);
       const [rows] = await query(
         `SELECT id, slot_key, azs_id, admin_user_id, status, created_at, scheduled_at
          FROM dispatch_log
          WHERE status = ?
+           AND slot_key NOT LIKE ?
            AND (
              (scheduled_at IS NOT NULL AND scheduled_at < ?)
              OR (scheduled_at IS NULL AND created_at < ?)
            )
          ORDER BY created_at ASC`,
-        ['reserved', threshold, threshold]
+        ['reserved', '%:reminder:%', threshold, threshold]
       );
       return rows || [];
     },

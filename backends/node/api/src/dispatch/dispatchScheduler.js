@@ -508,13 +508,19 @@ export const createDispatchScheduler = ({
       // -----------------------------------------------------------------------
       // Обычная (primary) точка — стандартный dispatchBatch
       // -----------------------------------------------------------------------
+      // S8-БЛОКЕР #2 (AC-13): прокидываем row.deadline_at как candidate.deadlineAt.
+      // Для режима B dispatch_plan.deadline_at = конец последнего окна эскалации,
+      // и именно он должен стать дедлайном отчёта вместо max(scheduledAt,now)+timeout.
+      // Для режима A и не-профильных АЗС deadline_at=null → dispatchCandidate
+      // использует прежнюю формулу BUG-024 (без регресса).
       const candidate = {
         azsId: row.azs_id,
         adminUserId: row.admin_user_id,
         slotDate: row.plan_date,
         slotHHmm: row.base_time,
         scheduledAt: row.execute_at,
-        jitterMinutes: row.jitter_minutes
+        jitterMinutes: row.jitter_minutes,
+        deadlineAt: row.deadline_at ?? null
       };
 
       let result;

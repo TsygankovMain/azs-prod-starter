@@ -1054,7 +1054,12 @@ const scheduler = createDispatchScheduler({
     } catch {
       return [];
     }
-  }
+  },
+  // S8-БЛОКЕР #1: прошиваем reportsStore + dispatchLogStore в scheduler.
+  // reportsStore — проверка статуса отчёта при reminder (OR-6, без CRM-запроса).
+  // dispatchLogStore — идемпотентность reminder через reserve + finishStalePlannedSlots (BUG-009).
+  reportsStore,
+  dispatchLogStore
   // planModeEnabled / planGenerationCron / executeBatchLimit read from env inside the scheduler.
 });
 

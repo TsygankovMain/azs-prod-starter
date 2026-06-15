@@ -446,11 +446,14 @@ const createPostgresStore = (pool) => ({
     if (!azsId || !planDate) return null;
     // slot_key формат: YYYY-MM-DD:HHmm (или manual:YYYY-MM-DD:HHmm)
     // Ищем по дате начала slot_key: и primary-часть planDate: и manual:planDate:
+    // S8-БЛОКЕР #3б: исключаем reminder-строки (slot_key вида '%:reminder:%')
+    // чтобы они не попадали в выборку отчёта первичной точки.
     const result = await pool.query(
       `SELECT *
        FROM dispatch_log
        WHERE azs_id = $1
          AND (slot_key LIKE $2 OR slot_key LIKE $3)
+         AND slot_key NOT LIKE $4
        ORDER BY
          CASE status
            WHEN 'done' THEN 0
@@ -461,7 +464,7 @@ const createPostgresStore = (pool) => ({
          END,
          id DESC
        LIMIT 1`,
-      [String(azsId), `${planDate}:%`, `manual:${planDate}:%`]
+      [String(azsId), `${planDate}:%`, `manual:${planDate}:%`, '%:reminder:%']
     );
     if (!result.rows.length) return null;
     return toViewModel(result.rows[0]);
@@ -856,11 +859,14 @@ const createMysqlStore = (pool) => ({
   // ---------------------------------------------------------------------------
   async getActiveReportForAzsOnDate({ azsId, planDate }) {
     if (!azsId || !planDate) return null;
+    // S8-БЛОКЕР #3б: исключаем reminder-строки (slot_key вида '%:reminder:%')
+    // чтобы они не попадали в выборку отчёта первичной точки (MySQL).
     const [rows] = await pool.execute(
       `SELECT *
        FROM dispatch_log
        WHERE azs_id = ?
          AND (slot_key LIKE ? OR slot_key LIKE ?)
+         AND slot_key NOT LIKE ?
        ORDER BY
          CASE status
            WHEN 'done' THEN 0
@@ -871,7 +877,7 @@ const createMysqlStore = (pool) => ({
          END,
          id DESC
        LIMIT 1`,
-      [String(azsId), `${planDate}:%`, `manual:${planDate}:%`]
+      [String(azsId), `${planDate}:%`, `manual:${planDate}:%`, '%:reminder:%']
     );
     if (!rows.length) return null;
     return toViewModel(rows[0]);
