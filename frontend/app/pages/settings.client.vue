@@ -159,8 +159,8 @@ function scrollToSection(id: SectionId) {
   }
 }
 
-function applySystemAdminFallback() {
-  if (Number(userStore.id || 0) !== 498) {
+function applyPortalAdminFallback() {
+  if (!userStore.isAdmin) {
     return
   }
 
@@ -857,7 +857,7 @@ async function loadRoleContext() {
       reviewer: Boolean(response.capabilities?.reviewer),
       reports: Boolean(response.capabilities?.reports)
     }
-    applySystemAdminFallback()
+    applyPortalAdminFallback()
   } catch {
     currentRole.value = 'azs_admin'
     roleCapabilities.value = {
@@ -865,7 +865,7 @@ async function loadRoleContext() {
       reviewer: false,
       reports: true
     }
-    applySystemAdminFallback()
+    applyPortalAdminFallback()
   }
 }
 
@@ -1004,7 +1004,7 @@ onMounted(async () => {
     isLoading.value = true
     $b24 = await $initializeB24Frame()
     await initApp($b24, localesI18n, setLocale)
-    applySystemAdminFallback()
+    applyPortalAdminFallback()
     await loadRoleContext()
     await $b24.parent.setTitle(PAGE_TITLE)
     await loadSettings()

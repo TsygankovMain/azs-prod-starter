@@ -49,18 +49,78 @@ test('resolveUserRole defaults portal admin to admin role', () => {
   assert.equal(role, ROLES.ADMIN);
 });
 
-test('resolveUserRole always treats user 498 as admin by default', () => {
+test('resolveUserRole gives admin to userId 498 when in adminUserIds list', () => {
+  // 498 is no longer a hardcoded super-admin; it gets admin only when listed.
   const role = resolveUserRole({
     userId: 498,
     isPortalAdmin: false,
     accessSettings: {
-      adminUserIds: [],
-      reviewerUserIds: [498],
-      azsAdminUserIds: [498]
+      adminUserIds: [498],
+      reviewerUserIds: [],
+      azsAdminUserIds: []
     }
   });
 
   assert.equal(role, ROLES.ADMIN);
+});
+
+// --- BUG-A2: env-driven SYSTEM_ADMIN_USER_IDS, not hardcoded 498 ---
+
+test('resolveUserRole (BUG-A2): portal admin userId 999 gets admin role even with all lists empty', () => {
+  const savedEnv = process.env.SYSTEM_ADMIN_USER_IDS;
+  delete process.env.SYSTEM_ADMIN_USER_IDS;
+
+  try {
+    const role = resolveUserRole({
+      userId: 999,
+      isPortalAdmin: true,
+      accessSettings: { adminUserIds: [], reviewerUserIds: [], azsAdminUserIds: [] }
+    });
+    assert.equal(role, ROLES.ADMIN);
+  } finally {
+    if (savedEnv !== undefined) {
+      process.env.SYSTEM_ADMIN_USER_IDS = savedEnv;
+    }
+  }
+});
+
+test('resolveUserRole (BUG-A2): SYSTEM_ADMIN_USER_IDS=777 grants admin to userId 777 without isPortalAdmin', () => {
+  const savedEnv = process.env.SYSTEM_ADMIN_USER_IDS;
+  process.env.SYSTEM_ADMIN_USER_IDS = '777';
+
+  try {
+    const role = resolveUserRole({
+      userId: 777,
+      isPortalAdmin: false,
+      accessSettings: { adminUserIds: [], reviewerUserIds: [], azsAdminUserIds: [] }
+    });
+    assert.equal(role, ROLES.ADMIN);
+  } finally {
+    if (savedEnv !== undefined) {
+      process.env.SYSTEM_ADMIN_USER_IDS = savedEnv;
+    } else {
+      delete process.env.SYSTEM_ADMIN_USER_IDS;
+    }
+  }
+});
+
+test('resolveUserRole (BUG-A2): userId 498 is NOT special when SYSTEM_ADMIN_USER_IDS is unset', () => {
+  const savedEnv = process.env.SYSTEM_ADMIN_USER_IDS;
+  delete process.env.SYSTEM_ADMIN_USER_IDS;
+
+  try {
+    const role = resolveUserRole({
+      userId: 498,
+      isPortalAdmin: false,
+      accessSettings: { adminUserIds: [], reviewerUserIds: [], azsAdminUserIds: [] }
+    });
+    // 498 must no longer be a hardcoded super-admin; falls through to default azs_admin
+    assert.equal(role, ROLES.AZS_ADMIN);
+  } finally {
+    if (savedEnv !== undefined) {
+      process.env.SYSTEM_ADMIN_USER_IDS = savedEnv;
+    }
+  }
 });
 
 test('resolveUserRole defaults regular users to azs_admin role', () => {
