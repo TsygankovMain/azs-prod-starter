@@ -553,6 +553,64 @@ export const useApiStore = defineStore(
       return resp.item
     }
 
+    // ─── Brands ───────────────────────────────────────────────────────────────
+
+    type BrandItem = {
+      id: number
+      name: string
+      diskFolderId: number | null
+      diskFolderPath: string | null
+      externalLink: string | null
+      externalLinkUpdatedAt: string | null
+      azsIds: string[]
+      createdAt: string | null
+      updatedAt: string | null
+    }
+
+    const listBrands = async (): Promise<{ items: BrandItem[] }> => {
+      return await $api('/api/brands', {
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const createBrand = async (name: string): Promise<{ item: BrandItem }> => {
+      return await $api('/api/brands', {
+        method: 'POST',
+        body: { name },
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const updateBrand = async (id: number, name: string): Promise<{ item: BrandItem }> => {
+      return await $api(`/api/brands/${id}`, {
+        method: 'PUT',
+        body: { name },
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const deleteBrand = async (id: number): Promise<{ ok: boolean }> => {
+      return await $api(`/api/brands/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const setBrandAzs = async (id: number, azsIds: string[]): Promise<{ item: BrandItem }> => {
+      return await $api(`/api/brands/${id}/azs`, {
+        method: 'PUT',
+        body: { azsIds },
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const getBrandExternalLink = async (id: number): Promise<{ link: string }> => {
+      return await $api(`/api/brands/${id}/external-link`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
     const getPhotoPreviewObjectUrl = async (reportId: number, photoCode: string): Promise<string> => {
       // Use $api (ofetch baseURL resolution), not raw `${apiUrl}/api/...` string
       // concat: when apiUrl is malformed (e.g. "https:/" from a bad
@@ -641,7 +699,13 @@ export const useApiStore = defineStore(
       getPhotoRecipients,
       sendPhotoRemark,
       getPhotoRemarks,
-      retryPhotoRemark
+      retryPhotoRemark,
+      listBrands,
+      createBrand,
+      updateBrand,
+      deleteBrand,
+      setBrandAzs,
+      getBrandExternalLink
     }
   }
 )
