@@ -61,12 +61,12 @@ export const resolveUserRole = ({
     role = ROLE_ADMIN;
   } else if (hasId(access.adminUserIds)) {
     role = ROLE_ADMIN;
+  } else if (isPortalAdmin) {
+    role = ROLE_ADMIN;
   } else if (hasId(access.reviewerUserIds)) {
     role = ROLE_REVIEWER;
   } else if (hasId(access.azsAdminUserIds)) {
     role = ROLE_AZS_ADMIN;
-  } else if (isPortalAdmin) {
-    role = ROLE_ADMIN;
   }
 
   return role;

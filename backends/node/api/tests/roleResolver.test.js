@@ -158,6 +158,143 @@ test('resolveUserRole defaults regular users to azs_admin role', () => {
   assert.equal(role, ROLES.AZS_ADMIN);
 });
 
+// --- BUG-A7: портал-админ всегда получает роль admin, независимо от списков ---
+
+test('resolveUserRole (BUG-A7-A): портал-админ в reviewerUserIds получает admin, а не reviewer', () => {
+  // Тест A (главный): isPortalAdmin:true, userId 498, reviewerUserIds:[498], env пусто → admin
+  const savedEnv = process.env.SYSTEM_ADMIN_USER_IDS;
+  delete process.env.SYSTEM_ADMIN_USER_IDS;
+
+  try {
+    const role = resolveUserRole({
+      userId: 498,
+      isPortalAdmin: true,
+      accessSettings: {
+        adminUserIds: [],
+        reviewerUserIds: [498],
+        azsAdminUserIds: []
+      }
+    });
+    assert.equal(role, ROLES.ADMIN);
+  } finally {
+    if (savedEnv !== undefined) {
+      process.env.SYSTEM_ADMIN_USER_IDS = savedEnv;
+    }
+  }
+});
+
+test('resolveUserRole (BUG-A7-B): портал-админ в azsAdminUserIds получает admin', () => {
+  const savedEnv = process.env.SYSTEM_ADMIN_USER_IDS;
+  delete process.env.SYSTEM_ADMIN_USER_IDS;
+
+  try {
+    const role = resolveUserRole({
+      userId: 100,
+      isPortalAdmin: true,
+      accessSettings: {
+        adminUserIds: [],
+        reviewerUserIds: [],
+        azsAdminUserIds: [100]
+      }
+    });
+    assert.equal(role, ROLES.ADMIN);
+  } finally {
+    if (savedEnv !== undefined) {
+      process.env.SYSTEM_ADMIN_USER_IDS = savedEnv;
+    }
+  }
+});
+
+test('resolveUserRole (BUG-A7-regress-1): НЕ портал-админ в reviewerUserIds остаётся reviewer', () => {
+  const savedEnv = process.env.SYSTEM_ADMIN_USER_IDS;
+  delete process.env.SYSTEM_ADMIN_USER_IDS;
+
+  try {
+    const role = resolveUserRole({
+      userId: 55,
+      isPortalAdmin: false,
+      accessSettings: {
+        adminUserIds: [],
+        reviewerUserIds: [55],
+        azsAdminUserIds: []
+      }
+    });
+    assert.equal(role, ROLES.REVIEWER);
+  } finally {
+    if (savedEnv !== undefined) {
+      process.env.SYSTEM_ADMIN_USER_IDS = savedEnv;
+    }
+  }
+});
+
+test('resolveUserRole (BUG-A7-regress-2): портал-админ при пустых списках получает admin', () => {
+  const savedEnv = process.env.SYSTEM_ADMIN_USER_IDS;
+  delete process.env.SYSTEM_ADMIN_USER_IDS;
+
+  try {
+    const role = resolveUserRole({
+      userId: 200,
+      isPortalAdmin: true,
+      accessSettings: {
+        adminUserIds: [],
+        reviewerUserIds: [],
+        azsAdminUserIds: []
+      }
+    });
+    assert.equal(role, ROLES.ADMIN);
+  } finally {
+    if (savedEnv !== undefined) {
+      process.env.SYSTEM_ADMIN_USER_IDS = savedEnv;
+    }
+  }
+});
+
+test('resolveUserRole (BUG-A7-regress-3a): systemAdminUserIds даёт admin независимо от isPortalAdmin', () => {
+  const savedEnv = process.env.SYSTEM_ADMIN_USER_IDS;
+  process.env.SYSTEM_ADMIN_USER_IDS = '300';
+
+  try {
+    const role = resolveUserRole({
+      userId: 300,
+      isPortalAdmin: false,
+      accessSettings: {
+        adminUserIds: [],
+        reviewerUserIds: [],
+        azsAdminUserIds: []
+      }
+    });
+    assert.equal(role, ROLES.ADMIN);
+  } finally {
+    if (savedEnv !== undefined) {
+      process.env.SYSTEM_ADMIN_USER_IDS = savedEnv;
+    } else {
+      delete process.env.SYSTEM_ADMIN_USER_IDS;
+    }
+  }
+});
+
+test('resolveUserRole (BUG-A7-regress-3b): adminUserIds даёт admin независимо от isPortalAdmin', () => {
+  const savedEnv = process.env.SYSTEM_ADMIN_USER_IDS;
+  delete process.env.SYSTEM_ADMIN_USER_IDS;
+
+  try {
+    const role = resolveUserRole({
+      userId: 400,
+      isPortalAdmin: false,
+      accessSettings: {
+        adminUserIds: [400],
+        reviewerUserIds: [],
+        azsAdminUserIds: []
+      }
+    });
+    assert.equal(role, ROLES.ADMIN);
+  } finally {
+    if (savedEnv !== undefined) {
+      process.env.SYSTEM_ADMIN_USER_IDS = savedEnv;
+    }
+  }
+});
+
 test('resolveAccessContext returns capabilities by role', () => {
   const accessContext = resolveAccessContext({
     userId: 44,
