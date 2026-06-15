@@ -751,7 +751,7 @@ const showAllSlots = ref(false)
 // Авто-раскрытие списка при появлении ошибок загрузки (LOGIC-F2)
 watch(hasUploadErrors, (hasErr) => {
   if (hasErr) showAllSlots.value = true
-})
+}, { immediate: true })
 </script>
 
 <template>
