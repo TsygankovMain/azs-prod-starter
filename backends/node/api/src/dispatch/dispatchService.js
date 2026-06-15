@@ -194,12 +194,29 @@ export const createDispatchService = ({
         const plannedAt = buildZonedDatetime(plannedDate, slotHHmm, tz);
         scheduledAt = addMinutes(plannedAt, jitterMinutes);
       }
-      // BUG-024: дедлайн = max(плановый, now) + timeout.
-      // Если воркер забрал слот с опозданием, AZS всегда получает полный window
-      // с момента ФАКТИЧЕСКОЙ отправки. Используем max чтобы не укорачивать
-      // future-дедлайны для слотов, которые ещё не наступили.
-      const effectiveBase = new Date(Math.max(scheduledAt.getTime(), nowValue.getTime()));
-      const deadlineAt = addMinutes(effectiveBase, timeoutMinutes);
+      // S8-БЛОКЕР #2: deadlineOverride (AC-13, режим B).
+      // Если кандидат несёт candidate.deadlineAt (deadline_at из плановой строки
+      // dispatch_plan — конец последнего окна эскалации режима B), используем его
+      // ВМЕСТО формулы BUG-024. Режим A и не-профильные (deadline_at=null) →
+      // прежняя формула (без регресса).
+      let deadlineAt;
+      const overrideRaw = candidate.deadlineAt;
+      const hasOverride = overrideRaw instanceof Date
+        || (typeof overrideRaw === 'string' && String(overrideRaw).trim() !== '');
+      if (hasOverride) {
+        const parsed = new Date(overrideRaw);
+        if (!Number.isNaN(parsed.getTime())) {
+          deadlineAt = parsed;
+        }
+      }
+      if (!deadlineAt) {
+        // BUG-024: дедлайн = max(плановый, now) + timeout.
+        // Если воркер забрал слот с опозданием, AZS всегда получает полный window
+        // с момента ФАКТИЧЕСКОЙ отправки. Используем max чтобы не укорачивать
+        // future-дедлайны для слотов, которые ещё не наступили.
+        const effectiveBase = new Date(Math.max(scheduledAt.getTime(), nowValue.getTime()));
+        deadlineAt = addMinutes(effectiveBase, timeoutMinutes);
+      }
       const fields = buildReportFields({
         settings,
         candidate,

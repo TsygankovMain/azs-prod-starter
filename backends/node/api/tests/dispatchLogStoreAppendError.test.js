@@ -251,14 +251,16 @@ test('reserve (PG): uses caller-supplied scheduledAt (timezone-correct) when pro
 
 test('reserve (PG): stale-detect fires 30 min after Moscow slot 0900 (staleBefore = 06:30Z)', async () => {
   // staleBefore = 06:30Z, scheduled_at = 06:00Z → 06:00 < 06:30 → row IS stale → query params confirm threshold
+  // S8-БЛОКЕР #3а: params[1] = '%:reminder:%' (NOT LIKE exclusion), params[2] = staleBefore
   const pool = makePostgresPool();
   const store = createDispatchLogStore({ pool, dbType: 'postgres' });
   const staleBefore = new Date('2026-06-11T06:30:00.000Z'); // 30 min after 06:00Z
   await store.listStalePlanned({ staleBefore });
   const { params } = pool.queries[0];
-  // PG passes staleBefore directly as a Date
-  assert.ok(params[1] instanceof Date, 'threshold should be a Date');
-  assert.equal(params[1].toISOString(), '2026-06-11T06:30:00.000Z',
+  // PG: params[0]='reserved', params[1]='%:reminder:%', params[2]=staleBefore (Date)
+  assert.equal(params[1], '%:reminder:%', 'params[1] should be the reminder exclusion pattern');
+  assert.ok(params[2] instanceof Date, 'threshold should be a Date');
+  assert.equal(params[2].toISOString(), '2026-06-11T06:30:00.000Z',
     'stale threshold at 06:30Z triggers for Moscow 0900 slot (scheduled_at 06:00Z)');
 });
 
@@ -318,7 +320,10 @@ test('future manual slot (created far in past, scheduled 1h from now) must NOT b
   const result = await store.listStalePlanned({ staleBefore });
   assert.equal(result.length, 0, 'future manual slot must not be returned as stale (regression guard)');
   // Verify threshold param is correctly passed so the WHERE clause uses it
-  const threshold = pool.queries[0].params[1];
+  // S8-БЛОКЕР #3а: params[1] = '%:reminder:%' (NOT LIKE exclusion), params[2] = staleBefore
+  const reminderExclude = pool.queries[0].params[1];
+  assert.equal(reminderExclude, '%:reminder:%', 'params[1] must be reminder exclusion pattern');
+  const threshold = pool.queries[0].params[2];
   assert.ok(threshold instanceof Date, 'staleBefore must be passed as Date to DB');
   assert.equal(threshold.toISOString(), '2026-06-11T09:30:00.000Z');
 });
