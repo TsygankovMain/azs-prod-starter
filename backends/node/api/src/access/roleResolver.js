@@ -1,7 +1,6 @@
 const ROLE_ADMIN = 'admin';
 const ROLE_REVIEWER = 'reviewer';
 const ROLE_AZS_ADMIN = 'azs_admin';
-const SYSTEM_ADMIN_USER_IDS = [498];
 
 const splitCsv = (value) => String(value || '')
   .split(/[,\n;]+/g)
@@ -54,9 +53,10 @@ export const resolveUserRole = ({
   const normalizedUserId = parseUserId(userId);
   const access = normalizeAccessSettings({ access: accessSettings });
   const hasId = (list) => list.includes(normalizedUserId);
+  const systemAdminUserIds = normalizeUserIdList(process.env.SYSTEM_ADMIN_USER_IDS);
 
   let role = ROLE_AZS_ADMIN;
-  if (hasId(SYSTEM_ADMIN_USER_IDS)) {
+  if (hasId(systemAdminUserIds)) {
     role = ROLE_ADMIN;
   } else if (hasId(access.adminUserIds)) {
     role = ROLE_ADMIN;
