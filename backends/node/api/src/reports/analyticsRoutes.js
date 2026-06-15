@@ -138,6 +138,20 @@ export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClie
       res.setHeader('Cache-Control', 'private, max-age=3600');
       return res.send(buffer);
     } catch (err) {
+      // BUG-P2: distinguish auth-broken failures from transient upstream errors.
+      // Auth-class signals: invalid_client / wrong_client in err.code or message.
+      // These require operator action (re-auth / fix admin context) → 503.
+      // Transient/network errors keep 502 so callers don't mislabel blips.
+      const AUTH_CODES = ['invalid_client', 'wrong_client'];
+      const errCode = String(err.code || '').toLowerCase();
+      const errMsg  = String(err.message || '').toLowerCase();
+      const isAuthBroken = AUTH_CODES.some(c => errCode === c || errMsg.includes(c));
+      if (isAuthBroken) {
+        return res.status(503).json({
+          error: 'preview_auth_broken',
+          message: 'Photo preview authorization is broken — re-authorize the application or restore the admin context.',
+        });
+      }
       return res.status(502).json({ error: 'preview_failed', message: err.message });
     }
   });
