@@ -190,7 +190,8 @@ export const createDispatchService = ({
         jitterMinutes = Number.isFinite(Number(candidate.jitterMinutes)) ? Number(candidate.jitterMinutes) : 0;
       } else {
         jitterMinutes = pickJitterMinutes(jitterLimit, rng);
-        const plannedAt = parseSlotDateTimeUtc({ slotDate: plannedDate, slotHHmm });
+        const tz = String(settings?.timezone || '').trim();
+        const plannedAt = buildZonedDatetime(plannedDate, slotHHmm, tz);
         scheduledAt = addMinutes(plannedAt, jitterMinutes);
       }
       // BUG-024: дедлайн = max(плановый, now) + timeout.
