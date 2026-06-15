@@ -86,6 +86,7 @@ const manualError = ref('')
 const manualSuccess = ref('')
 const timeoutMessage = ref('')
 const hasReviewerAccess = ref(false)
+const hasSettingsAccess = ref(false)
 const reports = ref<ReportRow[]>([])
 const azsOptions = ref<AzsOption[]>([])
 const azsSearchQuery = ref('')
@@ -478,6 +479,10 @@ const addDispatchTime = () => {
 const saveSchedule = async () => {
   saveScheduleError.value = ''
   saveScheduleSuccess.value = ''
+  if (!hasSettingsAccess.value) {
+    saveScheduleError.value = 'Недостаточно прав: расписание может менять только администратор'
+    return
+  }
   try {
     const response = await apiStore.getSettings()
     const settings = (response.settings ?? {}) as Record<string, unknown>
@@ -766,8 +771,10 @@ const loadRoleAccess = async () => {
   try {
     const response = await apiStore.getMyRole()
     hasReviewerAccess.value = Boolean(response.capabilities?.reviewer || response.capabilities?.settings)
+    hasSettingsAccess.value = Boolean(response.capabilities?.settings)
   } catch {
     hasReviewerAccess.value = false
+    hasSettingsAccess.value = false
   }
 }
 
@@ -1276,11 +1283,16 @@ onMounted(async () => {
                 </div>
 
                 <button
-                  class="w-full px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium"
+                  class="w-full px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium"
+                  :disabled="!hasSettingsAccess"
+                  :title="!hasSettingsAccess ? 'Расписание может менять только администратор' : undefined"
                   @click="saveSchedule"
                 >
                   Сохранить расписание
                 </button>
+                <p v-if="!hasSettingsAccess" class="text-xs text-gray-400 text-center">
+                  Только администратор может изменять расписание
+                </p>
 
                 <B24Alert
                   v-if="saveScheduleSuccess"
