@@ -433,6 +433,38 @@ const createPostgresStore = (pool) => ({
       fileId: row.file_id ? Number(row.file_id) : null,
       azsId: row.azs_id ? String(row.azs_id) : null
     };
+  },
+
+  // ---------------------------------------------------------------------------
+  // S8-A3 БЛОКЕР 2+3: getActiveReportForAzsOnDate
+  // Ищет последний/актуальный отчёт (dispatch_log) данной АЗС за указанную дату
+  // по полям azs_id + slot_key LIKE 'planDate:%'.
+  // Возвращает viewModel со статусом или null если отчёт не найден.
+  // Используется исполнителем напоминаний в dispatchScheduler для проверки OR-6.
+  // ---------------------------------------------------------------------------
+  async getActiveReportForAzsOnDate({ azsId, planDate }) {
+    if (!azsId || !planDate) return null;
+    // slot_key формат: YYYY-MM-DD:HHmm (или manual:YYYY-MM-DD:HHmm)
+    // Ищем по дате начала slot_key: и primary-часть planDate: и manual:planDate:
+    const result = await pool.query(
+      `SELECT *
+       FROM dispatch_log
+       WHERE azs_id = $1
+         AND (slot_key LIKE $2 OR slot_key LIKE $3)
+       ORDER BY
+         CASE status
+           WHEN 'done' THEN 0
+           WHEN 'in_progress' THEN 1
+           WHEN 'new' THEN 2
+           WHEN 'reserved' THEN 3
+           ELSE 9
+         END,
+         id DESC
+       LIMIT 1`,
+      [String(azsId), `${planDate}:%`, `manual:${planDate}:%`]
+    );
+    if (!result.rows.length) return null;
+    return toViewModel(result.rows[0]);
   }
 });
 
@@ -814,6 +846,35 @@ const createMysqlStore = (pool) => ({
       fileId: row.file_id ? Number(row.file_id) : null,
       azsId: row.azs_id ? String(row.azs_id) : null
     };
+  },
+
+  // ---------------------------------------------------------------------------
+  // S8-A3 БЛОКЕР 2+3: getActiveReportForAzsOnDate (MySQL)
+  // Ищет последний/актуальный отчёт (dispatch_log) данной АЗС за указанную дату
+  // по полям azs_id + slot_key LIKE 'planDate:%'.
+  // Возвращает viewModel со статусом или null если отчёт не найден.
+  // ---------------------------------------------------------------------------
+  async getActiveReportForAzsOnDate({ azsId, planDate }) {
+    if (!azsId || !planDate) return null;
+    const [rows] = await pool.execute(
+      `SELECT *
+       FROM dispatch_log
+       WHERE azs_id = ?
+         AND (slot_key LIKE ? OR slot_key LIKE ?)
+       ORDER BY
+         CASE status
+           WHEN 'done' THEN 0
+           WHEN 'in_progress' THEN 1
+           WHEN 'new' THEN 2
+           WHEN 'reserved' THEN 3
+           ELSE 9
+         END,
+         id DESC
+       LIMIT 1`,
+      [String(azsId), `${planDate}:%`, `manual:${planDate}:%`]
+    );
+    if (!rows.length) return null;
+    return toViewModel(rows[0]);
   }
 });
 

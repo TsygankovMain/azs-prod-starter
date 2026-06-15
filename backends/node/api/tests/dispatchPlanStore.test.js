@@ -4,6 +4,7 @@ import { createDispatchPlanStore } from '../src/reports/dispatchPlanStore.js';
 
 // ---------------------------------------------------------------------------
 // Fake PG pool — mirrors the style of crmSyncJobStore.test.js
+// S8-A3: уникальный ключ по 5 полям (plan_date, azs_id, base_time, entry_type, window_index)
 // ---------------------------------------------------------------------------
 const createFakePgPool = () => {
   const rows = [];
@@ -15,12 +16,28 @@ const createFakePgPool = () => {
 
       if (text.startsWith('CREATE TABLE')) return { rows: [] };
       if (text.startsWith('CREATE INDEX')) return { rows: [] };
+      if (text.startsWith('ALTER TABLE')) return { rows: [] };
+      // DO $$ блок для миграции UNIQUE ключа
+      if (text.startsWith('DO $$') || text.startsWith('DO $')) return { rows: [] };
 
-      // INSERT INTO dispatch_plan ... ON CONFLICT ... DO NOTHING RETURNING *
+      // INSERT INTO dispatch_plan ... ON CONFLICT (plan_date, azs_id, base_time, entry_type, window_index) DO NOTHING RETURNING *
       if (text.startsWith('INSERT INTO dispatch_plan')) {
-        const key = `${params[0]}|${params[1]}|${params[3]}`; // planDate|azsId|baseTime
+        // params: planDate[0], azsId[1], adminUserId[2], baseTime[3], executeAt[4],
+        //         jitterMinutes[5], entryType[6], windowIndex[7], deadlineAt[8]
+        const planDate = params[0];
+        const azsId = params[1];
+        const adminUserId = params[2];
+        const baseTime = params[3];
+        const executeAt = params[4];
+        const jitterMinutes = params[5] ?? 0;
+        const entryType = params[6] ?? 'primary';
+        const windowIndex = params[7] ?? 0;
+        const deadlineAt = params[8] ?? null;
+
+        // S8-A3: уникальный ключ по 5 полям
         const existing = rows.find(
-          (r) => r.plan_date === params[0] && r.azs_id === params[1] && r.base_time === params[3]
+          (r) => r.plan_date === planDate && r.azs_id === azsId && r.base_time === baseTime
+               && r.entry_type === entryType && r.window_index === windowIndex
         );
         if (existing) {
           // ON CONFLICT DO NOTHING → return empty rows (like real PG)
@@ -29,12 +46,15 @@ const createFakePgPool = () => {
         seq += 1;
         const row = {
           id: seq,
-          plan_date: params[0],
-          azs_id: params[1],
-          admin_user_id: params[2],
-          base_time: params[3],
-          execute_at: params[4],
-          jitter_minutes: params[5],
+          plan_date: planDate,
+          azs_id: azsId,
+          admin_user_id: adminUserId,
+          base_time: baseTime,
+          execute_at: executeAt,
+          jitter_minutes: jitterMinutes,
+          entry_type: entryType,
+          window_index: windowIndex,
+          deadline_at: deadlineAt,
           status: 'planned',
           report_item_id: null,
           error_text: null,
@@ -283,4 +303,79 @@ test('deletePlannedForDate removes planned rows but keeps dispatched ones; retur
   assert.equal(remaining.length, 1, 'only the dispatched row remains');
   assert.equal(remaining[0].status, 'dispatched');
   assert.equal(remaining[0].azs_id, 'AZS-A');
+});
+
+// ---------------------------------------------------------------------------
+// S8-A3 БЛОКЕР 1: тест коллизии — primary и reminder с ОДИНАКОВЫМ base_time
+// Проверяем, что обе строки сосуществуют (ранее замаскированный сценарий)
+// ---------------------------------------------------------------------------
+
+test('S8-A3: primary и reminder с одинаковым base_time для одной АЗС/даты — обе строки сосуществуют', async () => {
+  const pool = createFakePgPool();
+  const store = createDispatchPlanStore({ pool, dbType: 'postgresql' });
+  await store.ensureSchema();
+
+  const sameBaseTime = '0730'; // одинаковое базовое время!
+  const planDate = '2026-06-20';
+  const azsId = 'AZS-01';
+
+  // primary-точка (windowIndex=0)
+  const primaryRow = await store.upsertPlanned({
+    planDate,
+    azsId,
+    adminUserId: 100,
+    baseTime: sameBaseTime,
+    executeAt: makeDate(-120_000),
+    jitterMinutes: 0,
+    entryType: 'primary',
+    windowIndex: 0
+  });
+
+  // reminder-точка (windowIndex=1) с ТЕМ ЖЕ base_time — раньше вызывала коллизию!
+  const reminderRow = await store.upsertPlanned({
+    planDate,
+    azsId,
+    adminUserId: 100,
+    baseTime: sameBaseTime,
+    executeAt: makeDate(-60_000),
+    jitterMinutes: 0,
+    entryType: 'reminder',
+    windowIndex: 1
+  });
+
+  // Обе строки должны существовать (уникальность по 5 полям: entry_type/window_index различаются)
+  assert.ok(primaryRow, 'primary-строка вставлена');
+  assert.ok(reminderRow, 'reminder-строка вставлена (НЕ потеряна из-за коллизии base_time)');
+  assert.notEqual(primaryRow.id, reminderRow.id, 'строки имеют разные id');
+
+  const all = await store.listByDate({ planDate });
+  assert.equal(all.length, 2, 'обе строки (primary + reminder) в таблице — коллизии нет');
+
+  const primary = all.find((r) => r.entry_type === 'primary' || r.entry_type === undefined);
+  const reminder = all.find((r) => r.entry_type === 'reminder');
+  assert.ok(primary, 'primary-строка в listByDate');
+  assert.ok(reminder, 'reminder-строка в listByDate');
+});
+
+test('S8-A3: повторный upsert primary с теми же 5 полями — идемпотентен (ON CONFLICT DO NOTHING)', async () => {
+  const pool = createFakePgPool();
+  const store = createDispatchPlanStore({ pool, dbType: 'postgresql' });
+  await store.ensureSchema();
+
+  await store.upsertPlanned({
+    planDate: '2026-06-20', azsId: 'AZS-01', adminUserId: 100,
+    baseTime: '0730', executeAt: makeDate(-60_000),
+    jitterMinutes: 0, entryType: 'primary', windowIndex: 0
+  });
+  // повторный вызов с теми же 5 ключевыми полями
+  const dup = await store.upsertPlanned({
+    planDate: '2026-06-20', azsId: 'AZS-01', adminUserId: 100,
+    baseTime: '0730', executeAt: makeDate(-30_000),
+    jitterMinutes: 3, entryType: 'primary', windowIndex: 0
+  });
+
+  // PG: ON CONFLICT DO NOTHING → null (строка не создана повторно)
+  assert.equal(dup, null, 'дублирующий upsert возвращает null (ON CONFLICT DO NOTHING)');
+  const all = await store.listByDate({ planDate: '2026-06-20' });
+  assert.equal(all.length, 1, 'только одна строка в таблице после дублирующего upsert');
 });
