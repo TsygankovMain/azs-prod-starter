@@ -607,8 +607,9 @@ app.use('/api/photo-remarks', verifyToken, attachAccessContext, createPhotoRemar
 // When JOB_SECRET is configured, any request without the correct ?s param is
 // silently ignored (fail-closed): returns 200 {ok:true,handled:false} so that
 // Bitrix24's retry mechanism does not keep hammering the endpoint.
-// When JOB_SECRET is NOT set (dev / unconfigured deploy) a one-time warning is
-// logged and requests are processed without verification (fallback open).
+// When JOB_SECRET is NOT set the endpoint is ALSO fail-closed: a one-time
+// warning is logged and the request is rejected. Without a secret the bot
+// callback URL is already misconfigured, so failing closed is safe (BUG-S2).
 // ---------------------------------------------------------------------------
 
 // One-time warning flag: log once per process lifetime when no secret is set.
@@ -626,12 +627,14 @@ app.post('/api/bot/event', async (req, res) => {
         return res.json({ ok: true, handled: false });
       }
     } else {
-      // Secret NOT configured → log a one-time startup-style warning and proceed
-      // so dev and unconfigured envs still work.
+      // Secret NOT configured → fail-closed (BUG-S2): log once, then reject.
+      // The bot callback URL already embeds ?s=JOB_SECRET; without it the URL
+      // is misconfigured so failing closed does not break a correctly-configured bot.
       if (!_botEventUnverifiedWarned) {
         _botEventUnverifiedWarned = true;
         console.warn('/api/bot/event: JOB_SECRET is not set — endpoint is UNVERIFIED; set JOB_SECRET in production');
       }
+      return res.json({ ok: true, handled: false });
     }
     // ── END SECURITY GATE ─────────────────────────────────────────────────────
 
