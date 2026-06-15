@@ -625,7 +625,8 @@ const syncReportCrmStrict = async ({
   photos,
   diskFolderId,
   folderFieldCode,
-  context = {}
+  context = {},
+  logger = console
 }) => {
   await updateReportCrmItem({
     bitrixClient,
@@ -635,7 +636,8 @@ const syncReportCrmStrict = async ({
     photos,
     diskFolderId,
     requireReportItem: true,
-    context
+    context,
+    logger
   });
 
   await verifyCrmFolderSync({

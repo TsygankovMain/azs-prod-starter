@@ -263,3 +263,144 @@ test('updateReportCrmItem on in_progress does NOT touch photos field', async () 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].fields['UF_PHOTOS'], undefined, 'in_progress must not set photos field');
 });
+
+// ---- BUG-P1: crm_photos_dropped observability ----
+
+const makeLoggerSpy = () => {
+  const calls = { warn: [], error: [] };
+  return {
+    warn: (...args) => calls.warn.push(args),
+    error: (...args) => calls.error.push(args),
+    calls
+  };
+};
+
+const makeFakeBitrixClientWithDisk = () => {
+  const updateCalls = [];
+  return {
+    client: {
+      diskApi: {
+        async downloadFileContent(id) {
+          return { base64: `b64_${id}`, name: `disk_${id}.jpg` };
+        }
+      },
+      async updateReportItem(payload) {
+        updateCalls.push(payload);
+        return { ok: true };
+      }
+    },
+    updateCalls
+  };
+};
+
+// Test A: total loss — all photos lack diskObjectId
+test('updateReportCrmItem on done with ALL photos missing diskObjectId logs warn+error and does NOT set photos field', async () => {
+  const { client, updateCalls } = makeFakeBitrixClientWithDisk();
+  const logger = makeLoggerSpy();
+
+  const photos = [
+    { diskObjectId: 0, fileName: 'a.jpg' },
+    { diskObjectId: undefined, fileName: 'b.jpg' }
+  ];
+
+  await updateReportCrmItem({
+    bitrixClient: client,
+    settings,
+    report: { id: 42, reportItemId: 9010 },
+    status: 'done',
+    photos,
+    logger
+  });
+
+  // updateReportItem must still be called (done sync must NOT be blocked)
+  assert.equal(updateCalls.length, 1, 'updateReportItem must still be called');
+
+  // photos field must NOT be set (empty pairs → do not overwrite CRM)
+  assert.equal(updateCalls[0].fields['UF_PHOTOS'], undefined, 'photos field must NOT be set on total loss');
+
+  // warn must be called with crm_photos_dropped event and correct counts
+  assert.equal(logger.calls.warn.length, 1, 'warn must be called exactly once');
+  const warnArg = logger.calls.warn[0];
+  assert.equal(warnArg[0], 'crm_photos_dropped');
+  assert.equal(warnArg[1].event, 'crm_photos_dropped');
+  assert.equal(warnArg[1].expected, 2);
+  assert.equal(warnArg[1].attached, 0);
+  assert.equal(warnArg[1].reportId, 42);
+
+  // error must also be called for total loss (data-integrity alarm)
+  assert.equal(logger.calls.error.length, 1, 'error must be called for total loss');
+  const errArg = logger.calls.error[0];
+  assert.equal(errArg[0], 'crm_photos_all_dropped');
+  assert.equal(errArg[1].event, 'crm_photos_all_dropped');
+  assert.equal(errArg[1].expected, 2);
+  assert.equal(errArg[1].reportId, 42);
+});
+
+// Test B: partial loss — 1 out of 3 photos has diskObjectId
+test('updateReportCrmItem on done with PARTIAL photo loss logs warn (no error) and sets the surviving pair', async () => {
+  const { client, updateCalls } = makeFakeBitrixClientWithDisk();
+  const logger = makeLoggerSpy();
+
+  const photos = [
+    { diskObjectId: 55, fileName: 'good.jpg' },
+    { diskObjectId: 0, fileName: 'bad1.jpg' },
+    { diskObjectId: null, fileName: 'bad2.jpg' }
+  ];
+
+  await updateReportCrmItem({
+    bitrixClient: client,
+    settings,
+    report: { id: 77, reportItemId: 9011 },
+    status: 'done',
+    photos,
+    logger
+  });
+
+  assert.equal(updateCalls.length, 1, 'updateReportItem must be called');
+
+  // photos field must be set with the 1 surviving pair
+  const capturedPhotos = updateCalls[0].fields['UF_PHOTOS'];
+  assert.ok(Array.isArray(capturedPhotos), 'UF_PHOTOS must be an array');
+  assert.equal(capturedPhotos.length, 1, 'only the 1 valid pair');
+  assert.equal(capturedPhotos[0][0], 'good.jpg');
+
+  // warn must be called with correct counts
+  assert.equal(logger.calls.warn.length, 1, 'warn must be called for partial loss');
+  const warnArg = logger.calls.warn[0];
+  assert.equal(warnArg[0], 'crm_photos_dropped');
+  assert.equal(warnArg[1].expected, 3);
+  assert.equal(warnArg[1].attached, 1);
+
+  // no error for partial loss
+  assert.equal(logger.calls.error.length, 0, 'error must NOT be called for partial loss');
+});
+
+// Test C: no loss — all photos have diskObjectId
+test('updateReportCrmItem on done with NO photo loss emits no warn/error and sets all pairs', async () => {
+  const { client, updateCalls } = makeFakeBitrixClientWithDisk();
+  const logger = makeLoggerSpy();
+
+  const photos = [
+    { diskObjectId: 10, fileName: 'p1.jpg' },
+    { diskObjectId: 11, fileName: 'p2.jpg' }
+  ];
+
+  await updateReportCrmItem({
+    bitrixClient: client,
+    settings,
+    report: { id: 99, reportItemId: 9012 },
+    status: 'done',
+    photos,
+    logger
+  });
+
+  assert.equal(updateCalls.length, 1, 'updateReportItem must be called');
+
+  const capturedPhotos = updateCalls[0].fields['UF_PHOTOS'];
+  assert.ok(Array.isArray(capturedPhotos), 'UF_PHOTOS must be an array');
+  assert.equal(capturedPhotos.length, 2, 'all 2 pairs present');
+
+  // no logging at all when no photos are lost
+  assert.equal(logger.calls.warn.length, 0, 'no warn when no loss');
+  assert.equal(logger.calls.error.length, 0, 'no error when no loss');
+});

@@ -67,7 +67,8 @@ export const updateReportCrmItem = async ({
   photos = [],
   diskFolderId = null,
   requireReportItem = false,
-  context = {}
+  context = {},
+  logger = console
 }) => {
   const entityTypeId = Number(settings?.report?.entityTypeId || 0);
   const reportItemId = Number(report?.reportItemId || 0);
@@ -102,6 +103,23 @@ export const updateReportCrmItem = async ({
         diskApi: bitrixClient.diskApi,
         context
       });
+      if (pairs.length < photos.length) {
+        logger.warn('crm_photos_dropped', {
+          event: 'crm_photos_dropped',
+          reportId: report?.id,
+          reportItemId,
+          expected: photos.length,
+          attached: pairs.length
+        });
+        if (pairs.length === 0) {
+          logger.error('crm_photos_all_dropped', {
+            event: 'crm_photos_all_dropped',
+            reportId: report?.id,
+            reportItemId,
+            expected: photos.length
+          });
+        }
+      }
       if (pairs.length) {
         fields[photosFieldCode] = pairs;
       }
