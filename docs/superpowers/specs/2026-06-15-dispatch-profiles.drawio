@@ -1,0 +1,366 @@
+<mxfile host="app.diagrams.net" modified="2026-06-15T12:00:00.000Z" agent="claude" version="24.0.0">
+  <diagram id="dispatch-profiles-config" name="1. Модель конфигурации">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title1" value="Модель конфигурации: Профили рассылки → назначение АЗС → конфиг режима (A / B)" style="text;html=1;fontSize=18;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="1800" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend1" value="Легенда:  ⬛ объект конфигурации   🟦 режим A (слоты+джиттер)   🟩 режим B (окна, случайно)   🟧 профиль «По умолчанию»   → ссылка/состав" style="text;html=1;fontSize=12;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="55" width="1600" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- settings root -->
+        <mxCell id="cfg_root" value="settings (JSON)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="40" y="100" width="200" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- dispatchProfiles array -->
+        <mxCell id="cfg_profiles" value="settings.dispatchProfiles[ ]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="320" y="100" width="260" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- default profile -->
+        <mxCell id="cfg_default" value="Профиль «По умолчанию»&#10;(из settings.report.*)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="680" y="40" width="240" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- profile 1 -->
+        <mxCell id="cfg_p1" value="Профиль 1&#10;id, name, azsIds[], mode, config, timezone?" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="680" y="130" width="240" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- profile 2 -->
+        <mxCell id="cfg_p2" value="Профиль 2&#10;id, name, azsIds[], mode, config, timezone?" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="680" y="220" width="240" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- mode A config -->
+        <mxCell id="cfg_modeA" value="Конфиг режима A&#10;slots: [&quot;09:00&quot;, &quot;17:00&quot;]&#10;jitterMinutes: 15" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bbdefb;strokeColor=#1976d2;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="110" width="240" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- mode B config -->
+        <mxCell id="cfg_modeB" value="Конфиг режима B&#10;windows: [{from,to}...]&#10;countPerDay: 1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="210" width="240" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- azsIds for p1 -->
+        <mxCell id="cfg_azs1" value="azsIds: [&quot;42&quot;, &quot;117&quot;, &quot;234&quot;]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="40" width="240" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- resolve logic -->
+        <mxCell id="cfg_resolve" value="resolveProfileForAzs(azsId)&#10;1. Ищет azsId в profies[].azsIds&#10;2. Найден → профиль&#10;3. Не найден → «По умолчанию»" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="680" y="330" width="300" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- timezone resolve -->
+        <mxCell id="cfg_tz" value="timezone: профиль.timezone ?? settings.timezone&#10;(null → глобальная таймзона портала)" style="text;html=1;fontSize=11;align=left;" vertex="1" parent="1">
+          <mxGeometry x="680" y="430" width="400" height="36" as="geometry" />
+        </mxCell>
+
+        <!-- edges -->
+        <mxCell id="e_root_profiles" style="endArrow=block;html=1;" edge="1" parent="1" source="cfg_root" target="cfg_profiles">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_profiles_default" style="endArrow=block;html=1;dashed=1;strokeColor=#d79b00;" edge="1" parent="1" source="cfg_profiles" target="cfg_default">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_profiles_p1" style="endArrow=block;html=1;" edge="1" parent="1" source="cfg_profiles" target="cfg_p1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_profiles_p2" style="endArrow=block;html=1;" edge="1" parent="1" source="cfg_profiles" target="cfg_p2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_p1_azs" style="endArrow=block;html=1;" edge="1" parent="1" source="cfg_p1" target="cfg_azs1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_p1_modeA" value="mode=A" style="endArrow=block;html=1;" edge="1" parent="1" source="cfg_p1" target="cfg_modeA">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_p2_modeB" value="mode=B" style="endArrow=block;html=1;" edge="1" parent="1" source="cfg_p2" target="cfg_modeB">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_profiles_resolve" style="endArrow=block;html=1;dashed=1;" edge="1" parent="1" source="cfg_profiles" target="cfg_resolve">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- note: one azs = one profile -->
+        <mxCell id="cfg_note" value="Инвариант: каждая АЗС — ровно в одном профиле.&#10;UI блокирует добавление в два профиля сразу." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="330" width="340" height="60" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="dispatch-plan-gen" name="2. Генерация дневного плана">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title2" value="Генерация дневного плана: для каждой АЗС → резолв профиля → ветка A / B (1 отчёт + эскалация по окнам) → план (reserve, идемпотентность)" style="text;html=1;fontSize=16;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="2200" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- START -->
+        <mxCell id="g_start" value="START&#10;planDate (YYYY-MM-DD)&#10;candidates[] из CRM" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- for each candidate -->
+        <mxCell id="g_foreach" value="для каждой АЗС&#10;(candidate.azsId)" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="320" y="75" width="200" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- resolve profile -->
+        <mxCell id="g_resolve" value="resolveProfileForAzs&#10;(azsId, dispatchProfiles)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="600" y="85" width="220" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- branch mode -->
+        <mxCell id="g_branch" value="profile.mode?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="900" y="75" width="180" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ===== MODE A branch ===== -->
+        <mxCell id="g_modeA_label" value="MODE A — слоты + джиттер" style="text;html=1;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="58" width="200" height="24" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeA_for" value="для каждого slot&#10;в profile.config.slots" style="rhombus;whiteSpace=wrap;html=1;fillColor=#bbdefb;strokeColor=#1976d2;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="90" width="180" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeA_jitter" value="jitter = pickJitterMinutes&#10;(config.jitterMinutes, rng)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bbdefb;strokeColor=#1976d2;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="200" width="200" height="56" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeA_exec" value="executeAt = computeExecuteAt(&#10;  planDate, baseTime=slot,&#10;  jitter, workWindow?, tz)&#10;[dispatchPlanGenerator.js:172]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bbdefb;strokeColor=#1976d2;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="290" width="210" height="76" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeA_key" value="slotKey = buildSlotKey(planDate, slot)&#10;[dispatchService.js:21]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bbdefb;strokeColor=#1976d2;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="400" width="210" height="56" as="geometry" />
+        </mxCell>
+
+        <!-- ===== MODE B branch ===== -->
+        <mxCell id="g_modeB_label" value="MODE B — 1 отчёт/день + эскалация по окнам (РЕШЕНО OR-1)" style="text;html=1;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="58" width="440" height="24" as="geometry" />
+        </mxCell>
+
+        <!-- B: PRIMARY POINT (window[0]) -->
+        <mxCell id="g_modeB_primary_label" value="▶ ПЕРВИЧНАЯ ТОЧКА (окно[0])" style="text;html=1;fontSize=11;fontStyle=1;fontColor=#1b5e20;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="88" width="280" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeB_seed0" value="seed = hash(planDate+&quot;:&quot;+azsId+&quot;:0&quot;)&#10;baseTime0 = pickRandomMomentInWindows&#10;(planDate, azsId, [windows[0]], tz)&#10;→ HHMM (детерминированный)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="112" width="280" height="76" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeB_deadline" value="deadlineAt = buildZonedDatetime(&#10;  planDate, windows[N-1].to, tz)&#10;[НЕ now+timeoutMinutes!]&#10;→ конец ПОСЛЕДНЕГО окна" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="210" width="280" height="76" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeB_primary_upsert" value="planStore.upsertPlanned(&#10;  ..., baseTime0, entryType=&apos;primary&apos;,&#10;  windowIndex=0, deadlineAt)&#10;[dispatchPlanGenerator.js:252]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="310" width="280" height="76" as="geometry" />
+        </mxCell>
+
+        <!-- B: ESCALATION LOOP -->
+        <mxCell id="g_modeB_esc_label" value="▶ НАПОМИНАНИЕ-ТОЧКИ (окна[1..N-1])&#10;если escalateUntilDone = true" style="text;html=1;fontSize=11;fontStyle=1;fontColor=#1b5e20;" vertex="1" parent="1">
+          <mxGeometry x="1800" y="88" width="340" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeB_esc_for" value="для каждого окна[i], i=1..N-1" style="rhombus;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1820" y="124" width="200" height="64" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeB_esc_seed" value="seed = hash(planDate+&quot;:&quot;+azsId+&quot;:i&quot;)&#10;baseTimeI = pickRandomMomentInWindows&#10;(planDate, azsId, [windows[i]], tz)&#10;→ HHMM (детерминированный)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1800" y="210" width="280" height="76" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeB_esc_upsert" value="planStore.upsertPlanned(&#10;  ..., baseTimeI, entryType=&apos;reminder&apos;,&#10;  windowIndex=i)&#10;reminderSlotKey = planDate+&apos;:&apos;+HHMM+&apos;:reminder:&apos;+i" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1800" y="310" width="280" height="76" as="geometry" />
+        </mxCell>
+
+        <!-- EXECUTION: reminder runtime check -->
+        <mxCell id="g_modeB_exec_label" value="▶ ИСПОЛНЕНИЕ НАПОМИНАНИЯ (в dispatchScheduler.js, ~строки 796-816)" style="text;html=1;fontSize=11;fontStyle=1;fontColor=#5d4037;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="430" width="680" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeB_check" value="при наступлении времени&#10;reminder-точки:&#10;report.status == &apos;done&apos;&#10;или &apos;submitted&apos;?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1540" y="460" width="200" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeB_skip" value="ПРОПУСТИТЬ&#10;(отчёт сдан,&#10;эскалация не нужна)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="590" width="180" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_modeB_notify" value="notificationService.notify(&#10;  userId, reportItemId,&#10;  &apos;Напоминание: отчёт не сдан&apos;)&#10;[dispatchService.js:263 — переиспользуем канал]&#10;НЕ создаёт новую карточку CRM!" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1760" y="580" width="310" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- timeout watcher note -->
+        <mxCell id="g_modeB_watcher" value="После конца windows[N-1] (+ грейс):&#10;timeoutWatcher.runOnce()&#10;[timeoutWatcher.js:38]&#10;→ status = &apos;expired&apos; как обычно" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1760" y="700" width="280" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- merge after branch — MODE A side -->
+        <mxCell id="g_reserve" value="planStore.upsertPlanned(&#10;  planDate, azsId, adminUserId,&#10;  baseTime, executeAt, jitterMinutes,&#10;  entryType=&apos;primary&apos;)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="900" y="490" width="300" height="76" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_idempotent" value="dispatchLogStore.reserve(slotKey, ...)&#10;уже существует? → duplicate=true&#10;иначе → reserved=true, dispatch" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="900" y="610" width="300" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_end" value="END&#10;план сгенерирован" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="900" y="730" width="200" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ===== EDGES ===== -->
+        <mxCell id="ge1" style="endArrow=block;html=1;" edge="1" parent="1" source="g_start" target="g_foreach"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ge2" style="endArrow=block;html=1;" edge="1" parent="1" source="g_foreach" target="g_resolve"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ge3" style="endArrow=block;html=1;" edge="1" parent="1" source="g_resolve" target="g_branch"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="ge4" value="A" style="endArrow=block;html=1;strokeColor=#1976d2;fontColor=#1976d2;fontStyle=1;" edge="1" parent="1" source="g_branch" target="g_modeA_for"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ge5" value="B" style="endArrow=block;html=1;strokeColor=#388e3c;fontColor=#388e3c;fontStyle=1;" edge="1" parent="1" source="g_branch" target="g_modeB_seed0"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="ge_a1" style="endArrow=block;html=1;" edge="1" parent="1" source="g_modeA_for" target="g_modeA_jitter"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ge_a2" style="endArrow=block;html=1;" edge="1" parent="1" source="g_modeA_jitter" target="g_modeA_exec"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ge_a3" style="endArrow=block;html=1;" edge="1" parent="1" source="g_modeA_exec" target="g_modeA_key"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ge_a4" style="endArrow=block;html=1;" edge="1" parent="1" source="g_modeA_key" target="g_reserve"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="ge_b0_1" style="endArrow=block;html=1;" edge="1" parent="1" source="g_modeB_seed0" target="g_modeB_deadline"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ge_b0_2" style="endArrow=block;html=1;" edge="1" parent="1" source="g_modeB_deadline" target="g_modeB_primary_upsert"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ge_b0_3" value="escalateUntilDone=true" style="endArrow=block;html=1;dashed=1;strokeColor=#388e3c;" edge="1" parent="1" source="g_modeB_primary_upsert" target="g_modeB_esc_for"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="ge_esc1" style="endArrow=block;html=1;" edge="1" parent="1" source="g_modeB_esc_for" target="g_modeB_esc_seed"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ge_esc2" style="endArrow=block;html=1;" edge="1" parent="1" source="g_modeB_esc_seed" target="g_modeB_esc_upsert"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="ge_b_merge" style="endArrow=block;html=1;strokeColor=#388e3c;" edge="1" parent="1" source="g_modeB_primary_upsert" target="g_reserve"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="ge_check1" value="ДА (сдан)" style="endArrow=block;html=1;strokeColor=#999999;" edge="1" parent="1" source="g_modeB_check" target="g_modeB_skip"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ge_check2" value="НЕТ (не сдан)" style="endArrow=block;html=1;strokeColor=#e65100;fontColor=#e65100;fontStyle=1;" edge="1" parent="1" source="g_modeB_check" target="g_modeB_notify"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="ge_r1" style="endArrow=block;html=1;" edge="1" parent="1" source="g_reserve" target="g_idempotent"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ge_r2" style="endArrow=block;html=1;" edge="1" parent="1" source="g_idempotent" target="g_end"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- ===== NOTES ===== -->
+        <mxCell id="g_note_det" value="Детерминированность:&#10;seed = hash(planDate+&quot;:&quot;+azsId+&quot;:windowIndex&quot;)&#10;→ один planDate + azsId + windowIndex =&#10;  всегда одинаковый момент в окне&#10;→ idempotent при перегенерации плана" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="490" width="360" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_note_compat" value="Обратная совместимость:&#10;если dispatchProfiles пуст&#10;→ resolveProfileForAzs → «По умолчанию»&#10;→ режим A, settings.report.dispatchTimes&#10;→ код ветки B не вызывается" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="610" width="360" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_note_1report" value="КЛЮЧЕВОЙ ИНВАРИАНТ РЕЖИМА B:&#10;1 отчёт = 1 CRM-карточка в день.&#10;Эскалация = переотправка уведомления по&#10;ТОМУ ЖЕ reportItemId (не новая карточка).&#10;dispatchService.dispatchCandidate() [js:125]&#10;вызывается ТОЛЬКО для первичной точки." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="730" width="400" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g_note_deadline" value="Дедлайн режима B (vs BUG-024):&#10;НЕ max(scheduledAt, now) + timeoutMinutes&#10;[dispatchService.js:201]&#10;→ deadline = конец windows[N-1] (+грейс?)&#10;Иначе timeoutWatcher браковал бы отчёт&#10;до наступления окна[1] эскалации." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="860" width="400" height="100" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="cjm-profiles" name="3. CJM / JTBD — профили рассылки">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title3" value="CJM / JTBD «Профили рассылки» — 3 роли, happy-path + где профили снимают боль (часы пик)" style="text;html=1;fontSize=18;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="2000" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend3" value="Легенда:  ⬜ шаг (happy-path)   🟦 JTBD   🟥 боль до профилей   🟩 снятие боли через профили   → поток" style="text;html=1;fontSize=12;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="55" width="1000" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- ===== LANE 1: Администратор ===== -->
+        <mxCell id="l1" value="Администратор (admin / специалист внедрения)" style="swimlane;horizontal=0;fillColor=#ffe6cc;strokeColor=#d79b00;startSize=30;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="40" y="90" width="2120" height="410" as="geometry" />
+        </mxCell>
+        <mxCell id="l1_jtbd" value="JTBD: «Когда я настраиваю приложение, я хочу задать разное расписание для разных групп АЗС, чтобы отчёты приходили вне часов пик и не мешали сотрудникам в разгар работы.»" style="rounded=1;fillColor=#ffe0b2;strokeColor=#e65100;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="l1">
+          <mxGeometry x="40" y="40" width="2050" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="l1s1" value="1. Открыл настройки&#10;→ секция «Профили&#10;рассылки»" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;" vertex="1" parent="l1"><mxGeometry x="40" y="110" width="160" height="70" as="geometry"/></mxCell>
+        <mxCell id="l1s2" value="2. Нажал «Создать&#10;профиль»" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;" vertex="1" parent="l1"><mxGeometry x="240" y="110" width="160" height="70" as="geometry"/></mxCell>
+        <mxCell id="l1s3" value="3. Ввёл название,&#10;выбрал АЗС из&#10;мультиселекта" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;" vertex="1" parent="l1"><mxGeometry x="440" y="110" width="160" height="70" as="geometry"/></mxCell>
+        <mxCell id="l1s4" value="4. Выбрал Режим B,&#10;добавил окна:&#10;13:00–16:00, 21:00–24:00" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;" vertex="1" parent="l1"><mxGeometry x="640" y="110" width="190" height="70" as="geometry"/></mxCell>
+        <mxCell id="l1s5" value="5. Сохранил профиль&#10;→ PUT /api/settings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;" vertex="1" parent="l1"><mxGeometry x="870" y="110" width="160" height="70" as="geometry"/></mxCell>
+        <mxCell id="l1s6" value="6. В 00:01 (авто) или&#10;вручную: генерация&#10;дневного плана" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;" vertex="1" parent="l1"><mxGeometry x="1070" y="110" width="160" height="70" as="geometry"/></mxCell>
+        <mxCell id="l1s7" value="7. Рассылка идёт по&#10;профилю: АЗС получают&#10;запросы вне пика" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;" vertex="1" parent="l1"><mxGeometry x="1270" y="110" width="190" height="70" as="geometry"/></mxCell>
+        <mxCell id="l1s8" value="8. Мониторит ленту,&#10;при необходимости&#10;редактирует профиль" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;" vertex="1" parent="l1"><mxGeometry x="1500" y="110" width="190" height="70" as="geometry"/></mxCell>
+
+        <mxCell id="l1e12" style="endArrow=block;html=1;" edge="1" parent="l1" source="l1s1" target="l1s2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="l1e23" style="endArrow=block;html=1;" edge="1" parent="l1" source="l1s2" target="l1s3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="l1e34" style="endArrow=block;html=1;" edge="1" parent="l1" source="l1s3" target="l1s4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="l1e45" style="endArrow=block;html=1;" edge="1" parent="l1" source="l1s4" target="l1s5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="l1e56" style="endArrow=block;html=1;" edge="1" parent="l1" source="l1s5" target="l1s6"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="l1e67" style="endArrow=block;html=1;" edge="1" parent="l1" source="l1s6" target="l1s7"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="l1e78" style="endArrow=block;html=1;" edge="1" parent="l1" source="l1s7" target="l1s8"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- pains admin -->
+        <mxCell id="l1f1" value="🟥 Раньше: единое расписание на всех — нельзя&#10;задать разное для разных групп АЗС" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="l1"><mxGeometry x="40" y="220" width="280" height="56" as="geometry"/></mxCell>
+        <mxCell id="l1f2" value="🟥 Раньше: нет режима «не в пик» — только&#10;фиксированные слоты с джиттером" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="l1"><mxGeometry x="640" y="220" width="280" height="56" as="geometry"/></mxCell>
+        <mxCell id="l1g1" value="🟩 Профили: мультиселект АЗС → изолированное&#10;расписание для каждой группы" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;fontSize=11;" vertex="1" parent="l1"><mxGeometry x="440" y="310" width="280" height="56" as="geometry"/></mxCell>
+        <mxCell id="l1g2" value="🟩 Режим B: окна времени → отчёт прилетит&#10;в случайный момент ВНЕ часов пик" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;fontSize=11;" vertex="1" parent="l1"><mxGeometry x="870" y="310" width="280" height="56" as="geometry"/></mxCell>
+
+        <!-- ===== LANE 2: Сотрудник АЗС ===== -->
+        <mxCell id="l2" value="Сотрудник АЗС (azs_admin)" style="swimlane;horizontal=0;fillColor=#dae8fc;strokeColor=#6c8ebf;startSize=30;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="40" y="520" width="2120" height="400" as="geometry" />
+        </mxCell>
+        <mxCell id="l2_jtbd" value="JTBD: «Когда бот присылает задание на фото-отчёт, я хочу получать его НЕ в разгар смены (обед, час пик), чтобы успеть нормально сделать фото, а не впопыхах.»" style="rounded=1;fillColor=#bbdefb;strokeColor=#1976d2;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="l2">
+          <mxGeometry x="40" y="40" width="2050" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="l2s1" value="1. Бот прислал задание&#10;в 14:30 (вне пика!)&#10;push + кнопки" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;" vertex="1" parent="l2"><mxGeometry x="40" y="110" width="180" height="70" as="geometry"/></mxCell>
+        <mxCell id="l2s2" value="2. Нет очереди →&#10;открыл приложение&#10;(/admin/{id})" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" vertex="1" parent="l2"><mxGeometry x="270" y="110" width="160" height="70" as="geometry"/></mxCell>
+        <mxCell id="l2s3" value="3. Снял фото по&#10;слотам обязательного&#10;набора" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" vertex="1" parent="l2"><mxGeometry x="480" y="110" width="160" height="70" as="geometry"/></mxCell>
+        <mxCell id="l2s4" value="4. «Сдать отчёт»&#10;→ POST /submit&#10;→ done" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" vertex="1" parent="l2"><mxGeometry x="690" y="110" width="160" height="70" as="geometry"/></mxCell>
+
+        <mxCell id="l2e12" style="endArrow=block;html=1;" edge="1" parent="l2" source="l2s1" target="l2s2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="l2e23" style="endArrow=block;html=1;" edge="1" parent="l2" source="l2s2" target="l2s3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="l2e34" style="endArrow=block;html=1;" edge="1" parent="l2" source="l2s3" target="l2s4"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="l2f1" value="🟥 Раньше: задание прилетало строго в 09:00 и 17:00&#10;— как раз в начало смены (час пик!), нет времени сфотографировать" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="l2"><mxGeometry x="40" y="230" width="380" height="60" as="geometry"/></mxCell>
+        <mxCell id="l2g1" value="🟩 Режим B: отчёт прилетает в 13:00–16:00 или 21:00–24:00&#10;— когда поток меньше, сотрудник успевает нормально" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;fontSize=11;" vertex="1" parent="l2"><mxGeometry x="40" y="310" width="380" height="60" as="geometry"/></mxCell>
+
+        <!-- ===== LANE 3: Проверяющий ===== -->
+        <mxCell id="l3" value="Проверяющий (reviewer)" style="swimlane;horizontal=0;fillColor=#d5e8d4;strokeColor=#82b366;startSize=30;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="40" y="940" width="2120" height="380" as="geometry" />
+        </mxCell>
+        <mxCell id="l3_jtbd" value="JTBD: «Когда я открываю ленту отчётов, я хочу видеть фото из разных временных точек дня (не все в 09:00), чтобы понимать реальное состояние АЗС в разные часы.»" style="rounded=1;fillColor=#c8e6c9;strokeColor=#388e3c;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="l3">
+          <mxGeometry x="40" y="40" width="2050" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="l3s1" value="1. Утром открыл ленту&#10;(/photos/feed)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;" vertex="1" parent="l3"><mxGeometry x="40" y="110" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="l3s2" value="2. Видит фото из разных&#10;временных точек дня" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;" vertex="1" parent="l3"><mxGeometry x="260" y="110" width="180" height="60" as="geometry"/></mxCell>
+        <mxCell id="l3s3" value="3. Открыл фото, отметил&#10;замечание" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;" vertex="1" parent="l3"><mxGeometry x="490" y="110" width="170" height="60" as="geometry"/></mxCell>
+        <mxCell id="l3s4" value="4. Отправил замечание&#10;ответственному" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;" vertex="1" parent="l3"><mxGeometry x="710" y="110" width="170" height="60" as="geometry"/></mxCell>
+
+        <mxCell id="l3e12" style="endArrow=block;html=1;" edge="1" parent="l3" source="l3s1" target="l3s2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="l3e23" style="endArrow=block;html=1;" edge="1" parent="l3" source="l3s2" target="l3s3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="l3e34" style="endArrow=block;html=1;" edge="1" parent="l3" source="l3s3" target="l3s4"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="l3f1" value="🟥 Раньше: все АЗС шлют фото в одно время (09:00)&#10;→ лента однообразна, нет среза дня" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="l3"><mxGeometry x="40" y="220" width="330" height="56" as="geometry"/></mxCell>
+        <mxCell id="l3g1" value="🟩 Профили: разные группы АЗС шлют в разное время&#10;→ проверяющий видит «срез дня» в ленте" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#388e3c;fontSize=11;" vertex="1" parent="l3"><mxGeometry x="260" y="220" width="330" height="56" as="geometry"/></mxCell>
+
+        <!-- cross-lane: admin sets up → azs gets dispatched outside peak -->
+        <mxCell id="x_admin_azs" value="профиль настроен → рассылка вне пика" style="endArrow=block;html=1;dashed=1;strokeColor=#9673a6;fontSize=10;" edge="1" parent="1" source="l1s7" target="l2s1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="x_azs_rev" value="сдал отчёт вне пика → виден в ленте" style="endArrow=block;html=1;dashed=1;strokeColor=#9673a6;fontSize=10;" edge="1" parent="1" source="l2s4" target="l3s1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
