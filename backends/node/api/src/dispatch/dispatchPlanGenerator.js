@@ -26,6 +26,7 @@
  */
 
 import { pickJitterMinutes } from './dispatchService.js';
+import { resolveProfileForAzs } from './dispatchProfileResolver.js';
 
 const MINUTES_TO_MS = 60 * 1000;
 
@@ -239,13 +240,37 @@ export const generateDailyPlan = async ({
       continue;
     }
 
-    for (const baseTime of baseTimes) {
-      const jitterMinutes = pickJitterMinutes(jitterLimit, rng);
+    // S8-A2: резолвим профиль per-AZS
+    const profile = resolveProfileForAzs(candidate.azsId, settings);
+
+    if (profile !== null && profile.mode === 'B') {
+      // TODO (A3): режим B — эскалация по окнам. Пока пропускаем без точек в плане.
+      // Не падаем, не дублируем. A3 реализует логику окон и escalateUntilDone.
+      continue;
+    }
+
+    // Определяем источник слотов, джиттера и workWindow:
+    //   - профиль режима A → profile.config.slots + profile.config.jitterMinutes;
+    //     глобальный workWindow НЕ применяется (слоты профиля не должны обрезаться глобальным окном)
+    //   - null (нет профиля) → глобальные settings.report.dispatchTimes + dispatchJitterMinutes + workWindow
+    const isProfileA = profile !== null && profile.mode === 'A';
+    const effectiveBaseTimes = isProfileA
+      ? normalizeBaseTimes(profile.config.slots)
+      : baseTimes;
+    const effectiveJitterLimit = isProfileA
+      ? Number(profile.config.jitterMinutes ?? 0)
+      : jitterLimit;
+    const effectiveWorkWindow = isProfileA
+      ? undefined   // профиль A: без глобального clamping, слоты профиля и есть расписание
+      : workWindow;
+
+    for (const baseTime of effectiveBaseTimes) {
+      const jitterMinutes = pickJitterMinutes(effectiveJitterLimit, rng);
       const { executeAt } = computeExecuteAt({
         planDate,
         baseTime,
         jitterMinutes,
-        workWindow,
+        workWindow: effectiveWorkWindow,
         timezone
       });
 
