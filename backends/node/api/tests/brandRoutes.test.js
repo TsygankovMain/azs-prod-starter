@@ -157,11 +157,19 @@ const fakeGetAdminContext = async () => ({
 // Корневые deps
 // ---------------------------------------------------------------------------
 
+// Стабы для settingsStore и ensureRootFolder по умолчанию — используются в тестах
+// где disk-вызовы не нужны (гейты 403, CRUD брендов, PUT /:id/azs).
+const fakeSettingsStore = {
+  async read() { return { disk: { rootFolderId: 100 } }; }
+};
+const fakeEnsureRootFolder = async () => 100;
+
 const makeDeps = (overrides = {}) => ({
   brandStore: createFakeBrandStore(overrides.initialBrands || []),
   bitrixClient: makeFakeBitrixClient(overrides.bitrixClient || {}),
   getAdminContext: overrides.getAdminContext ?? fakeGetAdminContext,
-  diskRootFolderId: overrides.diskRootFolderId ?? 100,
+  settingsStore: overrides.settingsStore ?? fakeSettingsStore,
+  ensureRootFolder: overrides.ensureRootFolder ?? fakeEnsureRootFolder,
   ...overrides.extra
 });
 
@@ -375,7 +383,8 @@ test('PUT /api/brands/:id/azs with empty array clears all AZS', async () => {
     brandStore: store,
     bitrixClient: makeFakeBitrixClient(),
     getAdminContext: fakeGetAdminContext,
-    diskRootFolderId: 100
+    settingsStore: fakeSettingsStore,
+    ensureRootFolder: fakeEnsureRootFolder
   });
   const handler = findRoute(router, 'put', '/:id/azs');
   if (!handler) return;
@@ -398,7 +407,8 @@ test('PUT /api/brands/:id/azs transfers AZS from another brand (no 409, transfer
     brandStore: store,
     bitrixClient: makeFakeBitrixClient(),
     getAdminContext: fakeGetAdminContext,
-    diskRootFolderId: 100
+    settingsStore: fakeSettingsStore,
+    ensureRootFolder: fakeEnsureRootFolder
   });
   const handler = findRoute(router, 'put', '/:id/azs');
   if (!handler) return;
@@ -438,7 +448,7 @@ test('POST /api/brands/:id/external-link returns 404 for unknown brand', async (
 });
 
 test('POST /api/brands/:id/external-link creates disk folder when brand has none, then returns link', async () => {
-  // Бренд без папки — должна создасться
+  // Бренд без папки — должна создасться под корнем из ensureRootFolder (S8-B2a).
   let createFolderCalledWith = null;
   let setBrandDiskFolderCalledWith = null;
   let setBrandExternalLinkCalledWith = null;
@@ -463,11 +473,16 @@ test('POST /api/brands/:id/external-link creates disk folder when brand has none
     getExternalLink: async (folderId, _ctx) => `https://b24.example.com/link/${folderId}`
   };
 
+  // S8-B2a: передаём settingsStore + ensureRootFolder-стаб возвращающий rootId=100
+  const fakeSettingsStore = { async read() { return { disk: { rootFolderId: 100 } }; } };
+  const fakeEnsureRootFolder = async () => 100;
+
   const router = createBrandRouter({
     brandStore: store,
     bitrixClient: { diskApi: fakeDiskApi, callMethod: async () => null },
     getAdminContext: fakeGetAdminContext,
-    diskRootFolderId: 100
+    settingsStore: fakeSettingsStore,
+    ensureRootFolder: fakeEnsureRootFolder
   });
   const handler = findRoute(router, 'post', '/:id/external-link');
   if (!handler) return;
@@ -480,8 +495,9 @@ test('POST /api/brands/:id/external-link creates disk folder when brand has none
   assert.ok(res._payload?.link, 'response should have link');
   assert.ok(String(res._payload.link).startsWith('https://'), 'link should be a URL');
   assert.ok(createFolderCalledWith, 'createFolder should have been called');
-  assert.equal(createFolderCalledWith.name, 'ГПН Москва', 'folder name = brand name');
-  assert.equal(createFolderCalledWith.parentId, 100, 'folder created in diskRootFolderId');
+  // Санитизированное имя 'ГПН Москва' (нет спецсимволов) остаётся тем же
+  assert.equal(createFolderCalledWith.name, 'ГПН Москва', 'folder name = sanitized brand name');
+  assert.equal(createFolderCalledWith.parentId, 100, 'folder created under root from ensureRootFolder');
   assert.ok(setBrandDiskFolderCalledWith, 'setBrandDiskFolder should have been called');
   assert.equal(setBrandDiskFolderCalledWith.folderId, 9001);
   assert.ok(setBrandExternalLinkCalledWith, 'setBrandExternalLink should have been called');
@@ -500,11 +516,12 @@ test('POST /api/brands/:id/external-link uses existing folder when brand already
     getExternalLink: async (folderId, _ctx) => `https://b24.example.com/link/${folderId}`
   };
 
+  // Папка уже есть — ensureRootFolder не должна вызываться
   const router = createBrandRouter({
     brandStore: store,
     bitrixClient: { diskApi: fakeDiskApi, callMethod: async () => null },
     getAdminContext: fakeGetAdminContext,
-    diskRootFolderId: 100
+    settingsStore: { async read() { return { disk: {} }; } }
   });
   const handler = findRoute(router, 'post', '/:id/external-link');
   if (!handler) return;
@@ -521,6 +538,7 @@ test('POST /api/brands/:id/external-link uses existing folder when brand already
 test('POST /api/brands/:id/external-link uses admin OAuth context for disk calls', async () => {
   let usedContext = null;
 
+  // Папка уже есть — ensureRootFolder не вызывается, проверяем контекст getExternalLink
   const store = createFakeBrandStore([{ id: 1, name: 'ГПН', disk_folder_id: 7777 }]);
   const fakeDiskApi = {
     createFolder: async () => ({ id: 9001 }),
@@ -536,7 +554,7 @@ test('POST /api/brands/:id/external-link uses admin OAuth context for disk calls
     brandStore: store,
     bitrixClient: { diskApi: fakeDiskApi, callMethod: async () => null },
     getAdminContext: async () => adminCtx,
-    diskRootFolderId: 100
+    settingsStore: { async read() { return { disk: {} }; } }
   });
   const handler = findRoute(router, 'post', '/:id/external-link');
   if (!handler) return;
@@ -557,11 +575,16 @@ test('POST /api/brands/:id/external-link returns 502 when disk call fails', asyn
     getExternalLink: async () => 'https://b24.example.com/link/1'
   };
 
+  // Бренд без папки — createFolder падает. ensureRootFolder-стаб возвращает rootId.
+  const fakeSettingsStore = { async read() { return { disk: { rootFolderId: 100 } }; } };
+  const fakeEnsureRootFolder = async () => 100;
+
   const router = createBrandRouter({
     brandStore: store,
     bitrixClient: { diskApi: fakeDiskApi, callMethod: async () => null },
     getAdminContext: fakeGetAdminContext,
-    diskRootFolderId: 100
+    settingsStore: fakeSettingsStore,
+    ensureRootFolder: fakeEnsureRootFolder
   });
   const handler = findRoute(router, 'post', '/:id/external-link');
   if (!handler) return;
@@ -596,5 +619,189 @@ test('createBrandRouter throws when getAdminContext is missing', () => {
   assert.throws(
     () => createBrandRouter({ brandStore: {}, bitrixClient: {} }),
     /getAdminContext is required/
+  );
+});
+
+// ===========================================================================
+// ISSUE-1: external-link использует ensureRootFolder / settings.disk.rootFolderId
+// ===========================================================================
+
+test('POST /:id/external-link resolves root via ensureRootFolder, not hardcoded env', async () => {
+  // ensureRootFolder вызывается с нужными параметрами и возвращает rootId
+  // Папка бренда создаётся под этим rootId (НЕ под 0 и НЕ под DISK_ROOT_FOLDER_ID)
+  let ensureRootFolderCalledWith = null;
+  let createFolderCalledWith = null;
+
+  const store = createFakeBrandStore([{ id: 1, name: 'ГПН Москва', disk_folder_id: null }]);
+  const fakeDiskApi = {
+    createFolder: async (parentId, name, _ctx) => {
+      createFolderCalledWith = { parentId, name };
+      return { id: 9001 };
+    },
+    getExternalLink: async (folderId, _ctx) => `https://b24.example.com/link/${folderId}`
+  };
+
+  const fakeSettings = {
+    disk: { rootFolderId: 555 }
+  };
+  const fakeSettingsStore = {
+    async read() { return fakeSettings; }
+  };
+
+  const fakeEnsureRootFolder = async (diskApi, opts, ctx) => {
+    ensureRootFolderCalledWith = { diskApi, opts, ctx };
+    // Имитируем: возвращаем rootId из settings.disk.rootFolderId если задан
+    return Number(opts.configuredRootFolderId) > 0
+      ? Number(opts.configuredRootFolderId)
+      : 777;
+  };
+
+  const router = createBrandRouter({
+    brandStore: store,
+    bitrixClient: { diskApi: fakeDiskApi, callMethod: async () => null },
+    getAdminContext: fakeGetAdminContext,
+    settingsStore: fakeSettingsStore,
+    ensureRootFolder: fakeEnsureRootFolder
+  });
+  const handler = findRoute(router, 'post', '/:id/external-link');
+  if (!handler) return;
+
+  const req = makeReq({ params: { id: '1' } });
+  const res = makeRes();
+  await handler(req, res);
+
+  assert.equal(res.statusCode, 200, 'должен вернуть 200');
+  assert.ok(ensureRootFolderCalledWith, 'ensureRootFolder должен быть вызван');
+  // configuredRootFolderId должен браться из settings.disk.rootFolderId (555)
+  assert.equal(
+    Number(ensureRootFolderCalledWith.opts.configuredRootFolderId),
+    555,
+    'configuredRootFolderId должен браться из settings.disk.rootFolderId'
+  );
+  // Папка бренда создаётся под rootId, возвращённым ensureRootFolder (555)
+  assert.ok(createFolderCalledWith, 'createFolder должен быть вызван');
+  assert.equal(
+    createFolderCalledWith.parentId,
+    555,
+    'папка бренда создаётся под корнем из ensureRootFolder'
+  );
+});
+
+test('POST /:id/external-link passes storageRootId from env to ensureRootFolder', async () => {
+  // storageRootId берётся из BITRIX_DISK_STORAGE_ROOT_ID (или дефолт 1)
+  let ensureRootFolderCalledWith = null;
+
+  const store = createFakeBrandStore([{ id: 1, name: 'Тест', disk_folder_id: null }]);
+  const fakeDiskApi = {
+    createFolder: async () => ({ id: 9001 }),
+    getExternalLink: async (folderId) => `https://b24.example.com/link/${folderId}`
+  };
+
+  const fakeSettingsStore = {
+    async read() { return { disk: {} }; } // rootFolderId не задан
+  };
+
+  const fakeEnsureRootFolder = async (diskApi, opts, ctx) => {
+    ensureRootFolderCalledWith = opts;
+    return 42; // произвольный rootId
+  };
+
+  const router = createBrandRouter({
+    brandStore: store,
+    bitrixClient: { diskApi: fakeDiskApi, callMethod: async () => null },
+    getAdminContext: fakeGetAdminContext,
+    settingsStore: fakeSettingsStore,
+    ensureRootFolder: fakeEnsureRootFolder
+  });
+  const handler = findRoute(router, 'post', '/:id/external-link');
+  if (!handler) return;
+
+  await handler(makeReq({ params: { id: '1' } }), makeRes());
+
+  assert.ok(ensureRootFolderCalledWith, 'ensureRootFolder должен быть вызван');
+  // storageRootId должен быть числом > 0 (из env или дефолт 1)
+  assert.ok(
+    Number(ensureRootFolderCalledWith.storageRootId) >= 1,
+    'storageRootId должен быть >= 1'
+  );
+});
+
+// ===========================================================================
+// ISSUE-3: санитизация имени папки через sanitizeSegment
+// ===========================================================================
+
+test('POST /:id/external-link sanitizes brand name with "/" before creating folder', async () => {
+  // Бренд «ГПН/Москва» — "/" — запрещённый символ в именах папок.
+  // Папка должна создаваться с санитизированным именем (/ → -).
+  let createFolderCalledWith = null;
+
+  const store = createFakeBrandStore([{ id: 1, name: 'ГПН/Москва', disk_folder_id: null }]);
+  const fakeDiskApi = {
+    createFolder: async (parentId, name, _ctx) => {
+      createFolderCalledWith = { parentId, name };
+      return { id: 9001 };
+    },
+    getExternalLink: async (folderId, _ctx) => `https://b24.example.com/link/${folderId}`
+  };
+
+  const fakeSettingsStore = {
+    async read() { return { disk: { rootFolderId: 100 } }; }
+  };
+  const fakeEnsureRootFolder = async () => 100;
+
+  const router = createBrandRouter({
+    brandStore: store,
+    bitrixClient: { diskApi: fakeDiskApi, callMethod: async () => null },
+    getAdminContext: fakeGetAdminContext,
+    settingsStore: fakeSettingsStore,
+    ensureRootFolder: fakeEnsureRootFolder
+  });
+  const handler = findRoute(router, 'post', '/:id/external-link');
+  if (!handler) return;
+
+  await handler(makeReq({ params: { id: '1' } }), makeRes());
+
+  assert.ok(createFolderCalledWith, 'createFolder должен быть вызван');
+  assert.ok(
+    !createFolderCalledWith.name.includes('/'),
+    `имя папки не должно содержать "/", получено: "${createFolderCalledWith.name}"`
+  );
+});
+
+test('POST /:id/external-link sanitizes brand name with special chars before creating folder', async () => {
+  // Бренд с угловыми скобками и двоеточием: «<Тест>:Бренд»
+  let createFolderCalledWith = null;
+
+  const store = createFakeBrandStore([{ id: 2, name: '<Тест>:Бренд', disk_folder_id: null }]);
+  const fakeDiskApi = {
+    createFolder: async (parentId, name, _ctx) => {
+      createFolderCalledWith = { parentId, name };
+      return { id: 9002 };
+    },
+    getExternalLink: async (folderId, _ctx) => `https://b24.example.com/link/${folderId}`
+  };
+
+  const fakeSettingsStore = {
+    async read() { return { disk: { rootFolderId: 100 } }; }
+  };
+  const fakeEnsureRootFolder = async () => 100;
+
+  const router = createBrandRouter({
+    brandStore: store,
+    bitrixClient: { diskApi: fakeDiskApi, callMethod: async () => null },
+    getAdminContext: fakeGetAdminContext,
+    settingsStore: fakeSettingsStore,
+    ensureRootFolder: fakeEnsureRootFolder
+  });
+  const handler = findRoute(router, 'post', '/:id/external-link');
+  if (!handler) return;
+
+  await handler(makeReq({ params: { id: '2' } }), makeRes());
+
+  assert.ok(createFolderCalledWith, 'createFolder должен быть вызван');
+  const folderName = createFolderCalledWith.name;
+  assert.ok(
+    !/[<>:"/\\|?*]/.test(folderName),
+    `имя папки не должно содержать запрещённые символы, получено: "${folderName}"`
   );
 });

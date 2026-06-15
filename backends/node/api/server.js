@@ -620,7 +620,7 @@ app.use('/api/brands', verifyToken, attachAccessContext, createBrandRouter({
   brandStore,
   bitrixClient,
   getAdminContext,
-  diskRootFolderId: Number(process.env.DISK_ROOT_FOLDER_ID || 0)
+  settingsStore
 }));
 
 // ---------------------------------------------------------------------------
