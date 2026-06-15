@@ -40,6 +40,7 @@ import { createPhotoRemarkRouter } from './src/reports/photoRemarkRoutes.js';
 import createReasonForwardingService from './src/notifications/reasonForwardingService.js';
 import { createBotCommandHandler } from './src/notifications/botCommandHandler.js';
 import { createReasonCaptureStore } from './src/notifications/reasonCaptureStore.js';
+import { resolveIsAdmin } from './src/auth/resolveIsAdmin.js';
 import { validateRequiredEnv } from './utils/validateEnv.js';
 import { resolvePgSslConfig } from './utils/dbSsl.js';
 import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from './src/shared/transientErrors.js';
@@ -865,6 +866,7 @@ app.post('/api/getToken', async (req, res) => {
     // response. Only an explicit boolean from Bitrix should change isAdmin.
     // This prevents portal admins from being silently downgraded on a routine
     // /api/getToken call where Bitrix omits the ADMIN field.
+    // BUG-A1: demotion via stale request body prevented — see src/auth/resolveIsAdmin.js.
     const profileAdminRaw = profile?.ADMIN;
     const requestAdminRaw = pickFirstDefined(
       req.body?.is_admin,
@@ -873,13 +875,11 @@ app.post('/api/getToken', async (req, res) => {
       req.body?.ADMIN
     );
     const previousContext = await authContextStore.getContext(contextDraft) || {};
-    const isAdmin = (profileAdminRaw === undefined || profileAdminRaw === null || profileAdminRaw === '')
-      ? (
-          requestAdminRaw === undefined
-            ? Boolean(previousContext.isAdmin)
-            : parseBoolean(requestAdminRaw)
-        )
-      : parseBoolean(profileAdminRaw);
+    const isAdmin = resolveIsAdmin({
+      profileAdminRaw,
+      requestAdminRaw,
+      previousIsAdmin: Boolean(previousContext.isAdmin)
+    });
     await authContextStore.upsertContext({
       ...contextDraft,
       isAdmin,
