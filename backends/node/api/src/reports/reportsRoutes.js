@@ -1653,11 +1653,16 @@ export const createReportsRouter = ({
       if (!report) {
         return res.status(404).json({ error: 'report_not_found', errorCode: REPORT_NOT_FOUND, meta: { reportId } });
       }
+      // BUG-P3: dispatch_log has no disk_folder_id column, so report.diskFolderId
+      // is always null from getById. Derive the real folder id from report_photo rows
+      // (populated during upload) so the CRM card retains its Disk folder link.
+      const photos = await reportsStore.listPhotos(reportId);
+      const folderId = photos.map((p) => p.diskFolderId).find(Boolean) ?? null;
       await crmSyncJobStore.enqueue({
         reportId,
         payload: {
           status: report.status,
-          diskFolderId: report.diskFolderId ?? null,
+          diskFolderId: folderId,
           contextKey: req.bitrixContext?.key || ''
         }
       });
