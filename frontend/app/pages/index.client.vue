@@ -494,12 +494,20 @@ onMounted(async () => {
             Пользователь: {{ userStore.id || 'unknown' }} | Роль: {{ currentRole }}
           </ProseP>
           <div class="flex flex-col items-end gap-1">
-            <B24Button
-              color="air-secondary"
-              label="Проверить снова"
-              loading-auto
-              @click="recheckAdminReport"
-            />
+            <div class="flex gap-2">
+              <B24Button
+                color="air-secondary"
+                label="Обновить роль"
+                loading-auto
+                @click="async () => { await checkBackend(); await recheckAdminReport() }"
+              />
+              <B24Button
+                color="air-secondary"
+                label="Проверить снова"
+                loading-auto
+                @click="recheckAdminReport"
+              />
+            </div>
             <ProseP class="text-[12px] text-gray-500">Проверяем автоматически раз в минуту</ProseP>
           </div>
         </div>
