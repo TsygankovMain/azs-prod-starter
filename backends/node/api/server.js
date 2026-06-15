@@ -114,11 +114,6 @@ const parseUserId = (value) => {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 };
 
-const parseBoolean = (value) => {
-  const raw = String(value ?? '').trim().toLowerCase();
-  return raw === '1' || raw === 'y' || raw === 'yes' || raw === 'true';
-};
-
 const pickFirstDefined = (...values) => values.find((value) => value !== undefined && value !== null && value !== '');
 
 const trimTrailingSlash = (value) => String(value || '').replace(/\/+$/, '');

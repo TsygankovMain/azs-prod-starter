@@ -38,7 +38,7 @@ test('resolveIsAdmin: profileAdminRaw=false → isAdmin=false (Bitrix authoritat
 
 test('resolveIsAdmin: profileAdminRaw absent, previousIsAdmin=true, requestAdminRaw=N → stays true (BUG-A1 fix: stale body must not demote)', () => {
   // This is THE critical case. Old code: parseBoolean('N') → false (demotion).
-  // New code: previousIsAdmin || parseBoolean(requestAdminRaw) → true (no demotion).
+  // New code: previousIsAdmin=true → returns true regardless of body (no demotion).
   const result = resolveIsAdmin({
     profileAdminRaw: undefined,
     requestAdminRaw: 'N',
