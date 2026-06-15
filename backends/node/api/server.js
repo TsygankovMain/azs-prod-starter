@@ -41,6 +41,7 @@ import createReasonForwardingService from './src/notifications/reasonForwardingS
 import { createBotCommandHandler } from './src/notifications/botCommandHandler.js';
 import { createReasonCaptureStore } from './src/notifications/reasonCaptureStore.js';
 import { resolveIsAdmin } from './src/auth/resolveIsAdmin.js';
+import { resolveInstallAdmin } from './src/auth/resolveInstallAdmin.js';
 import { validateRequiredEnv } from './utils/validateEnv.js';
 import { resolvePgSslConfig } from './utils/dbSsl.js';
 import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from './src/shared/transientErrors.js';
@@ -730,33 +731,17 @@ app.post('/api/install', async (req, res) => {
       // BUG-S1 fix: verify via Bitrix profile before granting isAdmin.
       // Previously isAdmin:true was granted unconditionally — any forged POST
       // with attacker-chosen fields would receive admin. Now:
-      //   - authId present → call Bitrix profile; derive isAdmin from profile.ADMIN.
+      //   - authId present → call Bitrix profile with fail-fast cap; derive isAdmin.
       //   - authId absent  → isAdmin:false (no way to verify).
-      //   - Bitrix call throws (transient) → isAdmin:false + warn; install still
-      //     succeeds so legitimate portals are not broken. A real portal admin
-      //     re-verifies on the very next /api/getToken (which already sets isAdmin
-      //     from profile.ADMIN), so this self-heals within the same session.
-      let isAdmin = false;
-
-      if (authId) {
-        try {
-          const profile = await bitrixClient.callMethodWithAuth('profile', {}, authId, installContext);
-          isAdmin = resolveIsAdmin({
-            profileAdminRaw: profile?.ADMIN,
-            requestAdminRaw: undefined,
-            previousIsAdmin: false
-          });
-        } catch (profileError) {
-          console.warn('install_admin_unverified', {
-            event: 'install_admin_unverified',
-            authId,
-            domain,
-            memberId,
-            error: profileError?.message
-          });
-          // isAdmin stays false — self-heals on /api/getToken
-        }
-      }
+      //   - Bitrix call throws or exceeds timeoutMs → isAdmin:false + warn; install
+      //     still succeeds. A real portal admin re-verifies on the very next
+      //     /api/getToken (which already sets isAdmin from profile.ADMIN), so this
+      //     self-heals within the same session.
+      const isAdmin = await resolveInstallAdmin({
+        bitrixClient,
+        authId,
+        installContext
+      });
 
       const upsertPayload = {
         ...installContext,
