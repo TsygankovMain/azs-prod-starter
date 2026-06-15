@@ -704,6 +704,7 @@ export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, 
     // Legacy path: portal identity not available in payload (old jobs pre-BUG-P6 fix)
     // or store does not yet expose getLastAdminContextForPortal.
     // Use unscoped getLastAdminContext only as a best-effort for single-portal installs.
+    logger.warn('crm_sync_legacy_unscoped_context', { reportId, note: 'no portal identity on job; using global last admin (safe only for single-portal installs)' });
     const adminEntry = await authContextStore.getLastAdminContext();
     if (adminEntry?.context) {
       context = { key: adminEntry.key, ...adminEntry.context };
@@ -1515,7 +1516,9 @@ export const createReportsRouter = ({
         payload: {
           status: nextStatus,
           diskFolderId: uploaded.folderId,
-          contextKey: req.bitrixContext?.key || ''
+          contextKey: req.bitrixContext?.key || '',
+          domain: req.bitrixContext?.domain || '',
+          memberId: req.bitrixContext?.memberId || ''
         }
       });
 
@@ -1633,7 +1636,9 @@ export const createReportsRouter = ({
         payload: {
           status: 'done',
           diskFolderId,
-          contextKey: req.bitrixContext?.key || ''
+          contextKey: req.bitrixContext?.key || '',
+          domain: req.bitrixContext?.domain || '',
+          memberId: req.bitrixContext?.memberId || ''
         }
       });
 
@@ -1695,7 +1700,9 @@ export const createReportsRouter = ({
         payload: {
           status: report.status,
           diskFolderId: folderId,
-          contextKey: req.bitrixContext?.key || ''
+          contextKey: req.bitrixContext?.key || '',
+          domain: req.bitrixContext?.domain || '',
+          memberId: req.bitrixContext?.memberId || ''
         }
       });
       return res.json({ ok: true, reportId, syncQueued: true });
