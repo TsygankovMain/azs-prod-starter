@@ -71,11 +71,12 @@ function makeEventHandler({ jobSecret } = {}) {
         return res.json({ ok: true, handled: false });
       }
     } else {
-      // No secret configured — log once and proceed (dev / unconfigured envs)
+      // No secret configured — log once and REJECT (fail-closed, BUG-S2)
       if (!warnLogged) {
         logger.warn('JOB_SECRET not set — /api/bot/event is UNVERIFIED');
         warnLogged = true;
       }
+      return res.json({ ok: true, handled: false });
     }
 
     const body = req.body || {};
@@ -204,9 +205,12 @@ test('/api/bot/event: correct ?s → processes plain message and returns handled
   assert.ok(recorded[0].text.includes('Мотор'), 'captured text must match input');
 });
 
-// ─── Security gate: JOB_SECRET NOT SET (dev/unconfigured) ────────────────────
+// ─── Security gate: JOB_SECRET NOT SET ────────────────────────────────────────
+// BUG-S2: fail-closed when JOB_SECRET is empty — any caller without the secret
+// must be rejected regardless of whether the secret is configured.
 
-test('/api/bot/event: no JOB_SECRET configured → logs warning and processes request', async () => {
+// Test A — MUST FAIL against the old (open-fallback) implementation.
+test('/api/bot/event: no JOB_SECRET configured → fail-closed, handler NOT called (BUG-S2)', async () => {
   const { handler, recorded, warns } = makeEventHandler({ jobSecret: '' });
 
   const req = makeReq({
@@ -214,13 +218,35 @@ test('/api/bot/event: no JOB_SECRET configured → logs warning and processes re
       EVENT: 'ONIMBOTMESSAGEADD',
       PARAMS: { FROM_USER_ID: 9, DIALOG_ID: 'u9', COMMAND: 'REASON:10' }
     },
-    query: {}  // no ?s — should still pass when no secret configured
+    query: {}  // no ?s param
   });
   const res = makeRes();
   await handler(req, res);
 
-  assert.equal(res.state.payload?.handled, true, 'should process when no secret configured');
-  assert.equal(recorded.length, 1, 'must record the command');
+  assert.equal(res.state.payload?.ok, true, 'response ok must be true (Bitrix retry-safe)');
+  assert.equal(res.state.payload?.handled, false, 'must NOT process when JOB_SECRET is unset (fail-closed)');
+  assert.equal(recorded.length, 0, 'handleCommand/handleMessage must NOT be called');
+  assert.ok(warns.some((w) => w.toLowerCase().includes('unverified') || w.toLowerCase().includes('job_secret')),
+    'must still log a one-time warning about missing JOB_SECRET');
+});
+
+// Flipped from old open-fallback behavior: originally asserted handled:true (OPEN),
+// now correctly asserts fail-closed. Keeping as a named regression guard.
+test('/api/bot/event: no JOB_SECRET configured → logs warning and does NOT process (regression guard)', async () => {
+  const { handler, recorded, warns } = makeEventHandler({ jobSecret: '' });
+
+  const req = makeReq({
+    body: {
+      EVENT: 'ONIMBOTMESSAGEADD',
+      PARAMS: { FROM_USER_ID: 9, DIALOG_ID: 'u9', COMMAND: 'REASON:10' }
+    },
+    query: {}  // no ?s — must be rejected even without a secret configured
+  });
+  const res = makeRes();
+  await handler(req, res);
+
+  assert.equal(res.state.payload?.handled, false, 'fail-closed: must reject when no secret configured');
+  assert.equal(recorded.length, 0, 'must NOT record the command');
   assert.ok(warns.some((w) => w.toLowerCase().includes('unverified') || w.toLowerCase().includes('job_secret')),
     'must log a warning about unverified endpoint');
 });
