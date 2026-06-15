@@ -117,10 +117,12 @@ test('POST /:id/resync enqueues a job and returns {ok:true, syncQueued:true}', a
       async listByReport() { return []; }
     },
     reportsStore: {
+      // dispatch_log has no disk_folder_id — getById always returns null there
       async getById(id) {
-        return { id: Number(id), status: 'in_progress', diskFolderId: 42, azsId: '3' };
+        return { id: Number(id), status: 'in_progress', diskFolderId: null, azsId: '3' };
       },
-      async listPhotos() { return []; },
+      // BUG-P3 flip: folderId now sourced from listPhotos, not report.diskFolderId
+      async listPhotos() { return [{ photoCode: 'A1', diskFolderId: 42, fileId: 1 }]; },
       async setReportStatus() {}
     }
   });
@@ -311,4 +313,92 @@ test('GET /:id includes syncStatus derived from crmSyncJobStore', async () => {
     assert.equal(res._payload?.syncStatus?.lastSyncError, null);
     assert.equal(res._payload?.syncStatus?.syncState, 'none');
   })();
+});
+
+// ---------------------------------------------------------------------------
+// BUG-P3: /resync must derive diskFolderId from listPhotos, not report.diskFolderId
+// (dispatch_log has no disk_folder_id column — getById always returns null there)
+// ---------------------------------------------------------------------------
+
+test('BUG-P3 Test A: POST /:id/resync derives diskFolderId from listPhotos when report.diskFolderId is null', async () => {
+  const enqueueCalls = [];
+
+  const deps = makeMinimalDeps({
+    crmSyncJobStore: {
+      async enqueue(job) { enqueueCalls.push(job); return { id: 1 }; },
+      async listByReport() { return []; }
+    },
+    reportsStore: {
+      // Simulate real getById: dispatch_log has no disk_folder_id → always null
+      async getById(id) {
+        return { id: Number(id), status: 'in_progress', diskFolderId: null, azsId: '3' };
+      },
+      // listPhotos carries the real folderId stored in report_photo
+      async listPhotos() {
+        return [
+          { photoCode: 'A1', diskFolderId: 777, fileId: 1 },
+          { photoCode: 'A2', diskFolderId: 777, fileId: 2 }
+        ];
+      },
+      async setReportStatus() {}
+    }
+  });
+
+  const router = createReportsRouter(deps);
+  const handler = findHandler(router, 'post', '/:id/resync');
+
+  const req = makeReviewerReq({ params: { id: '99' } });
+  const res = makeRes();
+
+  await handler(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res._payload?.ok, true);
+  assert.equal(enqueueCalls.length, 1, 'must enqueue exactly one job');
+  assert.equal(
+    enqueueCalls[0].payload.diskFolderId,
+    777,
+    'BUG-P3: diskFolderId must come from listPhotos, not the null on report'
+  );
+});
+
+test('BUG-P3 Test B: POST /:id/resync falls back to null when no photo has a diskFolderId', async () => {
+  const enqueueCalls = [];
+
+  const deps = makeMinimalDeps({
+    crmSyncJobStore: {
+      async enqueue(job) { enqueueCalls.push(job); return { id: 1 }; },
+      async listByReport() { return []; }
+    },
+    reportsStore: {
+      async getById(id) {
+        return { id: Number(id), status: 'in_progress', diskFolderId: null, azsId: '3' };
+      },
+      async listPhotos() {
+        // No photos have a folderId yet (e.g. report started but nothing uploaded)
+        return [
+          { photoCode: 'A1', diskFolderId: null, fileId: null },
+          { photoCode: 'A2', diskFolderId: 0, fileId: null }
+        ];
+      },
+      async setReportStatus() {}
+    }
+  });
+
+  const router = createReportsRouter(deps);
+  const handler = findHandler(router, 'post', '/:id/resync');
+
+  const req = makeReviewerReq({ params: { id: '100' } });
+  const res = makeRes();
+
+  await handler(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res._payload?.ok, true);
+  assert.equal(enqueueCalls.length, 1, 'must enqueue exactly one job');
+  assert.equal(
+    enqueueCalls[0].payload.diskFolderId,
+    null,
+    'BUG-P3 fallback: diskFolderId must be null when no photo carries one'
+  );
 });
