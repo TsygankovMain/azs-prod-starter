@@ -130,6 +130,34 @@
 - Stretch S1/S2: fsync файловых сторов; SYSTEM_ADMIN_USER_IDS из конфига; вкладка отчётов в query; a11y; удалить BackendStatus.vue.
 - V2 фичи: «Принято в работу» у управляющего; серверные thumbnails.
 
+## Спринт 8 «Расписание + Бренды» — 2026-06-15
+
+**Статус:** бренды выкачены в прод (master 3b77df2); профили рассылки реализованы и готовы к деплою (ветка feature/sprints-stability-ux, 791 тест зелёный).
+
+### ВЫКАЧЕНО В ПРОД
+
+**Бренды (внешний доступ к фото по бренду для партнёров/ГПН)** — спека: docs/superpowers/specs/2026-06-15-brands-external-access-design.md
+- Таблицы: `brand`, `brand_azs` (одна АЗС = один бренд)
+- CRUD-роуты: `/api/brands` (admin-only)
+- Папка бренда на Диске (`disk.folder.getexternallink`), роутинг новых фото АЗС бренда в папку
+- UI: компонент `brands.client.vue` + `AzsMultiSelect`, карточка «Бренды» на главной
+- Вариант A: пароль вручную в Диске
+
+### ГОТОВО К ДЕПЛОЮ (не выкачено)
+
+**Профили рассылки (dispatchProfiles[])** — спека: docs/superpowers/specs/2026-06-15-dispatch-profiles-spec.md; план: docs/superpowers/plans/2026-06-15-sprint8-schedule-brands-orchestration.md
+- Режим A: слоты + джиттер (как было)
+- Режим B: случайно в окнах + эскалация (1 отчёт/день, не сдан → повтор в следующем окне, дедлайн=конец окна)
+- Миграция: dispatch_plan → dispatchProfiles[] в settings
+- UI настроек, 791 тест, branch feature/sprints-stability-ux
+
+### Бэклог (на следующие спринты)
+
+- **минор-бэклог:** создание новой АЗС на лету при добавлении в бренд (для fast-path партнёра)
+- **ненадёжность:** фоллбек если папка бренда удалена на Диске (recovery-тест + fallback-режим)
+- **ОТЛОЖЕНО v2:** per-profile timezone (требует schema-миграции, может ждать)
+- **UX-минор:** пустое имя профиля фильтруется при сейве, окно 00:00-00:00 сужается при редактировании
+
 ## Не баги (чтобы не разбирать повторно)
 
 - Консольные «[Violation] non-passive wheel / forced reflow» — внутренности @bitrix24/b24ui (reka-ui).
