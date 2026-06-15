@@ -123,6 +123,27 @@ test('resolveUserRole (BUG-A2): userId 498 is NOT special when SYSTEM_ADMIN_USER
   }
 });
 
+test('resolveUserRole (BUG-A2): SYSTEM_ADMIN_USER_IDS takes precedence over reviewer role', () => {
+  const savedEnv = process.env.SYSTEM_ADMIN_USER_IDS;
+  process.env.SYSTEM_ADMIN_USER_IDS = '777';
+
+  try {
+    const role = resolveUserRole({
+      userId: 777,
+      isPortalAdmin: false,
+      accessSettings: { adminUserIds: [], reviewerUserIds: [777], azsAdminUserIds: [] }
+    });
+    // 777 is in SYSTEM_ADMIN_USER_IDS; must resolve to admin role, not reviewer
+    assert.equal(role, ROLES.ADMIN);
+  } finally {
+    if (savedEnv !== undefined) {
+      process.env.SYSTEM_ADMIN_USER_IDS = savedEnv;
+    } else {
+      delete process.env.SYSTEM_ADMIN_USER_IDS;
+    }
+  }
+});
+
 test('resolveUserRole defaults regular users to azs_admin role', () => {
   const role = resolveUserRole({
     userId: 33,
