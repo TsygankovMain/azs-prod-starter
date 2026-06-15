@@ -80,7 +80,10 @@ export const createDispatchScheduler = ({
   getBackgroundContext = null,
   planMirror = null,
   notificationService = null,
-  getReviewerUserIds = null
+  getReviewerUserIds = null,
+  // S8-A3: reportsStore — для проверки статуса отчёта при исполнении reminder-точек
+  // OR-6: проверяем локальный статус (без CRM-запроса)
+  reportsStore = null
 }) => {
   let dispatchTask = null;
   let timeoutTask = null;
@@ -406,6 +409,105 @@ export const createDispatchScheduler = ({
     let failed = 0;
 
     for (const row of toProcess) {
+      // S8-A3: определяем тип точки плана (primary или reminder)
+      // Строки без entry_type (до миграции) считаются primary (обратная совместимость)
+      const entryType = row.entry_type || 'primary';
+
+      // -----------------------------------------------------------------------
+      // S8-A3: Исполнитель напоминаний (§4.2.3)
+      // При entry_type='reminder' — проверяем статус отчёта (OR-6: локальный статус)
+      // Сдан (done/submitted) → пропускаем. Не сдан → переотправляем уведомление.
+      // -----------------------------------------------------------------------
+      if (entryType === 'reminder') {
+        // reminderSlotKey = planDate:baseTimeHHmm:reminder:windowIndex (§4.2.4)
+        const windowIndex = row.window_index ?? 1;
+        const reminderSlotKey = `${row.plan_date}:${row.base_time}:reminder:${windowIndex}`;
+
+        // Идемпотентность: reserve reminderSlotKey — если уже зарезервирован → пропуск
+        let reminderReserve = { reserved: true };
+        if (dispatchLogStore) {
+          try {
+            reminderReserve = await dispatchLogStore.reserve({
+              slotKey: reminderSlotKey,
+              azsId: String(row.azs_id),
+              adminUserId: Number(row.admin_user_id),
+              status: 'reserved'
+            });
+          } catch (err) {
+            logger.warn('dispatchScheduler: reminder reserve failed', {
+              id: row.id, reminderSlotKey, message: err.message
+            });
+            await dispatchPlanStore.markFailed({ id: row.id, error: err.message || 'reminder reserve failed' });
+            failed += 1;
+            continue;
+          }
+        }
+
+        if (!reminderReserve.reserved) {
+          // Уже обработано (дублирующий тик) — помечаем dispatched и пропускаем
+          await dispatchPlanStore.markDispatched({ id: row.id, reportItemId: null });
+          duplicates += 1;
+          continue;
+        }
+
+        // Проверяем статус отчёта (OR-6: локальный статус, без CRM-запроса)
+        let reportStatus = null;
+        if (reportsStore && typeof reportsStore.getBySlotKey === 'function') {
+          try {
+            // Первичный slotKey = planDate:baseTime основной точки (без суффикса)
+            // Ищем по originalSlotKey = planDate:primaryBaseTime (windowIndex=0)
+            // В реальном приложении нужно хранить связку, здесь используем plan_date:base_time primary-строки.
+            // Для упрощения ищем по azsId + plan_date с ANY слотом (getBySlotKey принимает slotKey)
+            // Строим primary slotKey: planDate:base_time (без reminder-суффикса)
+            const primarySlotKey = `${row.plan_date}:${row.base_time}`;
+            const report = await reportsStore.getBySlotKey({ slotKey: primarySlotKey, azsId: row.azs_id });
+            reportStatus = report?.status ?? null;
+          } catch (err) {
+            logger.warn('dispatchScheduler: reminder getBySlotKey failed', {
+              id: row.id, message: err.message
+            });
+            // Продолжаем — при ошибке проверки считаем не сданным и шлём уведомление
+          }
+        }
+
+        // Сданный статус (done или submitted) → пропускаем напоминание
+        const isSubmitted = reportStatus === 'done' || reportStatus === 'submitted';
+        if (isSubmitted) {
+          logger.info('dispatchScheduler: reminder skipped — report already submitted', {
+            id: row.id, azsId: row.azs_id, planDate: row.plan_date, reportStatus
+          });
+          await dispatchPlanStore.markDispatched({ id: row.id, reportItemId: null });
+          executed += 1; // считаем как обработанную (skipped)
+          continue;
+        }
+
+        // Отчёт не сдан → переотправляем уведомление (БЕЗ создания новой CRM-карточки)
+        try {
+          if (notificationService && typeof notificationService.notify === 'function') {
+            await notificationService.notify({
+              userId: Number(row.admin_user_id),
+              azsId: row.azs_id,
+              planDate: row.plan_date,
+              windowIndex,
+              message: `Напоминание: не сдан фото-отчёт за ${row.plan_date}. Пожалуйста, отправьте отчёт.`,
+              context
+            });
+          }
+          await dispatchPlanStore.markDispatched({ id: row.id, reportItemId: null });
+          executed += 1;
+        } catch (err) {
+          logger.warn('dispatchScheduler: reminder notify failed', {
+            id: row.id, azsId: row.azs_id, message: err.message
+          });
+          await dispatchPlanStore.markFailed({ id: row.id, error: err.message || 'reminder notify failed' });
+          failed += 1;
+        }
+        continue;
+      }
+
+      // -----------------------------------------------------------------------
+      // Обычная (primary) точка — стандартный dispatchBatch
+      // -----------------------------------------------------------------------
       const candidate = {
         azsId: row.azs_id,
         adminUserId: row.admin_user_id,

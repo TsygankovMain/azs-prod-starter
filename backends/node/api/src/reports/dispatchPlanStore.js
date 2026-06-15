@@ -32,14 +32,36 @@ const createPostgresStore = (pool) => ({
     await pool.query(`
       CREATE INDEX IF NOT EXISTS ix_dispatch_plan_due ON dispatch_plan (status, execute_at)
     `);
+    // S8-A3: миграция — добавляем новые колонки идемпотентно (ALTER IF NOT EXISTS)
+    // entry_type: 'primary' | 'reminder', дефолт 'primary' (обратная совместимость)
+    await pool.query(`
+      ALTER TABLE dispatch_plan
+        ADD COLUMN IF NOT EXISTS entry_type TEXT NOT NULL DEFAULT 'primary'
+    `);
+    // window_index: int, дефолт 0 (обратная совместимость)
+    await pool.query(`
+      ALTER TABLE dispatch_plan
+        ADD COLUMN IF NOT EXISTS window_index INT NOT NULL DEFAULT 0
+    `);
+    // deadline_at: для режима B дедлайн = конец последнего окна
+    await pool.query(`
+      ALTER TABLE dispatch_plan
+        ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ NULL
+    `);
   },
 
-  async upsertPlanned({ planDate, azsId, adminUserId, baseTime, executeAt, jitterMinutes = 0 } = {}) {
+  async upsertPlanned({
+    planDate, azsId, adminUserId, baseTime, executeAt,
+    jitterMinutes = 0,
+    entryType = 'primary',
+    windowIndex = 0,
+    deadlineAt = null
+  } = {}) {
     const result = await pool.query(
-      `INSERT INTO dispatch_plan (plan_date, azs_id, admin_user_id, base_time, execute_at, jitter_minutes)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO dispatch_plan (plan_date, azs_id, admin_user_id, base_time, execute_at, jitter_minutes, entry_type, window_index, deadline_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (plan_date, azs_id, base_time) DO NOTHING RETURNING *`,
-      [planDate, azsId, adminUserId, baseTime, executeAt, jitterMinutes]
+      [planDate, azsId, adminUserId, baseTime, executeAt, jitterMinutes, entryType, windowIndex, deadlineAt]
     );
     return result.rows[0] ?? null;
   },
@@ -107,14 +129,45 @@ const createMysqlStore = (pool) => ({
         INDEX ix_dispatch_plan_due (status, execute_at)
       )
     `);
+    // S8-A3: миграция — добавляем новые колонки идемпотентно
+    // MySQL не поддерживает ADD COLUMN IF NOT EXISTS до 8.0.29, используем отдельные ALTER
+    // Ошибка 1060 (Duplicate column) игнорируется — идемпотентность
+    try {
+      await pool.execute(
+        `ALTER TABLE dispatch_plan ADD COLUMN entry_type VARCHAR(16) NOT NULL DEFAULT 'primary'`
+      );
+    } catch (e) {
+      if (!String(e.message || '').includes('Duplicate column') && e.code !== 'ER_DUP_FIELDNAME') throw e;
+    }
+    try {
+      await pool.execute(
+        `ALTER TABLE dispatch_plan ADD COLUMN window_index INT NOT NULL DEFAULT 0`
+      );
+    } catch (e) {
+      if (!String(e.message || '').includes('Duplicate column') && e.code !== 'ER_DUP_FIELDNAME') throw e;
+    }
+    try {
+      await pool.execute(
+        `ALTER TABLE dispatch_plan ADD COLUMN deadline_at DATETIME NULL`
+      );
+    } catch (e) {
+      if (!String(e.message || '').includes('Duplicate column') && e.code !== 'ER_DUP_FIELDNAME') throw e;
+    }
   },
 
-  async upsertPlanned({ planDate, azsId, adminUserId, baseTime, executeAt, jitterMinutes = 0 } = {}) {
+  async upsertPlanned({
+    planDate, azsId, adminUserId, baseTime, executeAt,
+    jitterMinutes = 0,
+    entryType = 'primary',
+    windowIndex = 0,
+    deadlineAt = null
+  } = {}) {
     const executeAtSql = toDateSql(executeAt);
+    const deadlineAtSql = deadlineAt ? toDateSql(deadlineAt) : null;
     const [result] = await pool.execute(
-      `INSERT IGNORE INTO dispatch_plan (plan_date, azs_id, admin_user_id, base_time, execute_at, jitter_minutes)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [planDate, azsId, adminUserId, baseTime, executeAtSql, jitterMinutes]
+      `INSERT IGNORE INTO dispatch_plan (plan_date, azs_id, admin_user_id, base_time, execute_at, jitter_minutes, entry_type, window_index, deadline_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [planDate, azsId, adminUserId, baseTime, executeAtSql, jitterMinutes, entryType, windowIndex, deadlineAtSql]
     );
     // Re-SELECT by unique key regardless of whether it was inserted or already existed
     const [rows] = await pool.execute(
