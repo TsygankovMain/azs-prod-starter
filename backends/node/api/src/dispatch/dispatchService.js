@@ -193,7 +193,12 @@ export const createDispatchService = ({
         const plannedAt = parseSlotDateTimeUtc({ slotDate: plannedDate, slotHHmm });
         scheduledAt = addMinutes(plannedAt, jitterMinutes);
       }
-      const deadlineAt = addMinutes(scheduledAt, timeoutMinutes);
+      // BUG-024: дедлайн = max(плановый, now) + timeout.
+      // Если воркер забрал слот с опозданием, AZS всегда получает полный window
+      // с момента ФАКТИЧЕСКОЙ отправки. Используем max чтобы не укорачивать
+      // future-дедлайны для слотов, которые ещё не наступили.
+      const effectiveBase = new Date(Math.max(scheduledAt.getTime(), nowValue.getTime()));
+      const deadlineAt = addMinutes(effectiveBase, timeoutMinutes);
       const fields = buildReportFields({
         settings,
         candidate,
