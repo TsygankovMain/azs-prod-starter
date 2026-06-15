@@ -712,6 +712,11 @@ app.post('/api/install', async (req, res) => {
     const userId = parseUserId(req.body?.user_id);
     const appSid = String(req.body?.APP_SID || '').trim();
 
+    // BUG-S1: capture application_token for future event-callback verification.
+    const applicationToken = String(
+      req.body?.auth?.application_token ?? req.body?.application_token ?? ''
+    ).trim();
+
     const installContext = buildInstallContext({
       authId,
       refreshToken,
@@ -722,13 +727,52 @@ app.post('/api/install', async (req, res) => {
     });
 
     if (authId || refreshToken || domain || memberId || userId) {
-      await authContextStore.upsertContext({
+      // BUG-S1 fix: verify via Bitrix profile before granting isAdmin.
+      // Previously isAdmin:true was granted unconditionally — any forged POST
+      // with attacker-chosen fields would receive admin. Now:
+      //   - authId present → call Bitrix profile; derive isAdmin from profile.ADMIN.
+      //   - authId absent  → isAdmin:false (no way to verify).
+      //   - Bitrix call throws (transient) → isAdmin:false + warn; install still
+      //     succeeds so legitimate portals are not broken. A real portal admin
+      //     re-verifies on the very next /api/getToken (which already sets isAdmin
+      //     from profile.ADMIN), so this self-heals within the same session.
+      let isAdmin = false;
+
+      if (authId) {
+        try {
+          const profile = await bitrixClient.callMethodWithAuth('profile', {}, authId, installContext);
+          isAdmin = resolveIsAdmin({
+            profileAdminRaw: profile?.ADMIN,
+            requestAdminRaw: undefined,
+            previousIsAdmin: false
+          });
+        } catch (profileError) {
+          console.warn('install_admin_unverified', {
+            event: 'install_admin_unverified',
+            authId,
+            domain,
+            memberId,
+            error: profileError?.message
+          });
+          // isAdmin stays false — self-heals on /api/getToken
+        }
+      }
+
+      const upsertPayload = {
         ...installContext,
-        isAdmin: true,
+        isAdmin,
         // Stamp issuance time so tokenRefreshScheduler can detect the
         // ~30-day Bitrix refresh_token TTL and warn before silent death.
         refreshTokenIssuedAt: new Date().toISOString()
-      }).catch((error) => {
+      };
+
+      // Only include applicationToken when non-empty (don't overwrite an existing
+      // valid token with an empty string if the field is absent from the payload).
+      if (applicationToken) {
+        upsertPayload.applicationToken = applicationToken;
+      }
+
+      await authContextStore.upsertContext(upsertPayload).catch((error) => {
         console.error('Failed to persist auth context on /api/install', error);
       });
     }
