@@ -53,6 +53,7 @@ export const resolveUserRole = ({
   const normalizedUserId = parseUserId(userId);
   const access = normalizeAccessSettings({ access: accessSettings });
   const hasId = (list) => list.includes(normalizedUserId);
+  // env super-admin override: takes precedence over access-settings adminUserIds and all other role lists
   const systemAdminUserIds = normalizeUserIdList(process.env.SYSTEM_ADMIN_USER_IDS);
 
   let role = ROLE_AZS_ADMIN;
