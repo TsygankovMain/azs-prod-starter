@@ -69,6 +69,12 @@ const appScreens = [
     path: '/settings'
   },
   {
+    key: 'brands',
+    title: 'Бренды',
+    description: 'Управление брендами: объединение АЗС, папки Bitrix Диска и внешние ссылки для партнёров.',
+    path: '/brands'
+  },
+  {
     key: 'reviewer',
     title: 'Экран Проверяющего',
     description: 'Список отчётов, статусы, фильтры и ручной запуск запроса фото.',
@@ -90,6 +96,9 @@ const appScreens = [
 
 const visibleScreens = computed(() => appScreens.filter((screen) => {
   if (screen.key === 'settings') {
+    return Boolean(currentCapabilities.value.settings)
+  }
+  if (screen.key === 'brands') {
     return Boolean(currentCapabilities.value.settings)
   }
   if (screen.key === 'reviewer') {
