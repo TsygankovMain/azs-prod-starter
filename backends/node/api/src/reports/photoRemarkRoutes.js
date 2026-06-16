@@ -104,18 +104,72 @@ export const createPhotoRemarkRouter = ({
   // -------------------------------------------------------------------------
   // POST / — send a new remark (UX-2 per-photo comment contract)
   //
-  // Body: {
+  // Body (new, FEED-2): {
   //   azsId: string,
   //   azsTitle?: string,
-  //   recipientRole: "manager" | "admin",
+  //   recipientType: "manager" | "admin" | "user",   ← preferred
+  //   recipientUserId?: number,                       ← required when type='user'
   //   photos: Array<{ reportId: number, photoCode: string, comment: string }>  // 1..20
   // }
+  //
+  // Body (legacy, backward-compatible): {
+  //   azsId: string,
+  //   azsTitle?: string,
+  //   recipientRole: "manager" | "admin",             ← old contract, still works
+  //   photos: Array<{ reportId: number, photoCode: string, comment: string }>
+  // }
+  //
   // NO top-level `message`.
   // -------------------------------------------------------------------------
   router.post('/', async (req, res) => {
     if (!canReview(req)) return res.status(403).json({ error: 'forbidden' });
 
-    const { azsId, azsTitle, recipientRole, photos } = req.body || {};
+    const { azsId, azsTitle, photos } = req.body || {};
+
+    // --- Recipient resolution ---
+    // Prefer new recipientType; fall back to old recipientRole for back-compat.
+    const recipientType = req.body?.recipientType;
+    const recipientRole = req.body?.recipientRole;
+    const rawRecipientUserId = req.body?.recipientUserId;
+
+    // Determine effective role/type
+    let resolvedRecipientRole = null;   // 'manager' | 'admin' — for role-based lookup
+    let resolvedRecipientType = null;   // 'manager' | 'admin' | 'user'
+    let resolvedRecipientUserId = null; // number, for type='user'
+
+    if (recipientType) {
+      // New contract
+      if (recipientType !== 'manager' && recipientType !== 'admin' && recipientType !== 'user') {
+        return res.status(400).json({
+          error: 'validation_failed',
+          message: 'recipientType must be "manager", "admin", or "user"'
+        });
+      }
+      resolvedRecipientType = recipientType;
+      if (recipientType === 'user') {
+        const uid = Number(rawRecipientUserId);
+        if (!Number.isFinite(uid) || uid <= 0) {
+          return res.status(400).json({
+            error: 'validation_failed',
+            message: 'recipientUserId must be a positive number when recipientType is "user"'
+          });
+        }
+        resolvedRecipientUserId = uid;
+      } else {
+        // 'manager' | 'admin' via recipientType → role-based
+        resolvedRecipientRole = recipientType;
+      }
+    } else {
+      // Legacy contract: recipientRole
+      if (recipientRole !== 'manager' && recipientRole !== 'admin') {
+        return res.status(400).json({
+          error: 'validation_failed',
+          message: 'recipientRole must be "manager" or "admin"'
+        });
+      }
+      resolvedRecipientRole = recipientRole;
+      resolvedRecipientType = recipientRole; // manager/admin
+    }
 
     // Validation
     if (!Array.isArray(photos) || photos.length < 1 || photos.length > 20) {
@@ -142,12 +196,6 @@ export const createPhotoRemarkRouter = ({
       }
     }
 
-    if (recipientRole !== 'manager' && recipientRole !== 'admin') {
-      return res.status(400).json({
-        error: 'validation_failed',
-        message: 'recipientRole must be "manager" or "admin"'
-      });
-    }
     if (!String(azsId || '').trim()) {
       return res.status(400).json({ error: 'validation_failed', message: 'azsId is required' });
     }
@@ -185,7 +233,10 @@ export const createPhotoRemarkRouter = ({
       const record = await photoRemarkService.sendRemark({
         azsId: String(azsId),
         azsTitle: normalizedAzsTitle,
-        recipientRole,
+        // Pass both old and new fields; service handles either
+        recipientRole: resolvedRecipientRole,
+        recipientType: resolvedRecipientType,
+        recipientUserId: resolvedRecipientUserId,
         photos: normalizedPhotos,
         sender: { id: senderUserId, name: senderName }
       });
