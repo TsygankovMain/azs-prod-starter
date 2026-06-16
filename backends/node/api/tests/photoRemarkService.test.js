@@ -509,3 +509,127 @@ test('retryRemark: sends to stored recipientUserId, no new insertRemark', async 
   assert.ok(uploadCalls.length > 0, 'should have upload calls');
   assert.equal(uploadCalls[0].dialogId, '10', 'should send to stored recipient id');
 });
+
+// ---------------------------------------------------------------------------
+// FEED-2 / BE-3: recipientType='user' — arbitrary userId delivery
+// ---------------------------------------------------------------------------
+
+test('FEED-2 bot mode: recipientType=user delivers to personal chat of userId', async () => {
+  const uploadCalls = [];
+  const remarkStore = createFakeRemarkStore();
+  // Fake client that also handles user.get for arbitrary user id=55
+  const bitrixClient = {
+    ...createFakeBitrixClient({ uploadCalls }),
+    async callMethod(method, params) {
+      if (method === 'user.get') {
+        const id = Number(params?.ID || 0);
+        if (id === 10) return [{ ID: 10, NAME: 'Менеджер', LAST_NAME: 'И.' }];
+        if (id === 20) return [{ ID: 20, NAME: 'Админ', LAST_NAME: 'П.' }];
+        if (id === 55) return [{ ID: 55, NAME: 'Иван', LAST_NAME: 'Петров' }];
+        return [];
+      }
+      if (method === 'imbot.v2.File.upload') {
+        uploadCalls.push(params);
+      }
+      return {};
+    },
+    diskApi: {
+      async downloadFileContent(diskObjectId) {
+        return { base64: Buffer.from(`content_${diskObjectId}`).toString('base64'), name: `file_${diskObjectId}.jpg` };
+      }
+    }
+  };
+  const { svc } = makeService({ remarkStore, bitrixClient });
+
+  const result = await svc.sendRemark({
+    azsId: '42', azsTitle: 'АЗС Тест',
+    recipientType: 'user', recipientUserId: 55,
+    photos: [{ reportId: 10, photoCode: 'front', comment: 'Пример замечания' }],
+    sender: { id: 3, name: 'Ревизор' }
+  });
+
+  assert.equal(result.deliveryStatus, 'sent', 'delivery succeeded for arbitrary user');
+  assert.ok(uploadCalls.length > 0, 'upload was called');
+  // dialogId must be the userId string
+  assert.equal(uploadCalls[0].dialogId, '55', 'dialog id = recipientUserId');
+  // recipientUserId and recipientName stored in record
+  const stored = remarkStore.records.get(result.id);
+  assert.ok(stored, 'record stored');
+  assert.equal(stored.recipientUserId, 55, 'recipientUserId stored');
+  assert.equal(stored.recipientName, 'Иван Петров', 'recipientName resolved and stored');
+});
+
+test('FEED-2 bot mode: recipientType=manager is backward-compat, resolves via AZS', async () => {
+  const uploadCalls = [];
+  const bitrixClient = createFakeBitrixClient({ uploadCalls });
+  const remarkStore = createFakeRemarkStore();
+  const { svc } = makeService({ remarkStore, bitrixClient });
+
+  const result = await svc.sendRemark({
+    azsId: '42', azsTitle: 'АЗС Север',
+    // New API: recipientType=manager
+    recipientType: 'manager',
+    photos: [{ reportId: 10, photoCode: 'front', comment: 'test' }],
+    sender: { id: 3, name: 'Проверяющий' }
+  });
+
+  assert.equal(result.deliveryStatus, 'sent', 'manager delivery via recipientType still works');
+  assert.ok(uploadCalls.length > 0, 'upload was called');
+  // manager userId = 10 (from fake azsItem)
+  assert.equal(uploadCalls[0].dialogId, '10', 'sends to manager userId=10');
+});
+
+test('FEED-2 bot mode: old recipientRole=manager is backward-compat (no recipientType)', async () => {
+  const uploadCalls = [];
+  const bitrixClient = createFakeBitrixClient({ uploadCalls });
+  const remarkStore = createFakeRemarkStore();
+  const { svc } = makeService({ remarkStore, bitrixClient });
+
+  const result = await svc.sendRemark({
+    azsId: '42', azsTitle: 'АЗС Север',
+    // OLD API: no recipientType, only recipientRole
+    recipientRole: 'manager',
+    photos: [{ reportId: 10, photoCode: 'front', comment: 'test' }],
+    sender: { id: 3, name: 'Проверяющий' }
+  });
+
+  assert.equal(result.deliveryStatus, 'sent', 'old recipientRole=manager works without recipientType');
+  assert.ok(uploadCalls.length > 0, 'upload was called');
+  assert.equal(uploadCalls[0].dialogId, '10', 'sends to manager userId=10');
+});
+
+test('FEED-2 journal: sendRemark with recipientType=user stores recipientUserId + recipientName', async () => {
+  const remarkStore = createFakeRemarkStore();
+  const bitrixClient = {
+    ...createFakeBitrixClient(),
+    async callMethod(method, params) {
+      if (method === 'user.get') {
+        const id = Number(params?.ID || 0);
+        if (id === 10) return [{ ID: 10, NAME: 'Менеджер', LAST_NAME: '' }];
+        if (id === 20) return [{ ID: 20, NAME: 'Админ', LAST_NAME: '' }];
+        if (id === 77) return [{ ID: 77, NAME: 'Светлана', LAST_NAME: 'Тузова' }];
+        return [];
+      }
+      if (method === 'imbot.v2.File.upload') return {};
+      return {};
+    },
+    diskApi: {
+      async downloadFileContent(diskObjectId) {
+        return { base64: Buffer.from(`content_${diskObjectId}`).toString('base64'), name: `file_${diskObjectId}.jpg` };
+      }
+    }
+  };
+  const { svc } = makeService({ remarkStore, bitrixClient });
+
+  const result = await svc.sendRemark({
+    azsId: '42', azsTitle: null,
+    recipientType: 'user', recipientUserId: 77,
+    photos: [{ reportId: 10, photoCode: 'front', comment: 'test' }],
+    sender: { id: 3, name: 'Ревизор' }
+  });
+
+  const stored = remarkStore.records.get(result.id);
+  assert.ok(stored, 'record stored');
+  assert.equal(stored.recipientUserId, 77, 'recipientUserId=77 in journal');
+  assert.equal(stored.recipientName, 'Светлана Тузова', 'recipientName resolved and stored');
+});

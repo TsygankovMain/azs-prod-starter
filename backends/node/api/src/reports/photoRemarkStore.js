@@ -117,6 +117,10 @@ const createPostgresStore = (pool) => ({
     await pool.query(`ALTER TABLE photo_remark_photo ADD COLUMN IF NOT EXISTS comment TEXT NOT NULL DEFAULT ''`);
     await pool.query(`ALTER TABLE photo_remark_photo ADD COLUMN IF NOT EXISTS delivery_status TEXT NOT NULL DEFAULT 'pending'`);
     await pool.query(`ALTER TABLE photo_remark_photo ADD COLUMN IF NOT EXISTS delivery_error TEXT NULL`);
+    // FEED-2 / BE-3: add recipient_user_id + recipient_name to photo_remark (nullable, additive)
+    // Safe for pre-existing prod tables; no-op if already present (PG 9.6+).
+    await pool.query(`ALTER TABLE photo_remark ADD COLUMN IF NOT EXISTS recipient_user_id BIGINT NULL`);
+    await pool.query(`ALTER TABLE photo_remark ADD COLUMN IF NOT EXISTS recipient_name TEXT NULL`);
     // Remove legacy top-level message column from photo_remark if present (safe — ignored if missing)
     // We do NOT drop it to avoid data loss; new code simply no longer writes it.
   },
@@ -314,6 +318,9 @@ const createMysqlStore = (pool) => ({
     await migrateCol('photo_remark_photo', 'comment', 'LONGTEXT NOT NULL DEFAULT (\'\')');
     await migrateCol('photo_remark_photo', 'delivery_status', "VARCHAR(16) NOT NULL DEFAULT 'pending'");
     await migrateCol('photo_remark_photo', 'delivery_error', 'LONGTEXT NULL');
+    // FEED-2 / BE-3: add recipient_user_id + recipient_name to photo_remark (nullable, additive)
+    await migrateCol('photo_remark', 'recipient_user_id', 'BIGINT NULL');
+    await migrateCol('photo_remark', 'recipient_name', 'VARCHAR(500) NULL');
   },
 
   async insertRemark({

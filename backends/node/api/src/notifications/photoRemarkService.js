@@ -235,12 +235,35 @@ export const createPhotoRemarkService = ({
   };
 
   /**
+   * resolveRecipientName — resolve a user's display name by userId.
+   * Reuses the same user.get call pattern used elsewhere in the service.
+   */
+  const resolveRecipientName = async (userId, adminContext) => {
+    try {
+      const result = await bitrixClient.callMethod('user.get', { ID: userId }, adminContext);
+      const users = Array.isArray(result) ? result
+        : Array.isArray(result?.result) ? result.result : [];
+      const user = users[0];
+      if (!user) return null;
+      const name = [
+        String(user.NAME || '').trim(),
+        String(user.LAST_NAME || '').trim()
+      ].filter(Boolean).join(' ');
+      return name || null;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
    * sendRemark — main entry point.
    *
    * @param {object} params
    * @param {string}  params.azsId
    * @param {string}  [params.azsTitle]
-   * @param {'manager'|'admin'} params.recipientRole
+   * @param {'manager'|'admin'}              [params.recipientRole]     — legacy; used when no recipientType
+   * @param {'manager'|'admin'|'user'}       [params.recipientType]     — new; preferred
+   * @param {number}                         [params.recipientUserId]   — required when type='user'
    * @param {Array<{reportId:number, photoCode:string, comment:string}>} params.photos  1..20
    * @param {{id:number, name:string|null}} params.sender
    * @returns {Promise<object>} — journal record
@@ -249,36 +272,55 @@ export const createPhotoRemarkService = ({
     azsId,
     azsTitle = null,
     recipientRole,
+    recipientType,
+    recipientUserId: explicitRecipientUserId,
     photos = [],
     sender = {}
   }) => {
-    // -----------------------------------------------------------------------
-    // 1. Resolve recipient
-    // -----------------------------------------------------------------------
-    const settings = await settingsStore.read();
     const adminContext = await resolveAdminContext();
 
-    const { manager, admin } = await resolveAzsRecipients({
-      azsId,
-      settings,
-      bitrixClient,
-      context: adminContext
-    });
+    // -----------------------------------------------------------------------
+    // 1. Resolve recipient
+    //    - recipientType='user': use explicitRecipientUserId directly
+    //    - recipientType='manager'|'admin' (or legacy recipientRole): AZS lookup
+    // -----------------------------------------------------------------------
+    let recipient;
+    // Effective type: prefer new recipientType, fall back to recipientRole
+    const effectiveType = recipientType ?? recipientRole;
 
-    const recipient = recipientRole === 'manager' ? manager : admin;
-    if (!recipient || !recipient.id) {
-      const err = new Error(`Recipient role "${recipientRole}" is not configured for AZS ${azsId}`);
-      err.errorCode = RECIPIENT_NOT_SET;
-      throw err;
+    if (effectiveType === 'user') {
+      // Arbitrary userId — resolve their name, deliver to their personal chat
+      const uid = Number(explicitRecipientUserId);
+      const name = await resolveRecipientName(uid, adminContext);
+      recipient = { id: uid, name };
+    } else {
+      // Role-based: 'manager' | 'admin' — resolve via AZS CRM card
+      const settings = await settingsStore.read();
+      const { manager, admin } = await resolveAzsRecipients({
+        azsId,
+        settings,
+        bitrixClient,
+        context: adminContext
+      });
+
+      const roleKey = effectiveType === 'manager' ? 'manager' : 'admin';
+      recipient = roleKey === 'manager' ? manager : admin;
+      if (!recipient || !recipient.id) {
+        const err = new Error(`Recipient role "${effectiveType}" is not configured for AZS ${azsId}`);
+        err.errorCode = RECIPIENT_NOT_SET;
+        throw err;
+      }
     }
 
     // -----------------------------------------------------------------------
     // 2. Insert journal record (initial status 'sent', overwritten on failure)
     // -----------------------------------------------------------------------
+    // For the stored recipientRole: use 'user' when type='user', otherwise the role
+    const storedRole = effectiveType === 'user' ? 'user' : (effectiveType ?? 'manager');
     const record = await remarkStore.insertRemark({
       azsId,
       azsTitle: azsTitle ?? null,
-      recipientRole,
+      recipientRole: storedRole,
       recipientUserId: recipient.id,
       recipientName: recipient.name ?? null,
       senderUserId: sender?.id ?? null,

@@ -464,6 +464,99 @@ test('MySQL UX-2: markPhotoDelivery updates per-photo status', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// FEED-2 / BE-3: migration idempotency for recipient_user_id + recipient_name
+// ---------------------------------------------------------------------------
+
+test('PG FEED-2: ensureSchema is idempotent — repeated call does not throw', async () => {
+  const pool = createFakePgPool();
+  const store = createPhotoRemarkStore({ pool, dbType: 'postgresql' });
+  // Call twice — must not throw on the second run (ADD COLUMN IF NOT EXISTS)
+  await assert.doesNotReject(() => store.ensureSchema());
+  await assert.doesNotReject(() => store.ensureSchema());
+});
+
+test('PG FEED-2: insertRemark with recipientType=user stores recipient_user_id + recipient_name', async () => {
+  const pool = createFakePgPool();
+  const store = createPhotoRemarkStore({ pool, dbType: 'postgresql' });
+  await store.ensureSchema();
+  const remark = await store.insertRemark({
+    azsId: '42',
+    azsTitle: 'АЗС Тест',
+    recipientRole: 'user',
+    recipientUserId: 77,
+    recipientName: 'Иван Петров',
+    senderUserId: 3, senderName: 'Ревизор',
+    photos: [{ reportId: 10, photoCode: 'front', comment: 'test' }]
+  });
+  assert.equal(remark.recipientUserId, 77, 'recipientUserId stored');
+  assert.equal(remark.recipientName, 'Иван Петров', 'recipientName stored');
+  assert.equal(remark.recipientRole, 'user', 'recipientRole=user stored');
+  // getById round-trip
+  const found = await store.getById(remark.id);
+  assert.equal(found.recipientUserId, 77, 'recipientUserId via getById');
+  assert.equal(found.recipientName, 'Иван Петров', 'recipientName via getById');
+});
+
+test('PG FEED-2: list returns recipientName for user-type remarks', async () => {
+  const pool = createFakePgPool();
+  const store = createPhotoRemarkStore({ pool, dbType: 'postgresql' });
+  await store.ensureSchema();
+  await store.insertRemark({
+    azsId: '55',
+    recipientRole: 'user',
+    recipientUserId: 99,
+    recipientName: 'Светлана Тузова',
+    photos: [{ reportId: 5, photoCode: 'a', comment: 'ok' }]
+  });
+  const { items } = await store.list({ azsIds: ['55'], limit: 10 });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].recipientUserId, 99);
+  assert.equal(items[0].recipientName, 'Светлана Тузова');
+});
+
+test('MySQL FEED-2: ensureSchema is idempotent — repeated call does not throw', async () => {
+  const pool = createFakeMysqlPool();
+  const store = createPhotoRemarkStore({ pool, dbType: 'mysql' });
+  await assert.doesNotReject(() => store.ensureSchema());
+  await assert.doesNotReject(() => store.ensureSchema());
+});
+
+test('MySQL FEED-2: insertRemark with recipientType=user stores recipient_user_id + recipient_name', async () => {
+  const pool = createFakeMysqlPool();
+  const store = createPhotoRemarkStore({ pool, dbType: 'mysql' });
+  await store.ensureSchema();
+  const remark = await store.insertRemark({
+    azsId: '77',
+    recipientRole: 'user',
+    recipientUserId: 88,
+    recipientName: 'Мальцева К.',
+    photos: [{ reportId: 20, photoCode: 'top', comment: 'ok' }]
+  });
+  assert.equal(remark.recipientUserId, 88, 'recipientUserId stored');
+  assert.equal(remark.recipientName, 'Мальцева К.', 'recipientName stored');
+  // getById round-trip
+  const found = await store.getById(remark.id);
+  assert.equal(found.recipientUserId, 88, 'recipientUserId via getById');
+  assert.equal(found.recipientName, 'Мальцева К.', 'recipientName via getById');
+});
+
+test('PG FEED-2: old records without recipient_user_id read back without error', async () => {
+  const pool = createFakePgPool();
+  const store = createPhotoRemarkStore({ pool, dbType: 'postgresql' });
+  await store.ensureSchema();
+  // Insert an "old" record without recipientUserId/recipientName (simulates pre-FEED2 records)
+  const remark = await store.insertRemark({
+    azsId: '1', recipientRole: 'manager',
+    // No recipientUserId, no recipientName
+    photos: [{ reportId: 1, photoCode: 'p', comment: 'old style' }]
+  });
+  const found = await store.getById(remark.id);
+  assert.ok(found, 'old record readable');
+  assert.equal(found.recipientUserId, null, 'recipientUserId is null for old records');
+  assert.equal(found.recipientName, null, 'recipientName is null for old records');
+});
+
+// ---------------------------------------------------------------------------
 // Factory validation
 // ---------------------------------------------------------------------------
 

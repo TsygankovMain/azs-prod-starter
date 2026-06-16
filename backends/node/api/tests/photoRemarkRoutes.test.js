@@ -661,6 +661,172 @@ test('UX-2 GET / returns photos with per-photo comment and deliveryStatus', asyn
 });
 
 // ---------------------------------------------------------------------------
+// FEED-2 / BE-3: recipientType='user' + recipientUserId
+// ---------------------------------------------------------------------------
+
+test('FEED-2 POST / accepts recipientType=user with recipientUserId', async () => {
+  let capturedParams = null;
+  const capturingService = {
+    async sendRemark(params) {
+      capturedParams = params;
+      return {
+        id: 1, azsId: params.azsId, recipientRole: params.recipientRole,
+        recipientUserId: params.recipientUserId, recipientName: params.recipientName,
+        deliveryStatus: 'sent', deliveryError: null,
+        photos: params.photos, createdAt: new Date().toISOString()
+      };
+    },
+    async retryRemark(record) { return record; }
+  };
+  const router = createPhotoRemarkRouter({
+    ...stubDeps,
+    photoRemarkService: capturingService,
+    remarkStore: createFakeRemarkStore()
+  });
+  const handler = findRoute(router, 'post', '/');
+  if (!handler) return;
+  const req = makeReq({
+    body: {
+      azsId: '42',
+      recipientType: 'user',
+      recipientUserId: 55,
+      photos: [{ reportId: 10, photoCode: 'front', comment: 'Тест' }]
+    }
+  });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200, 'should accept recipientType=user');
+  assert.ok(res._payload?.item, 'response should have item');
+  assert.ok(capturedParams, 'service.sendRemark should be called');
+  assert.equal(capturedParams.recipientType, 'user', 'recipientType=user passed to service');
+  assert.equal(capturedParams.recipientUserId, 55, 'recipientUserId=55 passed to service');
+});
+
+test('FEED-2 POST / returns 400 for recipientType=user without recipientUserId', async () => {
+  const router = createPhotoRemarkRouter({ ...stubDeps, remarkStore: createFakeRemarkStore() });
+  const handler = findRoute(router, 'post', '/');
+  if (!handler) return;
+  const req = makeReq({
+    body: {
+      azsId: '42',
+      recipientType: 'user',
+      // missing recipientUserId
+      photos: [{ reportId: 10, photoCode: 'front', comment: 'Тест' }]
+    }
+  });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 400, 'should reject missing recipientUserId');
+  assert.ok(res._payload?.message?.toLowerCase().includes('recipientuserid'), 'error mentions recipientUserId');
+});
+
+test('FEED-2 POST / backward compat: old recipientRole=manager still works', async () => {
+  let capturedParams = null;
+  const capturingService = {
+    async sendRemark(params) {
+      capturedParams = params;
+      return {
+        id: 1, azsId: params.azsId, recipientRole: params.recipientRole,
+        deliveryStatus: 'sent', deliveryError: null,
+        photos: params.photos, createdAt: new Date().toISOString()
+      };
+    },
+    async retryRemark(record) { return record; }
+  };
+  const router = createPhotoRemarkRouter({
+    ...stubDeps,
+    photoRemarkService: capturingService,
+    remarkStore: createFakeRemarkStore()
+  });
+  const handler = findRoute(router, 'post', '/');
+  if (!handler) return;
+  const req = makeReq({
+    body: {
+      azsId: '42',
+      recipientRole: 'manager',  // old contract — still works
+      photos: [{ reportId: 10, photoCode: 'front', comment: 'Замечание' }]
+    }
+  });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200, 'old recipientRole=manager must still succeed');
+  assert.ok(capturedParams, 'service called');
+  assert.equal(capturedParams.recipientRole, 'manager', 'recipientRole=manager passed through');
+});
+
+test('FEED-2 POST / backward compat: old recipientRole=admin still works', async () => {
+  const router = createPhotoRemarkRouter({ ...stubDeps, remarkStore: createFakeRemarkStore() });
+  const handler = findRoute(router, 'post', '/');
+  if (!handler) return;
+  const req = makeReq({
+    body: {
+      azsId: '42',
+      recipientRole: 'admin',
+      photos: [{ reportId: 10, photoCode: 'front', comment: 'test' }]
+    }
+  });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200, 'old recipientRole=admin must still succeed');
+});
+
+test('FEED-2 POST / recipientType=admin normalizes to role-based delivery', async () => {
+  let capturedParams = null;
+  const capturingService = {
+    async sendRemark(params) {
+      capturedParams = params;
+      return {
+        id: 1, azsId: params.azsId, recipientRole: params.recipientRole,
+        deliveryStatus: 'sent', deliveryError: null,
+        photos: params.photos, createdAt: new Date().toISOString()
+      };
+    },
+    async retryRemark(record) { return record; }
+  };
+  const router = createPhotoRemarkRouter({
+    ...stubDeps,
+    photoRemarkService: capturingService,
+    remarkStore: createFakeRemarkStore()
+  });
+  const handler = findRoute(router, 'post', '/');
+  if (!handler) return;
+  const req = makeReq({
+    body: {
+      azsId: '42',
+      recipientType: 'admin',
+      photos: [{ reportId: 10, photoCode: 'front', comment: 'test' }]
+    }
+  });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200, 'recipientType=admin should succeed');
+  assert.ok(capturedParams, 'service called');
+  assert.equal(capturedParams.recipientRole, 'admin', 'recipientType=admin maps to recipientRole=admin');
+});
+
+test('FEED-2 GET / journal returns recipientName for user-type remarks', async () => {
+  const remarkStore = createFakeRemarkStore();
+  // Insert remark with user-type recipient stored data
+  await remarkStore.insertRemark({
+    azsId: '42', recipientRole: 'user',
+    recipientUserId: 55, recipientName: 'Иван Петров',
+    photos: [{ reportId: 10, photoCode: 'front', comment: 'test' }]
+  });
+  const deps = { ...stubDeps, remarkStore };
+  const router = createPhotoRemarkRouter(deps);
+  const handler = findRoute(router, 'get', '/');
+  if (!handler) return;
+  const req = makeReq({ query: {} });
+  const res = makeRes();
+  await handler(req, res);
+  assert.equal(res.statusCode, 200);
+  const item = res._payload.items[0];
+  assert.ok(item, 'journal item exists');
+  assert.equal(item.recipientUserId, 55, 'recipientUserId returned');
+  assert.equal(item.recipientName, 'Иван Петров', 'recipientName returned in journal');
+});
+
+// ---------------------------------------------------------------------------
 // Factory validation
 // ---------------------------------------------------------------------------
 
