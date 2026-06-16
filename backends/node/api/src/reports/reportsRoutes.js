@@ -107,18 +107,25 @@ const parseCrmItemId = (value) => {
 };
 
 /**
- * batchResolveAzsTitles — BUG-021.
+ * batchResolveAzsTitles — BUG-021 + FEED-3.
  *
- * Fetches titles for ALL AZS ids in ONE crm.item.list call (huge-data path via
- * listCrmItems with order:{id:'ASC'} + start=-1 internally) and returns a
- * Map<string, string> id→title.  Falls back gracefully on errors or empty results.
+ * Fetches titles and addresses for ALL AZS ids in ONE crm.item.list call
+ * (huge-data path via listCrmItems with order:{id:'ASC'} + start=-1 internally)
+ * and returns a Map<string, {title: string, address: string|null}> id→{title,address}.
+ *
+ * Address is pulled from UF_CRM_10_1773914353 («Адрес» field on the AZS card).
+ * If the field is absent or empty — address = null (no errors).
+ *
+ * Falls back gracefully on errors or empty results (fallback entry: {title: 'АЗС N', address: null}).
  *
  * Use this in hot list/feed paths instead of per-row createAzsTitleResolver.
  * Keep createAzsTitleResolver for genuinely single-id spots (card detail / submit / upload).
  *
+ * Consumers must use .title for azsTitle and .address for azsAddress.
+ *
  * @param {string[]} azsIds
  * @param {{ bitrixClient, settings, context? }} opts
- * @returns {Promise<Map<string, string>>}
+ * @returns {Promise<Map<string, {title: string, address: string|null}>>}
  */
 export const batchResolveAzsTitles = async (azsIds, { bitrixClient, settings, context = {} }) => {
   const entityTypeId = Number(settings?.azs?.entityTypeId || 0);
@@ -128,20 +135,25 @@ export const batchResolveAzsTitles = async (azsIds, { bitrixClient, settings, co
     return fallbackMap;
   }
 
-  // Build per-id fallback strings upfront so they are always available.
+  // Build per-id fallback entries upfront so they are always available.
   for (const id of azsIds) {
     const parsed = parseCrmItemId(id);
-    fallbackMap.set(String(id), `АЗС ${parsed || id || '?'}`.trim());
+    fallbackMap.set(String(id), { title: `АЗС ${parsed || id || '?'}`.trim(), address: null });
   }
 
   if (!entityTypeId || typeof bitrixClient?.listCrmItems !== 'function') {
     return fallbackMap;
   }
 
+  // Address UF field — include both camelCase and original-case aliases so
+  // bitrix client normalisation (useOriginalUfNames:'N') is handled either way.
+  const UF_ADDRESS_CODE = 'UF_CRM_10_1773914353';
+  const UF_ADDRESS_CAMEL = 'ufCrm10_1773914353'; // camelCase form from Bitrix REST
+
   try {
     const rows = await bitrixClient.listCrmItems({
       entityTypeId,
-      select: ['id', 'ID', 'title', 'TITLE'],
+      select: ['id', 'ID', 'title', 'TITLE', UF_ADDRESS_CODE, UF_ADDRESS_CAMEL],
       filter: {},
       order: { id: 'ASC' }, // triggers huge-data start=-1 path in bitrixRestClient
       limit: 2000,
@@ -154,8 +166,17 @@ export const batchResolveAzsTitles = async (azsIds, { bitrixClient, settings, co
       const rowId = parseCrmItemId(row?.id ?? row?.ID);
       if (!rowId) continue;
       const title = String(row?.title ?? row?.TITLE ?? '').trim();
+      // Resolve address from both camelCase and original-case UF field names.
+      const rawAddress = row?.[UF_ADDRESS_CAMEL] ?? row?.[UF_ADDRESS_CODE] ?? null;
+      const address = rawAddress != null && String(rawAddress).trim() !== ''
+        ? String(rawAddress).trim()
+        : null;
       if (title) {
-        resultMap.set(String(rowId), title);
+        resultMap.set(String(rowId), { title, address });
+      } else {
+        // Keep fallback title but update address if UF was present
+        const existing = resultMap.get(String(rowId));
+        resultMap.set(String(rowId), { title: existing?.title ?? `АЗС ${rowId}`, address });
       }
     }
     return resultMap;
@@ -890,9 +911,10 @@ export const createReportsRouter = ({
 
       const decorated = items.map((item) => {
         const { reasonCode, isFallback } = classifyDispatchError(item.errorText);
+        const azsEntry = titleMap.get(item.azsId);
         return {
           ...item,
-          azsTitle: titleMap.get(item.azsId) ?? `АЗС ${item.azsId || '?'}`,
+          azsTitle: azsEntry?.title ?? `АЗС ${item.azsId || '?'}`,
           errorText: item.errorText ?? null,
           errorReason: item.errorText ? reasonCode : null,
           deliveredViaFallback: isFallback

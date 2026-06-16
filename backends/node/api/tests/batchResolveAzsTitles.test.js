@@ -82,7 +82,7 @@ test('batchResolveAzsTitles: calls listCrmItems ONCE (not getCrmItem per id)', a
   assert.ok(capturedListParams.select.includes('title') || capturedListParams.select.includes('TITLE'), 'select must include title');
 });
 
-test('batchResolveAzsTitles: returns Map<string, string> id→title', async () => {
+test('batchResolveAzsTitles: returns Map<string, {title,address}> id→{title,address}', async () => {
   const bitrixClient = {
     async listCrmItems() {
       return [
@@ -96,8 +96,8 @@ test('batchResolveAzsTitles: returns Map<string, string> id→title', async () =
   const map = await batchResolveAzsTitles(['10', '20'], { bitrixClient, settings, context: {} });
 
   assert.ok(map instanceof Map, 'result must be a Map');
-  assert.equal(map.get('10'), 'АЗС Петрово');
-  assert.equal(map.get('20'), 'АЗС Иваново');
+  assert.equal(map.get('10')?.title, 'АЗС Петрово');
+  assert.equal(map.get('20')?.title, 'АЗС Иваново');
 });
 
 test('batchResolveAzsTitles: numeric id keys in map (stringified)', async () => {
@@ -110,7 +110,7 @@ test('batchResolveAzsTitles: numeric id keys in map (stringified)', async () => 
   const settings = makeSettings(145);
   const map = await batchResolveAzsTitles(['42'], { bitrixClient, settings, context: {} });
 
-  assert.equal(map.get('42'), 'АЗС 42', 'map key must be string id');
+  assert.equal(map.get('42')?.title, 'АЗС 42', 'map key must be string id, value.title must be resolved');
 });
 
 test('batchResolveAzsTitles: fallback title when item not found in list', async () => {
@@ -124,11 +124,13 @@ test('batchResolveAzsTitles: fallback title when item not found in list', async 
   // ID 99 not in the batch result
   const map = await batchResolveAzsTitles(['10', '99'], { bitrixClient, settings, context: {} });
 
-  assert.equal(map.get('10'), 'АЗС 10');
+  assert.equal(map.get('10')?.title, 'АЗС 10');
   // For missing id, fallback must be set (not undefined)
   assert.ok(map.has('99'), 'map must have entry for all requested ids');
-  assert.ok(typeof map.get('99') === 'string', 'fallback must be a string');
-  assert.ok(map.get('99').includes('99'), 'fallback must reference the id');
+  const fallback99 = map.get('99');
+  assert.ok(fallback99 && typeof fallback99 === 'object', 'fallback must be an object');
+  assert.ok(typeof fallback99.title === 'string', 'fallback.title must be a string');
+  assert.ok(fallback99.title.includes('99'), 'fallback.title must reference the id');
 });
 
 test('batchResolveAzsTitles: graceful fallback on empty listCrmItems result', async () => {
@@ -143,7 +145,9 @@ test('batchResolveAzsTitles: graceful fallback on empty listCrmItems result', as
 
   assert.ok(map instanceof Map, 'must return Map even on empty result');
   assert.ok(map.has('5'), 'map must have entry for all requested ids');
-  assert.ok(typeof map.get('5') === 'string', 'fallback must be a string');
+  const fallback5 = map.get('5');
+  assert.ok(fallback5 && typeof fallback5 === 'object', 'fallback must be an object');
+  assert.ok(typeof fallback5.title === 'string', 'fallback.title must be a string');
 });
 
 test('batchResolveAzsTitles: graceful fallback when listCrmItems throws', async () => {
@@ -159,7 +163,9 @@ test('batchResolveAzsTitles: graceful fallback when listCrmItems throws', async 
 
   assert.ok(map instanceof Map, 'must return Map even when listCrmItems throws');
   assert.ok(map.has('7'), 'map must have entry for all requested ids');
-  assert.ok(typeof map.get('7') === 'string', 'fallback must be a string');
+  const fallback7 = map.get('7');
+  assert.ok(fallback7 && typeof fallback7 === 'object', 'fallback must be an object');
+  assert.ok(typeof fallback7.title === 'string', 'fallback.title must be a string');
 });
 
 test('batchResolveAzsTitles: returns empty Map when azsIds is empty array', async () => {
