@@ -234,9 +234,9 @@ const getCategoryLabel = (entry: MarkEntry): string =>
       <!-- Нет получателей совсем -->
       <div
         v-if="neitherAvailable"
-        class="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700"
+        class="rounded-lg bg-yellow-50 border border-yellow-200 px-3 py-2 text-sm text-yellow-800"
       >
-        У АЗС не указан ни управляющий, ни администратор. Переключитесь на «Сотрудник Б24».
+        Роли АЗС недоступны — выберите сотрудника на вкладке «Сотрудник Б24».
       </div>
 
       <template v-else>
