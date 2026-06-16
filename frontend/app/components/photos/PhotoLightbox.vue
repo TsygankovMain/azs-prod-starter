@@ -264,13 +264,14 @@ const onPointerDown = (e: PointerEvent) => {
     // Начинаем pinch — отменяем свайп/pan
     swipeActive = false
     panActive = false
-    const pts = [...activePointers.values()]
-    pinchStartDist = getPointerDist(pts[0], pts[1])
+    const [a, b] = [...activePointers.values()]
+    if (!a || !b) return
+    pinchStartDist = getPointerDist(a, b)
     pinchStartScale = zoomScale.value
     pinchStartTx = zoomTx.value
     pinchStartTy = zoomTy.value
-    pinchCenterX = (pts[0].x + pts[1].x) / 2
-    pinchCenterY = (pts[0].y + pts[1].y) / 2
+    pinchCenterX = (a.x + b.x) / 2
+    pinchCenterY = (a.y + b.y) / 2
   } else if (activePointers.size === 1) {
     if (zoomScale.value > 1) {
       // Pan при zoom
@@ -296,8 +297,9 @@ const onPointerMove = (e: PointerEvent) => {
 
   if (activePointers.size === 2) {
     // Pinch
-    const pts = [...activePointers.values()]
-    const dist = getPointerDist(pts[0], pts[1])
+    const [a, b] = [...activePointers.values()]
+    if (!a || !b) return
+    const dist = getPointerDist(a, b)
     if (pinchStartDist === 0) return
     const newScale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, pinchStartScale * (dist / pinchStartDist)))
     const { cw, ch, iw, ih } = getZoomDimensions()
@@ -344,6 +346,17 @@ const onPointerUp = (e: PointerEvent) => {
   if (activePointers.size < 2) {
     pinchStartDist = 0
   }
+  if (activePointers.size === 1 && zoomScale.value > 1) {
+    // Переход 2→1 палец: переинициализируем pan от оставшегося указателя
+    const remaining = [...activePointers.values()][0]
+    if (remaining) {
+      panActive = true
+      panStartX = remaining.x
+      panStartY = remaining.y
+      panStartTx = zoomTx.value
+      panStartTy = zoomTy.value
+    }
+  }
   if (activePointers.size === 0) {
     panActive = false
     swipeActive = false
@@ -352,6 +365,18 @@ const onPointerUp = (e: PointerEvent) => {
 
 const onPointerCancel = (e: PointerEvent) => {
   activePointers.delete(e.pointerId)
+  if (activePointers.size === 1 && zoomScale.value > 1) {
+    // Переход 2→1 палец: переинициализируем pan от оставшегося указателя
+    pinchStartDist = 0
+    const remaining = [...activePointers.values()][0]
+    if (remaining) {
+      panActive = true
+      panStartX = remaining.x
+      panStartY = remaining.y
+      panStartTx = zoomTx.value
+      panStartTy = zoomTy.value
+    }
+  }
   if (activePointers.size === 0) {
     panActive = false
     swipeActive = false
