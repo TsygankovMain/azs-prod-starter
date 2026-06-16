@@ -508,7 +508,7 @@ export const useApiStore = defineStore(
      * Поиск сотрудников портала (BE-2).
      * GET /api/users/search?q=...
      */
-    const searchUsers = async (q: string): Promise<{ items: Array<{ id: number; name: string; position: string }> }> => {
+    const searchUsers = async (q: string): Promise<{ items: Array<{ id: number; name: string; position: string | null }> }> => {
       return await $api('/api/users/search', {
         query: { q },
         headers: { Authorization: `Bearer ${tokenJWT.value}` }
