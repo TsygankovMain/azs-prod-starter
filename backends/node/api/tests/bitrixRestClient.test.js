@@ -917,3 +917,32 @@ test('diskApi.downloadFileContent: webhook context — does NOT attempt token re
     global.fetch = originalFetch;
   }
 });
+
+test('diskApi.getExternalLink returns the bare string link (NOT String.prototype.link)', async () => {
+  // Bitrix отдаёт ссылку строкой напрямую в result. Регресс: result?.link на
+  // строке === String.prototype.link → в ссылку попадало "function link() {…}".
+  const originalFetch = global.fetch;
+  global.fetch = async () => createJsonResponse({ result: 'https://b24.example.com/~AbC123xyz' });
+  try {
+    const client = createBitrixRestClient({ endpoint: '', authId: '', logger: { info() {}, error() {} } });
+    const link = await client.diskApi.getExternalLink(123, { domain: 'b24-x.bitrix24.ru', authId: 't' });
+    assert.equal(typeof link, 'string');
+    assert.equal(link, 'https://b24.example.com/~AbC123xyz');
+    assert.ok(!link.includes('native code'), 'не должно быть String.prototype.link');
+    assert.ok(!link.startsWith('function'), 'ссылка не должна быть функцией');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('diskApi.getExternalLink reads LINK from object response', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => createJsonResponse({ result: { LINK: 'https://b24.example.com/obj-link' } });
+  try {
+    const client = createBitrixRestClient({ endpoint: '', authId: '', logger: { info() {}, error() {} } });
+    const link = await client.diskApi.getExternalLink(123, { domain: 'b24-x.bitrix24.ru', authId: 't' });
+    assert.equal(link, 'https://b24.example.com/obj-link');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

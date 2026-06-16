@@ -266,14 +266,43 @@ async function getExternalLink(brand: BrandItem) {
   }
 }
 
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  // navigator.clipboard часто недоступен внутри iframe Bitrix24 (нет clipboard-write
+  // permission / небезопасный контекст) — поэтому делаем fallback на execCommand.
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // переходим к fallback
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '-1000px'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
 async function copyLink(brandId: number) {
   const state = editState.value[brandId]
   if (!state?.link) return
-  try {
-    await navigator.clipboard.writeText(state.link)
+  const ok = await copyTextToClipboard(state.link)
+  if (ok) {
     state.linkCopied = true
     setTimeout(() => { if (editState.value[brandId]) editState.value[brandId].linkCopied = false }, 2000)
-  } catch {
+  } else {
     toast.error('Не удалось скопировать ссылку — скопируйте вручную')
   }
 }
