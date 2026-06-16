@@ -6,6 +6,13 @@ RUN npm install -g pnpm@9
 COPY frontend/.npmrc ./
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
+# cache-bust: Timeweb buildkit переиспользует layer-кэш build-стадий и иначе кладёт
+# в образ СТАРЫЙ фронт даже при изменённых исходниках (наблюдалось 2026-06-16:
+# деплой 46eb0b7 «успешно», но в проде остался бандл от 3b77df2). Любое изменение
+# строки ниже инвалидирует кэш с этой точки и форсит свежие COPY + generate.
+# МЕНЯЙТЕ BUILD_REV при каждом деплое с изменениями фронта (дата + краткий SHA).
+ARG BUILD_REV=2026-06-16-46eb0b7
+RUN echo "frontend build rev: ${BUILD_REV}"
 COPY frontend ./
 RUN pnpm run generate
 
@@ -15,6 +22,9 @@ RUN npm install -g pnpm@9
 COPY backends/node/api/.npmrc ./
 COPY backends/node/api/package.json backends/node/api/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --prod
+# cache-bust (см. комментарий выше): форсит свежий COPY бэкенда вместо layer-кэша.
+ARG BUILD_REV=2026-06-16-46eb0b7
+RUN echo "api build rev: ${BUILD_REV}"
 COPY backends/node/api ./
 
 FROM node:20-bookworm-slim AS runtime
