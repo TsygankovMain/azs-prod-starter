@@ -789,8 +789,15 @@ export const createBitrixRestClient = ({
         const result = await call('disk.folder.getexternallink', {
           id: Number(folderId)
         }, context);
-        // Bitrix возвращает строку-ссылку как result напрямую
-        const link = String(result?.LINK ?? result?.link ?? result ?? '').trim();
+        // Bitrix отдаёт ссылку либо строкой напрямую, либо объектом { LINK }.
+        // ВАЖНО: на строке `result?.link` === String.prototype.link (нативный
+        // метод строки, он truthy!), поэтому случай строки проверяем ПЕРВЫМ —
+        // иначе `??` берёт функцию и в ссылку попадает
+        // "function link() { [native code] }" (ровно это и было на проде).
+        const raw = typeof result === 'string'
+          ? result
+          : (result?.LINK ?? result?.link ?? '');
+        const link = String(raw ?? '').trim();
         if (!link) {
           throw new Error('disk.folder.getexternallink response does not include link');
         }
