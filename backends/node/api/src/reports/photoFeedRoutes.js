@@ -138,10 +138,14 @@ export const createPhotoFeedRouter = ({
           settings,
           context: resolverContext
         });
-        items = result.items.map((item) => ({
-          ...item,
-          azsTitle: titleMap.get(item.azsId) ?? item.azsTitle
-        }));
+        items = result.items.map((item) => {
+          const azsEntry = titleMap.get(item.azsId);
+          return {
+            ...item,
+            azsTitle: azsEntry?.title ?? item.azsTitle ?? null,
+            azsAddress: azsEntry?.address ?? null
+          };
+        });
       }
 
       return res.json({ items, nextCursor: result.nextCursor });

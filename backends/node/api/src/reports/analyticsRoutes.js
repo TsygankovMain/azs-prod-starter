@@ -29,11 +29,14 @@ export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClie
       const { batchResolveAzsTitles } = await import('./reportsRoutes.js');
       const pageAzsIds = [...new Set(rows.map(r => r.azsId).filter(Boolean))];
       const titleMap = await batchResolveAzsTitles(pageAzsIds, { bitrixClient, settings, context: req.bitrixContext || {} });
-      const items = rows.map(r => ({
-        ...r,
-        azsTitle: titleMap.get(r.azsId) ?? `АЗС ${r.azsId || '?'}`,
-        pct: r.total ? Math.round(r.onTime / r.total * 100) : 0,
-      }));
+      const items = rows.map(r => {
+        const azsEntry = titleMap.get(r.azsId);
+        return {
+          ...r,
+          azsTitle: azsEntry?.title ?? `АЗС ${r.azsId || '?'}`,
+          pct: r.total ? Math.round(r.onTime / r.total * 100) : 0,
+        };
+      });
       return res.json({ items });
     } catch (err) {
       return res.status(500).json({ error: 'analytics_rating_failed', message: err.message });
@@ -71,10 +74,14 @@ export const createAnalyticsRouter = ({ analyticsStore, reportsStore, bitrixClie
       const { batchResolveAzsTitles } = await import('./reportsRoutes.js');
       const pageAzsIds = [...new Set(rows.map(r => r.azsId).filter(Boolean))];
       const titleMap = await batchResolveAzsTitles(pageAzsIds, { bitrixClient, settings, context: req.bitrixContext || {} });
-      const items = rows.map(r => ({
-        ...r,
-        azsTitle: titleMap.get(r.azsId) ?? `АЗС ${r.azsId || '?'}`,
-      }));
+      const items = rows.map(r => {
+        const azsEntry = titleMap.get(r.azsId);
+        return {
+          ...r,
+          azsTitle: azsEntry?.title ?? `АЗС ${r.azsId || '?'}`,
+          azsAddress: azsEntry?.address ?? null,
+        };
+      });
       return res.json({ items, date });
     } catch (err) {
       return res.status(500).json({ error: 'analytics_day_photos_failed', message: err.message });
