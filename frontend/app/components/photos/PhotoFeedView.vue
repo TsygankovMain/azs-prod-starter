@@ -89,6 +89,7 @@ type PhotoFeedItem = {
   reportId: number
   azsId: string
   azsTitle?: string | null
+  azsAddress?: string | null
   photoCode: string
   exifAt: string | null
   uploadedAt: string | null
