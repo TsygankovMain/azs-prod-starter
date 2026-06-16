@@ -15,6 +15,7 @@ type PhotoFeedItem = {
   reportId: number
   azsId: string
   azsTitle?: string | null
+  azsAddress?: string | null
   photoCode: string
   exifAt: string | null
   uploadedAt: string | null
@@ -407,6 +408,10 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
         class="flex-shrink-0 px-4 py-2 bg-black/60 text-white/80 text-xs flex items-center gap-1.5 flex-wrap"
       >
         <span class="font-semibold">{{ current.azsTitle || `АЗС ${current.azsId}` }}</span>
+        <template v-if="current.azsAddress">
+          <span class="opacity-40">—</span>
+          <span class="text-blue-200/80 font-normal">{{ current.azsAddress }}</span>
+        </template>
         <span class="opacity-50">·</span>
         <span>{{ getCategoryTitle(current.photoCode) }}</span>
         <span class="opacity-50">·</span>

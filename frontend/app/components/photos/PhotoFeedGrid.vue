@@ -9,6 +9,7 @@ type PhotoFeedItem = {
   reportId: number
   azsId: string
   azsTitle?: string | null
+  azsAddress?: string | null
   photoCode: string
   exifAt: string | null
   uploadedAt: string | null
@@ -161,6 +162,7 @@ watch(() => props.items, (newItems) => {
 type AzsGroup = {
   azsId: string
   azsTitle: string
+  azsAddress?: string | null
   items: PhotoFeedItem[]
 }
 
@@ -171,6 +173,7 @@ const grouped = computed<AzsGroup[]>(() => {
       map.set(item.azsId, {
         azsId: item.azsId,
         azsTitle: item.azsTitle || `АЗС ${item.azsId}`,
+        azsAddress: item.azsAddress,
         items: []
       })
     }
@@ -299,11 +302,13 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
 
           <!-- Подпись «АЗС · категория · время» -->
           <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
-            <span class="opacity-80">{{ getAzsLabel(item) }}</span>
-            <span class="opacity-60"> · </span>
-            <span>{{ getCategoryTitle(item.photoCode) }}</span>
-            <span class="opacity-60"> · </span>
-            <span class="tabular-nums">{{ fmtTime(item.exifAt || item.uploadedAt) }}</span>
+            <div class="opacity-90 truncate">{{ getAzsLabel(item) }}</div>
+            <div v-if="item.azsAddress" class="text-[10px] font-normal text-blue-200 opacity-90 truncate">{{ item.azsAddress }}</div>
+            <div class="opacity-70 text-[10px] font-normal">
+              <span>{{ getCategoryTitle(item.photoCode) }}</span>
+              <span class="opacity-60"> · </span>
+              <span class="tabular-nums">{{ fmtTime(item.exifAt || item.uploadedAt) }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -318,7 +323,10 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
       >
         <!-- Заголовок секции -->
         <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
-          <b class="text-[14px]">{{ group.azsTitle }}</b>
+          <div>
+            <b class="text-[14px]">{{ group.azsTitle }}</b>
+            <span v-if="group.azsAddress" class="ml-1.5 text-[12px] font-normal text-gray-400">{{ group.azsAddress }}</span>
+          </div>
           <span class="text-[12.5px] text-gray-400">{{ group.items.length }} фото</span>
         </div>
 
