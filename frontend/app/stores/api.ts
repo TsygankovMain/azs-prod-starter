@@ -557,8 +557,8 @@ export const useApiStore = defineStore(
       createdAt: string | null
       azsId: string
       azsTitle: string | null
-      /** Роль АЗС-получателя (null для произвольного сотрудника) */
-      recipientRole: 'manager' | 'admin' | null
+      /** Роль АЗС-получателя (null или 'user' для произвольного сотрудника Б24) */
+      recipientRole: 'manager' | 'admin' | 'user' | null
       recipientName: string | null
       /** ID произвольного сотрудника (null для роли АЗС) */
       recipientUserId: number | null
