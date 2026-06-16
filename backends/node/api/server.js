@@ -50,6 +50,7 @@ import { maskAuthFields } from './utils/maskSecret.js';
 import { resolveBotSettingsContext } from './src/notifications/botSettingsContext.js';
 import createBrandRouter from './src/brands/brandRoutes.js';
 import { createDatabaseBrandStore } from './src/brands/databaseBrandStore.js';
+import { createUsersRouter } from './src/users/usersRoutes.js';
 
 try {
   validateRequiredEnv();
@@ -622,6 +623,11 @@ app.use('/api/brands', verifyToken, attachAccessContext, createBrandRouter({
   bitrixClient,
   getAdminContext,
   settingsStore
+}));
+
+app.use('/api/users', verifyToken, attachAccessContext, createUsersRouter({
+  bitrixClient,
+  getAdminContext
 }));
 
 // ---------------------------------------------------------------------------
