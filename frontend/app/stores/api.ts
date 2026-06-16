@@ -497,22 +497,48 @@ export const useApiStore = defineStore(
       createdAt: string
       azsId: string
       azsTitle: string | null
-      recipientRole: 'manager' | 'admin'
+      recipientRole: 'manager' | 'admin' | null
       recipientName: string
       senderName: string
       deliveryStatus: 'sent' | 'failed'
       deliveryError: string | null
     }
 
+    /**
+     * Поиск сотрудников портала (BE-2).
+     * GET /api/users/search?q=...
+     */
+    const searchUsers = async (q: string): Promise<{ items: Array<{ id: number; name: string; position: string }> }> => {
+      return await $api('/api/users/search', {
+        query: { q },
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    /**
+     * Отправка замечания к фото.
+     * Обратная совместимость: старый код передаёт recipientRole — оно по-прежнему принимается.
+     * Новый код передаёт recipientType + recipientUserId (для произвольного сотрудника).
+     */
     const sendPhotoRemark = async (payload: {
       azsId: string
       azsTitle?: string | null
-      recipientRole: 'manager' | 'admin'
+      /** @deprecated используй recipientType вместо recipientRole */
+      recipientRole?: 'manager' | 'admin'
+      /** 'manager'|'admin' — роль АЗС, 'user' — произвольный сотрудник */
+      recipientType?: 'manager' | 'admin' | 'user'
+      /** Требуется при recipientType='user' */
+      recipientUserId?: number
       photos: Array<{ reportId: number; photoCode: string; comment: string }>
     }): Promise<{ item: PhotoRemarkRecord }> => {
+      // Нормализуем: если передали только старый recipientRole — конвертируем в новый формат
+      const body = { ...payload }
+      if (!body.recipientType && body.recipientRole) {
+        body.recipientType = body.recipientRole
+      }
       return await $api('/api/photo-remarks', {
         method: 'POST',
-        body: payload,
+        body,
         headers: { Authorization: `Bearer ${tokenJWT.value}` }
       })
     }
@@ -531,8 +557,11 @@ export const useApiStore = defineStore(
       createdAt: string | null
       azsId: string
       azsTitle: string | null
-      recipientRole: 'manager' | 'admin'
+      /** Роль АЗС-получателя (null для произвольного сотрудника) */
+      recipientRole: 'manager' | 'admin' | null
       recipientName: string | null
+      /** ID произвольного сотрудника (null для роли АЗС) */
+      recipientUserId: number | null
       senderName: string | null
       deliveryStatus: 'sent' | 'failed'
       deliveryError: string | null
@@ -698,6 +727,7 @@ export const useApiStore = defineStore(
       getPhotoFeed,
       getPhotoCategories,
       getPhotoRecipients,
+      searchUsers,
       sendPhotoRemark,
       getPhotoRemarks,
       retryPhotoRemark,

@@ -9,7 +9,7 @@
  * Поле комментария + «Отметить с замечанием» у каждого фото.
  */
 
-import type { RemarkRecipient } from '~/components/photos/RemarkDraftPanel.vue'
+import type { RemarkRecipient, RemarkSendPayload } from '~/components/photos/RemarkDraftPanel.vue'
 
 type PhotoFeedItem = {
   reportId: number
@@ -65,7 +65,7 @@ const emit = defineEmits<{
   'toggle-mark': [item: PhotoFeedItem]
   'mark-with-comment': [payload: { item: PhotoFeedItem; comment: string }]
   'need-more': []
-  'draft-send': [payload: { recipientRole: 'manager' | 'admin' }]
+  'draft-send': [payload: RemarkSendPayload]
   'draft-clear': []
   'update-comment': [payload: { key: string; comment: string }]
   'remove-mark': [key: string]
