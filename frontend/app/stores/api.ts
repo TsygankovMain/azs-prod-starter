@@ -50,7 +50,7 @@ type RatingRow = {
 type TrendRow = { date: string; total: number; done: number; expired: number; open: number }
 
 type DayPhotoEntry = {
-  reportId: number; azsId: string; azsTitle?: string | null; doneAt: string | null
+  reportId: number; azsId: string; azsTitle?: string | null; azsAddress?: string | null; doneAt: string | null
   photos: Array<{ photoCode: string; diskObjectId: number | null; diskFolderId: number | null; exifAt: string | null; uploadedAt: string | null }>
 }
 
@@ -447,6 +447,7 @@ export const useApiStore = defineStore(
       reportId: number
       azsId: string
       azsTitle?: string | null
+      azsAddress?: string | null
       photoCode: string
       exifAt: string | null
       uploadedAt: string | null
