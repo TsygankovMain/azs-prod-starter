@@ -230,8 +230,8 @@ test('GET /api/brands returns empty list when no brands', async () => {
   const res = makeRes();
   await handler(req, res);
   assert.equal(res.statusCode, 200);
-  assert.ok(Array.isArray(res._payload?.brands));
-  assert.equal(res._payload.brands.length, 0);
+  assert.ok(Array.isArray(res._payload?.items));
+  assert.equal(res._payload.items.length, 0);
 });
 
 test('GET /api/brands returns list of brands', async () => {
@@ -247,8 +247,10 @@ test('GET /api/brands returns list of brands', async () => {
   const res = makeRes();
   await handler(req, res);
   assert.equal(res.statusCode, 200);
-  assert.equal(res._payload.brands.length, 2);
-  assert.equal(res._payload.brands[0].name, 'ГПН Москва');
+  assert.equal(res._payload.items.length, 2);
+  assert.equal(res._payload.items[0].name, 'ГПН Москва');
+  assert.ok(Array.isArray(res._payload.items[0].azsIds), 'каждый бренд несёт azsIds (контракт фронта)');
+  assert.ok('diskFolderId' in res._payload.items[0], 'поля в camelCase (diskFolderId)');
 });
 
 // ===========================================================================
@@ -274,9 +276,10 @@ test('POST /api/brands creates brand and returns it', async () => {
   const res = makeRes();
   await handler(req, res);
   assert.equal(res.statusCode, 201);
-  assert.ok(res._payload?.brand);
-  assert.equal(res._payload.brand.name, 'Новый бренд');
-  assert.ok(res._payload.brand.id);
+  assert.ok(res._payload?.item, 'ответ в обёртке { item } (контракт фронта)');
+  assert.equal(res._payload.item.name, 'Новый бренд');
+  assert.ok(res._payload.item.id);
+  assert.ok(Array.isArray(res._payload.item.azsIds), 'item.azsIds присутствует');
 });
 
 // ===========================================================================
@@ -311,8 +314,8 @@ test('PUT /api/brands/:id updates brand name and returns it', async () => {
   const res = makeRes();
   await handler(req, res);
   assert.equal(res.statusCode, 200);
-  assert.ok(res._payload?.brand);
-  assert.equal(res._payload.brand.name, 'Новый');
+  assert.ok(res._payload?.item);
+  assert.equal(res._payload.item.name, 'Новый');
 });
 
 // ===========================================================================
@@ -372,8 +375,9 @@ test('PUT /api/brands/:id/azs sets AZS list and returns current azsIds', async (
   const res = makeRes();
   await handler(req, res);
   assert.equal(res.statusCode, 200);
-  assert.ok(Array.isArray(res._payload?.azsIds));
-  assert.deepEqual(res._payload.azsIds.sort(), ['42', '55', '77'].sort());
+  assert.ok(res._payload?.item, 'ответ { item } с обновлённым брендом');
+  assert.ok(Array.isArray(res._payload.item.azsIds));
+  assert.deepEqual(res._payload.item.azsIds.sort(), ['42', '55', '77'].sort());
 });
 
 test('PUT /api/brands/:id/azs with empty array clears all AZS', async () => {
@@ -392,7 +396,7 @@ test('PUT /api/brands/:id/azs with empty array clears all AZS', async () => {
   const res = makeRes();
   await handler(req, res);
   assert.equal(res.statusCode, 200);
-  assert.deepEqual(res._payload?.azsIds, []);
+  assert.deepEqual(res._payload?.item?.azsIds, []);
 });
 
 test('PUT /api/brands/:id/azs transfers AZS from another brand (no 409, transfer)', async () => {
@@ -419,8 +423,8 @@ test('PUT /api/brands/:id/azs transfers AZS from another brand (no 409, transfer
   await handler(req, res);
 
   assert.equal(res.statusCode, 200);
-  assert.ok(Array.isArray(res._payload?.azsIds));
-  assert.ok(res._payload.azsIds.includes('42'), 'brand 2 должен владеть АЗС 42');
+  assert.ok(Array.isArray(res._payload?.item?.azsIds));
+  assert.ok(res._payload.item.azsIds.includes('42'), 'brand 2 должен владеть АЗС 42');
 });
 
 // ===========================================================================
