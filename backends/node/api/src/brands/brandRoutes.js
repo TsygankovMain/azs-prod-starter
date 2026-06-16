@@ -53,13 +53,35 @@ export const createBrandRouter = ({
 
   const router = express.Router();
 
+  // Сериализация brand-row (snake_case из БД, без azsIds) → DTO фронта
+  // (camelCase + azsIds). Frontend (stores/api.ts тип BrandItem, brands.client.vue)
+  // ожидает именно этот формат и обёртки { items } / { item }. Без выравнивания
+  // бренды не грузятся, а создание падает с
+  // "Cannot read properties of undefined (reading 'id')".
+  const serializeBrand = async (brand) => {
+    if (!brand) return null;
+    const azsIds = await brandStore.listAzsForBrand(brand.id);
+    return {
+      id: brand.id,
+      name: brand.name,
+      diskFolderId: brand.disk_folder_id ?? null,
+      diskFolderPath: brand.disk_folder_path ?? null,
+      externalLink: brand.external_link ?? null,
+      externalLinkUpdatedAt: brand.external_link_updated_at ?? null,
+      azsIds,
+      createdAt: brand.created_at ?? null,
+      updatedAt: brand.updated_at ?? null
+    };
+  };
+
   // ── GET / — список брендов ────────────────────────────────────────────────
 
   router.get('/', async (req, res) => {
     if (!requireAdmin(req, res)) return;
     try {
       const brands = await brandStore.listBrands();
-      return res.json({ brands });
+      const items = await Promise.all(brands.map((b) => serializeBrand(b)));
+      return res.json({ items });
     } catch (error) {
       console.error('[brandRoutes] GET / error', error);
       return res.status(500).json({ error: 'brands_list_failed', message: error.message });
@@ -76,7 +98,7 @@ export const createBrandRouter = ({
     }
     try {
       const brand = await brandStore.createBrand({ name });
-      return res.status(201).json({ brand });
+      return res.status(201).json({ item: await serializeBrand(brand) });
     } catch (error) {
       console.error('[brandRoutes] POST / error', error);
       return res.status(500).json({ error: 'brand_create_failed', message: error.message });
@@ -96,7 +118,7 @@ export const createBrandRouter = ({
       const brand = await brandStore.getBrand(id);
       if (!brand) return res.status(404).json({ error: 'brand_not_found', message: `Brand ${id} not found` });
       const updated = await brandStore.updateBrand(id, { name });
-      return res.json({ brand: updated });
+      return res.json({ item: await serializeBrand(updated) });
     } catch (error) {
       console.error('[brandRoutes] PUT /:id error', error);
       return res.status(500).json({ error: 'brand_update_failed', message: error.message });
@@ -132,8 +154,8 @@ export const createBrandRouter = ({
       const brand = await brandStore.getBrand(id);
       if (!brand) return res.status(404).json({ error: 'brand_not_found', message: `Brand ${id} not found` });
       await brandStore.setBrandAzs(id, azsIds);
-      const currentAzsIds = await brandStore.listAzsForBrand(id);
-      return res.json({ brandId: id, azsIds: currentAzsIds });
+      const updated = await brandStore.getBrand(id);
+      return res.json({ item: await serializeBrand(updated) });
     } catch (error) {
       console.error('[brandRoutes] PUT /:id/azs error', error);
       return res.status(500).json({ error: 'brand_set_azs_failed', message: error.message });
