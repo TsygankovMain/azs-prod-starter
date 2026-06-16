@@ -76,11 +76,47 @@ const emit = defineEmits<{
 
 const apiStore = useApiStore()
 
+// ── Зум-состояние ─────────────────────────────────────────────────────────
+const zoomScale = ref(1)
+const zoomTx = ref(0)
+const zoomTy = ref(0)
+
+const SCALE_MIN = 1
+const SCALE_MAX = 5
+const DOUBLE_TAP_TARGET = 2.5
+
+/** CSS-трансформ для zoom-wrapper */
+const zoomTransform = computed(() =>
+  `translate(${zoomTx.value}px, ${zoomTy.value}px) scale(${zoomScale.value})`
+)
+
+/** Ограничение сдвига, чтобы фото не уехало за края контейнера */
+const clampPan = (tx: number, ty: number, scale: number, containerW: number, containerH: number, imgW: number, imgH: number) => {
+  const maxX = Math.max(0, (imgW * scale - containerW) / 2)
+  const maxY = Math.max(0, (imgH * scale - containerH) / 2)
+  return {
+    tx: Math.max(-maxX, Math.min(maxX, tx)),
+    ty: Math.max(-maxY, Math.min(maxY, ty)),
+  }
+}
+
+/** Сброс зума при смене фото */
+const resetZoom = () => {
+  zoomScale.value = 1
+  zoomTx.value = 0
+  zoomTy.value = 0
+}
+
 // ── Текущий индекс ────────────────────────────────────────────────────────
 const currentIndex = ref(props.startIndex)
 
 watch(() => props.startIndex, (val) => {
   currentIndex.value = val
+})
+
+// Сбрасываем зум при смене фото
+watch(currentIndex, () => {
+  resetZoom()
 })
 
 const current = computed(() => props.items[currentIndex.value] ?? null)
@@ -170,28 +206,223 @@ const next = () => {
   if (currentIndex.value < props.items.length - 1) currentIndex.value++
 }
 
-// ── Pointer-свайпы ────────────────────────────────────────────────────────
+// ── Pointer-свайпы + зум-жесты ────────────────────────────────────────────
 const SWIPE_THRESHOLD = 50
-let pointerStartX = 0
-let pointerStartY = 0
-let isPointerDown = false
+
+// Активные указатели для pinch (Map: pointerId → {x, y})
+const activePointers = new Map<number, { x: number; y: number }>()
+
+// Pan-состояние (один указатель при scale>1)
+let panActive = false
+let panStartX = 0
+let panStartY = 0
+let panStartTx = 0
+let panStartTy = 0
+
+// Свайп-состояние (один указатель при scale==1)
+let swipeActive = false
+let swipeStartX = 0
+let swipeStartY = 0
+
+// Pinch-состояние (два указателя)
+let pinchStartDist = 0
+let pinchStartScale = 1
+let pinchStartTx = 0
+let pinchStartTy = 0
+let pinchCenterX = 0
+let pinchCenterY = 0
+
+// Ссылка на zoom-контейнер для clamp
+const zoomContainerRef = ref<HTMLElement | null>(null)
+
+/** Возвращает размер контейнера и img для clamp */
+const getZoomDimensions = () => {
+  const container = zoomContainerRef.value
+  if (!container) return { cw: window.innerWidth, ch: window.innerHeight, iw: window.innerWidth, ih: window.innerHeight }
+  const cw = container.clientWidth
+  const ch = container.clientHeight
+  const img = container.querySelector('img')
+  const iw = img ? img.naturalWidth || img.clientWidth : cw
+  const ih = img ? img.naturalHeight || img.clientHeight : ch
+  // Учитываем object-contain масштабирование
+  const imgDisplayRatio = Math.min(cw / iw, ch / ih, 1)
+  return { cw, ch, iw: iw * imgDisplayRatio, ih: ih * imgDisplayRatio }
+}
+
+const getPointerDist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+  Math.hypot(b.x - a.x, b.y - a.y)
+
+const isInteractive = (target: EventTarget | null) =>
+  !!(target as HTMLElement | null)?.closest('button, a, textarea, select, input')
 
 const onPointerDown = (e: PointerEvent) => {
-  if ((e.target as HTMLElement).closest('button, a, textarea, select, input')) return
-  pointerStartX = e.clientX
-  pointerStartY = e.clientY
-  isPointerDown = true
+  if (isInteractive(e.target)) return
+
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+  if (activePointers.size === 2) {
+    // Начинаем pinch — отменяем свайп/pan
+    swipeActive = false
+    panActive = false
+    const pts = [...activePointers.values()]
+    pinchStartDist = getPointerDist(pts[0], pts[1])
+    pinchStartScale = zoomScale.value
+    pinchStartTx = zoomTx.value
+    pinchStartTy = zoomTy.value
+    pinchCenterX = (pts[0].x + pts[1].x) / 2
+    pinchCenterY = (pts[0].y + pts[1].y) / 2
+  } else if (activePointers.size === 1) {
+    if (zoomScale.value > 1) {
+      // Pan при zoom
+      panActive = true
+      panStartX = e.clientX
+      panStartY = e.clientY
+      panStartTx = zoomTx.value
+      panStartTy = zoomTy.value
+    } else {
+      // Свайп только при scale==1
+      swipeActive = true
+      swipeStartX = e.clientX
+      swipeStartY = e.clientY
+    }
+  }
+}
+
+const onPointerMove = (e: PointerEvent) => {
+  if (isInteractive(e.target)) return
+  if (!activePointers.has(e.pointerId)) return
+
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+  if (activePointers.size === 2) {
+    // Pinch
+    const pts = [...activePointers.values()]
+    const dist = getPointerDist(pts[0], pts[1])
+    if (pinchStartDist === 0) return
+    const newScale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, pinchStartScale * (dist / pinchStartDist)))
+    const { cw, ch, iw, ih } = getZoomDimensions()
+    // Масштабирование относительно центра pinch
+    const container = zoomContainerRef.value
+    const containerRect = container?.getBoundingClientRect()
+    const localCx = pinchCenterX - (containerRect?.left ?? 0) - cw / 2
+    const localCy = pinchCenterY - (containerRect?.top ?? 0) - ch / 2
+    const scaleRatio = newScale / pinchStartScale
+    const newTx = localCx + (pinchStartTx - localCx) * scaleRatio
+    const newTy = localCy + (pinchStartTy - localCy) * scaleRatio
+    const clamped = clampPan(newTx, newTy, newScale, cw, ch, iw, ih)
+    zoomScale.value = newScale
+    zoomTx.value = clamped.tx
+    zoomTy.value = clamped.ty
+  } else if (activePointers.size === 1 && panActive) {
+    // Pan
+    const rawTx = panStartTx + (e.clientX - panStartX)
+    const rawTy = panStartTy + (e.clientY - panStartY)
+    const { cw, ch, iw, ih } = getZoomDimensions()
+    const clamped = clampPan(rawTx, rawTy, zoomScale.value, cw, ch, iw, ih)
+    zoomTx.value = clamped.tx
+    zoomTy.value = clamped.ty
+  }
 }
 
 const onPointerUp = (e: PointerEvent) => {
-  if (!isPointerDown) return
-  isPointerDown = false
-  const dx = e.clientX - pointerStartX
-  const dy = e.clientY - pointerStartY
-  if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > SWIPE_THRESHOLD) {
-    if (dx < 0) next()
-    else prev()
+  const wasSwipeActive = swipeActive && activePointers.size === 1
+  const swipeEndX = e.clientX
+  const swipeEndY = e.clientY
+
+  activePointers.delete(e.pointerId)
+
+  if (wasSwipeActive && zoomScale.value === 1) {
+    swipeActive = false
+    const dx = swipeEndX - swipeStartX
+    const dy = swipeEndY - swipeStartY
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > SWIPE_THRESHOLD) {
+      if (dx < 0) next()
+      else prev()
+    }
   }
+
+  if (activePointers.size < 2) {
+    pinchStartDist = 0
+  }
+  if (activePointers.size === 0) {
+    panActive = false
+    swipeActive = false
+  }
+}
+
+const onPointerCancel = (e: PointerEvent) => {
+  activePointers.delete(e.pointerId)
+  if (activePointers.size === 0) {
+    panActive = false
+    swipeActive = false
+    pinchStartDist = 0
+  }
+}
+
+// ── Двойной тап / двойной клик ────────────────────────────────────────────
+let lastTapTime = 0
+let lastTapX = 0
+let lastTapY = 0
+
+const onDoubleTapOrClick = (e: MouseEvent | PointerEvent) => {
+  if (isInteractive(e.target)) return
+  const now = Date.now()
+  const dx = e.clientX - lastTapX
+  const dy = e.clientY - lastTapY
+  const isSameSpot = Math.hypot(dx, dy) < 30
+
+  if (now - lastTapTime < 350 && isSameSpot) {
+    // Double tap detected
+    lastTapTime = 0
+    const container = zoomContainerRef.value
+    const containerRect = container?.getBoundingClientRect()
+    const cw = container?.clientWidth ?? window.innerWidth
+    const ch = container?.clientHeight ?? window.innerHeight
+    const localX = e.clientX - (containerRect?.left ?? 0) - cw / 2
+    const localY = e.clientY - (containerRect?.top ?? 0) - ch / 2
+
+    if (zoomScale.value > 1) {
+      // Сброс к 1×
+      resetZoom()
+    } else {
+      // Zoom к точке тапа → ~2.5×
+      const newScale = DOUBLE_TAP_TARGET
+      const { cw: dw, ch: dh, iw, ih } = getZoomDimensions()
+      const newTx = -localX * (newScale - 1)
+      const newTy = -localY * (newScale - 1)
+      const clamped = clampPan(newTx, newTy, newScale, dw, dh, iw, ih)
+      zoomScale.value = newScale
+      zoomTx.value = clamped.tx
+      zoomTy.value = clamped.ty
+    }
+  } else {
+    lastTapTime = now
+    lastTapX = e.clientX
+    lastTapY = e.clientY
+  }
+}
+
+// ── Колесо мыши (десктоп) ─────────────────────────────────────────────────
+const onWheel = (e: WheelEvent) => {
+  if (isInteractive(e.target)) return
+  e.preventDefault()
+  const container = zoomContainerRef.value
+  const containerRect = container?.getBoundingClientRect()
+  const cw = container?.clientWidth ?? window.innerWidth
+  const ch = container?.clientHeight ?? window.innerHeight
+  const localX = e.clientX - (containerRect?.left ?? 0) - cw / 2
+  const localY = e.clientY - (containerRect?.top ?? 0) - ch / 2
+
+  const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
+  const newScale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, zoomScale.value * factor))
+  const scaleRatio = newScale / zoomScale.value
+  const newTx = localX + (zoomTx.value - localX) * scaleRatio
+  const newTy = localY + (zoomTy.value - localY) * scaleRatio
+  const { iw, ih } = getZoomDimensions()
+  const clamped = clampPan(newTx, newTy, newScale, cw, ch, iw, ih)
+  zoomScale.value = newScale
+  zoomTx.value = clamped.tx
+  zoomTy.value = clamped.ty
 }
 
 // ── Клавиши ───────────────────────────────────────────────────────────────
@@ -205,11 +436,15 @@ const onKeyDown = (e: KeyboardEvent) => {
 onMounted(() => {
   document.body.style.overflow = 'hidden'
   document.addEventListener('keydown', onKeyDown)
+  // Wheel нужен non-passive чтобы preventDefault() работал
+  zoomContainerRef.value?.addEventListener('wheel', onWheel, { passive: false })
 })
 
 onBeforeUnmount(() => {
   document.body.style.overflow = ''
   document.removeEventListener('keydown', onKeyDown)
+  zoomContainerRef.value?.removeEventListener('wheel', onWheel)
+  activePointers.clear()
   for (const url of blobUrls.value.values()) {
     URL.revokeObjectURL(url)
   }
@@ -311,7 +546,10 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
     <div
       class="fixed inset-0 z-[210] flex flex-col bg-black/95 select-none"
       @pointerdown="onPointerDown"
+      @pointermove="onPointerMove"
       @pointerup="onPointerUp"
+      @pointercancel="onPointerCancel"
+      @click="onDoubleTapOrClick"
     >
 
       <!-- Шапка: крестик + счётчик + кнопка отметить -->
@@ -340,7 +578,11 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
       </div>
 
       <!-- Основное фото -->
-      <div class="flex-1 relative flex items-center justify-center overflow-hidden min-h-0">
+      <div
+        ref="zoomContainerRef"
+        class="flex-1 relative flex items-center justify-center overflow-hidden min-h-0"
+        :style="{ touchAction: zoomScale > 1 ? 'none' : 'pan-y' }"
+      >
 
         <!-- Спиннер загрузки -->
         <div
@@ -350,13 +592,20 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
           <div class="w-10 h-10 border-4 border-white/20 border-t-white rounded-full animate-spin" />
         </div>
 
-        <!-- Фото -->
-        <img
+        <!-- Zoom-wrapper + Фото -->
+        <div
           v-if="currentUrl"
-          :src="currentUrl"
-          class="max-h-full max-w-full object-contain pointer-events-none"
-          :alt="current?.photoCode"
+          :style="{ transform: zoomTransform, transformOrigin: '50% 50%', willChange: 'transform' }"
+          class="flex items-center justify-center"
         >
+          <img
+            :src="currentUrl"
+            class="max-h-full max-w-full object-contain"
+            :style="{ maxHeight: 'inherit', maxWidth: 'inherit' }"
+            draggable="false"
+            :alt="current?.photoCode"
+          >
+        </div>
 
         <!-- Ошибка загрузки с кнопкой «Повторить» -->
         <div
@@ -379,6 +628,24 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
           class="text-white/30 text-sm"
         >
           Фото не загружено
+        </div>
+
+        <!-- Индикатор кратности (показывается при scale > 1) -->
+        <button
+          v-if="zoomScale > 1"
+          class="absolute top-2.5 right-2.5 flex items-center gap-1 px-2.5 py-1 rounded-full bg-cyan-500/90 text-white text-xs font-semibold pointer-events-auto"
+          aria-label="Сбросить масштаб"
+          @click.stop="resetZoom"
+        >
+          🔍 {{ zoomScale.toFixed(1) }}×
+        </button>
+
+        <!-- Подсказка жеста (показывается один раз пока scale==1) -->
+        <div
+          v-if="zoomScale === 1 && currentUrl"
+          class="absolute bottom-2.5 left-1/2 -translate-x-1/2 text-xs text-white/60 bg-black/40 px-2.5 py-1 rounded-full pointer-events-none whitespace-nowrap"
+        >
+          разведите пальцами · двойной тап
         </div>
 
         <!-- Стрелка влево -->
