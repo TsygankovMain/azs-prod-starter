@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { PhotoFiltersValue } from '~/components/photos/PhotoFilters.vue'
-import type { RemarkRecipient } from '~/components/photos/RemarkDraftPanel.vue'
+import type { RemarkRecipient, RemarkSendPayload } from '~/components/photos/RemarkDraftPanel.vue'
 
 const apiStore = useApiStore()
 const toast = useAppToast()
@@ -267,7 +267,7 @@ const isSending = ref(false)
 // Ошибка отправки замечания — показываем ВНУТРИ панели (видна при открытом лайтбоксе)
 const sendError = ref('')
 
-const handleSend = async ({ recipientRole }: { recipientRole: 'manager' | 'admin' }) => {
+const handleSend = async (payload: RemarkSendPayload) => {
   if (isSending.value || marks.value.size === 0) return
   isSending.value = true
   sendError.value = ''
@@ -280,7 +280,9 @@ const handleSend = async ({ recipientRole }: { recipientRole: 'manager' | 'admin
     const result = await apiStore.sendPhotoRemark({
       azsId: activeAzsId.value,
       azsTitle: draftAzsTitle.value || null,
-      recipientRole,
+      recipientType: payload.recipientType,
+      recipientRole: payload.recipientRole,
+      recipientUserId: payload.recipientUserId,
       photos
     })
     const rec = result.item

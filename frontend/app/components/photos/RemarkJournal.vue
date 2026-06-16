@@ -26,8 +26,11 @@ type RemarkItem = {
   createdAt: string | null
   azsId: string
   azsTitle: string | null
-  recipientRole: 'manager' | 'admin'
+  /** null для произвольного сотрудника */
+  recipientRole: 'manager' | 'admin' | null
   recipientName: string | null
+  /** ID сотрудника (для recipientRole=null) */
+  recipientUserId?: number | null
   senderName: string | null
   deliveryStatus: 'sent' | 'failed'
   deliveryError: string | null
@@ -597,7 +600,8 @@ const getCategoryTitle = (code: string): string => {
               </div>
               <div class="text-sm text-gray-700 mb-2">
                 <span class="font-medium">{{ item.recipientName || '—' }}</span>
-                <span class="text-gray-400 text-xs ml-1">({{ ROLE_LABELS[item.recipientRole] || item.recipientRole }})</span>
+                <span v-if="item.recipientRole" class="text-gray-400 text-xs ml-1">({{ ROLE_LABELS[item.recipientRole] || item.recipientRole }})</span>
+                <span v-else class="text-gray-400 text-xs ml-1">(сотрудник Б24)</span>
               </div>
 
               <!-- Список фото -->
