@@ -38,7 +38,7 @@ import createPhotoRemarkStore from './src/reports/photoRemarkStore.js';
 import { createPhotoRemarkService } from './src/notifications/photoRemarkService.js';
 import { createPhotoRemarkRouter } from './src/reports/photoRemarkRoutes.js';
 import createReasonForwardingService from './src/notifications/reasonForwardingService.js';
-import { createBotCommandHandler } from './src/notifications/botCommandHandler.js';
+import { createBotCommandHandler, isReasonButtonPress } from './src/notifications/botCommandHandler.js';
 import { createReasonCaptureStore } from './src/notifications/reasonCaptureStore.js';
 import { resolveIsAdmin } from './src/auth/resolveIsAdmin.js';
 import { resolveInstallAdmin } from './src/auth/resolveInstallAdmin.js';
@@ -722,6 +722,30 @@ app.post('/api/bot/event', async (req, res) => {
       }
       await botCommandHandler.handleCommand({ userId, dialogId, reportId, azsId, context });
       return res.json({ ok: true, handled: true, action: 'awaiting_reason' });
+    }
+
+    // REASON-BTN-TEXT: нажата кнопка причины (человеческая фраза, без id в тексте).
+    // Находим активный отчёт пользователя сами и просим причину по нему. Блок /reason N
+    // выше — legacy-путь (ручной ввод / старые сообщения / notify-фоллбэк) сохранён.
+    if (isReasonButtonPress(messageText)) {
+      let activeReport = null;
+      try {
+        const items = await reportsStore.listActiveByAdminUserId({ adminUserId: userId, limit: 1 });
+        activeReport = Array.isArray(items) && items.length ? items[0] : null;
+      } catch (lookupError) {
+        console.warn('bot_reason_active_lookup_failed', { userId, message: lookupError.message });
+      }
+      if (activeReport?.id) {
+        await botCommandHandler.handleCommand({
+          userId,
+          dialogId,
+          reportId: Number(activeReport.id),
+          azsId: String(activeReport.azsId || ''),
+          context
+        });
+        return res.json({ ok: true, handled: true, action: 'awaiting_reason' });
+      }
+      return res.json({ ok: true, handled: false, action: 'no_active_report' });
     }
 
     if (messageText) {

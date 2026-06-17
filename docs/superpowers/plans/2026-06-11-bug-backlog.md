@@ -198,7 +198,46 @@
 7. Подпись фото = название + адрес (где `UF_CRM_10_1773914353` заполнен); пустой адрес → только название.
 8. Десктоп: колесо=зум, двойной клик=toggle, drag=pan.
 
-**Наблюдение финал-ревью (вне scope FEED, пре-существующее с UX-2):** feed-JOIN `reportsStore.js:392` читает `lr.message` из `photo_remark`, но колонка пуста с UX-2 (коммент переехал в `photo_remark_photo`) → `remark.message` в инфо-строке лайтбокса пуст при ПЕРЕЗАГРУЗКЕ для ранее отправленных замечаний (при отправке маскируется оптимистичным апдейтом). Кандидат на отдельный фикс.
+**FEED-MSG · feed-JOIN читает несуществующую/пустую колонку `message` (разобрано 2026-06-16):** оба feed-запроса в `reportsStore.js` берут `lr.message AS remark_message` — PG LATERAL (стр.392) и MySQL correlated (стр.809). Но новая схема `photo_remark` (photoRemarkStore.js:85-97) колонку `message` НЕ создаёт — текст комментария живёт в `photo_remark_photo.comment` (пофотный, UX-2). Последствия: (1) текст замечания пуст при ПЕРЕЗАГРУЗКЕ (при отправке маскируется оптимистичным апдейтом); (2) ХРУПКОСТЬ — на свежей БД (без legacy-колонки `message`) `lr.message` уронит ВЕСЬ feed (`column does not exist`). На проде пока работает только потому, что таблица старая (колонка есть, пустая).
+- **Рецепт:** PG — в LATERAL `SELECT pr.*, prp.comment AS photo_comment`, в основном SELECT `lr.photo_comment AS remark_message`. MySQL — добавить `LEFT JOIN photo_remark_photo lrp ON lrp.remark_id = lr.id AND lrp.report_id = rp.report_id AND lrp.photo_code = rp.photo_code`, выбрать `lrp.comment AS remark_message`. Затрагивает viewmodel `toFeedItemViewModel` (reportsStore.js:33).
+- **Почему отдельным заходом:** нет БД-харнесса для feed-SQL (photoFeed.test мокает весь `listPhotosFeed`) → проверяется только реальным БД-смоуком (pg+mysql), не unit. Делать с обязательным смоуком.
+
+## 🔧 Моменты для правок — прод 2026-06-16 (после деплоя фотоленты v2 + брендов)
+
+### NOTIF-1 · Не приходят уведомления на часть АЗС (485, 486) — диагностировать
+- **Жалоба (Светлана Читайкина, 16:36):** «Такая же история на АЗС 486, 485 — не приходят уведомления».
+- Часть АЗС НЕ получает бот-уведомления (фото-отчёт/просрочка), при этом на АЗС 487 уведомления и reason-флоу (`/reason`) работают (скрины 16:25-16:31).
+- Гипотезы для диагностики: у 485/486 не задан/неверный adminUserId (ответственный); бот не в личном диалоге с этим пользователем; в логах прода были `imbot.v2.Chat.Message.send BOT_TOKEN_NOT_SPECIFIED (botToken required for webhook auth)` — возможно доставка под вебхуком вместо бот-контекста. Сверить, чем 485/486 отличаются от 487 в данных/привязке.
+- Также в уведомлениях замечено «Дмитрий Гуськов исключил вас из чата» — проверить, не влияет ли исключение из чата на доставку.
+- **✅ КОРЕНЬ НАЙДЕН (доказан докой Б24, 2026-06-16):** бот-сообщение уходит только при рабочей авторизации. `imbot.v2.Chat.Message.send` под OAuth требует валидный `auth` (access_token), под webhook — `botToken` (которого у нашего OAuth-зарегистрированного бота НЕТ). Фон берёт контекст через `resolveBackgroundContext` (dispatchScheduler.js:99) — предпочитает webhook → `callInternalOnce` (bitrixRestClient.js:259) НЕ добавляет `auth`, а `botToken` мы не шлём вовсе → `BOT_TOKEN_NOT_SPECIFIED` → бот-канал падает → тихий фоллбэк на `im.notify.personal.add` (без кнопки). Где жив OAuth (АЗС 487, активный админ) — приходит полноценное бот-сообщение с кнопкой; где нет (485/486) — голое системное уведомление без кнопки или ничего. Переплетено с BUG-022 (refresh OAuth падает при неверных CLIENT_ID/SECRET).
+- **✅ ДИАГНОСТИКА РЕАЛИЗОВАНА** (ветка `feature/sprints-stability-ux`, 837 тестов зелёных; путь 1 «диагностика → деплой → точный фикс»):
+  - `notificationService.notify` пишет `notification_delivery` (info) на КАЖДОЙ доставке: `userId`, `azsId`, `channel` (bot/notify/failed), `transport` (webhook/oauth), `botError`.
+  - При auth-сбое — `bot_delivery_auth_problem` (error) с человеческой подсказкой (вместо тихого degraded-warn).
+  - При фоллбэке на notify (кнопка теряется) — текстовый хвост «/reason N» (fallbackSuffix) в рассылке (dispatchService) и timeout-доборе.
+- **СЛЕДУЮЩИЙ ШАГ (после деплоя):** грепнуть логи рассылки на `notification_delivery`/`bot_delivery_auth_problem` для 485/486 vs 487. `transport:webhook`+`BOT_TOKEN_NOT_SPECIFIED` → корень А (авторизация: env BUG-022 либо botToken-трек). `channel:notify|failed` при `transport:oauth` → корень Б (данные получателя). Затем точечный фикс.
+- **⚡ БЫСТРАЯ ПРОВЕРКА (без деплоя):** задан ли `BITRIX_WEBHOOK_URL` в env Timeweb? `getBackgroundContext`/`backgroundContextForBot` (server.js:274,596) — **webhook-first**: если URL задан, ВЕСЬ фон идёт под webhook → бот-доставка падает ГЛОБАЛЬНО (все АЗС), а «487 работает» = доставка прошла под живым admin-OAuth (активный админ), не фоном. Тогда избирательность 485/486 — тайминг/данные, не сами АЗС. Если URL пуст → фон под admin-OAuth, упирается в refresh (BUG-022).
+
+### REASON-FWD-BOT · Пересылка причины в общий чат через бота молча теряется (тот же корень, найдено 2026-06-16)
+- Bot-path `onBotReasonCaptured` (server.js:298,344) шлёт `reasonForwardingService.forward` (→ `imbot.v2.Chat.Message.send`) под `backgroundContextForBot()` = **webhook-first** → под webhook `BOT_TOKEN_NOT_SPECIFIED` → forward молча падает (best-effort catch `bot_reason_forward_failed`, без диагностики). Проверяющие НЕ видят причину в общем чате, когда оператор указал её ЧЕРЕЗ БОТА.
+- App-path (через приложение, reportsRoutes.js:1258-1263) шлёт forward под `getLastAdminContext()` (admin-OAuth) → работает. Асимметрия: app ok, bot — нет.
+- **Тот же корень, что NOTIF-1.** Лечится тем же треком: либо бот-доставка/forward под admin-OAuth, либо botToken для webhook. Чинить вместе с точечным фиксом NOTIF-1.
+
+### ✅ FEED-USERS · Поиск сотрудника Б24 не давал список (прод 2026-06-17) — ПОЧИНЕНО (ветка)
+- **Симптом:** на вкладке «Сотрудник Б24» при вводе имени список всегда пустой (подтвердил продакт).
+- **Два корня (оба исправлены, `usersRoutes.js`):**
+  1. `resolveAdminCtx` возвращал пустой `{}` (truthy), когда admin-контекст протух (BUG-022) → `user.search` уходил БЕЗ авторизации → пусто. Теперь admin-контекст годен только если несёт `authId`/webhook; иначе фоллбэк на OAuth запроса (проверяющий открыл приложение — права есть).
+  2. `user.search` слал `FIND` + `ACTIVE` + `START` вместе, но Б24: «FIND нельзя сочетать с другими полями» → пусто. Теперь шлём только `FIND`; активных фильтруем по полю ACTIVE из ответа.
+- Тесты: `usersSearch.test.js` (+3 — контекст и параметры). Деплой вместе с пакетом.
+
+### ✅ REASON-BTN-TEXT · Кнопка бота слала техническое «/reason 871» (прод 2026-06-17) — ПОЧИНЕНО (ветка)
+- **Жалоба:** при нажатии кнопки в чат уходит «/reason 871»; нужен человекочитаемый текст. **Решение продакта:** чистый текст «Не успеваю — указать причину», без номера.
+- **Фикс:** кнопка (dispatchService/timeoutWatcher) отправляет человеческую фразу (`REASON_BUTTON_LABEL_*` из botCommandHandler) вместо `/reason N`. Бот в `/api/bot/event` распознаёт нажатие (`isReasonButtonPress`) и сам находит активный отчёт юзера (`listActiveByAdminUserId`, limit 1) → ставит awaiting. Legacy `/reason N` сохранён (ручной ввод / notify-фоллбэк-хвост).
+- **Нюанс (принят продактом):** при ДВУХ активных несданных отчётах у одного оператора причина привяжется к самому приоритетному (deadline ASC). Обычно активный один.
+- Тесты: `reasonButtonPress.test.js` (+6), `botWebhookV2.test.js` (c2/c3 резолв + обновлён контракт a), dispatchService/timeoutWatcher/dispatchDeepLink keyboard. **Полный гейт 848 зелёных.**
+
+### BRAND-LINK · Ссылка бренда = "function link() { [native code] }" — фикс выкачен, нужно действие
+- Корень (исправлен, master `1d466ba`): `getExternalLink` брал `String.prototype.link` вместо строки-ссылки. В БД бренда «ГПН» осталась битая запись от старого бага.
+- **Действие продакта (после доката деплоя):** открыть бренд → **«Обновить ссылку»** (перезапишет БД корректным URL). Тогда и копирование заработает (добавлен clipboard-fallback для iframe).
 
 ## Не баги (чтобы не разбирать повторно)
 

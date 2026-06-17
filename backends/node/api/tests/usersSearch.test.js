@@ -315,3 +315,72 @@ test('createUsersRouter throws when bitrixClient is missing', () => {
     /bitrixClient is required/
   );
 });
+
+// ---------------------------------------------------------------------------
+// FEED-USERS fix — контекст авторизации и параметры запроса
+// ---------------------------------------------------------------------------
+
+// Capturing client — фиксирует method/params/context каждого вызова
+function makeCapturingClient(users = []) {
+  const calls = [];
+  return {
+    calls,
+    async callMethod(method, params, context) {
+      calls.push({ method, params, context });
+      return users;
+    }
+  };
+}
+
+test('GET /search: при пустом admin-контексте ищет под OAuth проверяющего (а не под пустым)', async () => {
+  const client = makeCapturingClient([makeUser()]);
+  const router = createUsersRouter({
+    bitrixClient: client,
+    getAdminContext: async () => ({}) // admin протух (BUG-022) → пустой объект
+  });
+  const handler = findRoute(router, 'get', '/search');
+
+  const req = makeReq({
+    query: { q: 'Иван' },
+    bitrixContext: { authId: 'reviewer-token', domain: 'p.bitrix24.ru' }
+  });
+  const res = makeRes();
+  await handler(req, res);
+
+  assert.equal(client.calls.length, 1, 'user.search должен быть вызван');
+  assert.equal(
+    client.calls[0].context?.authId,
+    'reviewer-token',
+    'при пустом admin-контексте поиск идёт под OAuth проверяющего, иначе уходит без авторизации → пусто'
+  );
+});
+
+test('GET /search: использует валидный admin-контекст, когда он есть', async () => {
+  const client = makeCapturingClient([makeUser()]);
+  const router = createUsersRouter({
+    bitrixClient: client,
+    getAdminContext: async () => ({ authId: 'admin-token', domain: 'p.bitrix24.ru' })
+  });
+  const handler = findRoute(router, 'get', '/search');
+
+  const req = makeReq({ query: { q: 'Иван' }, bitrixContext: { authId: 'reviewer-token' } });
+  const res = makeRes();
+  await handler(req, res);
+
+  assert.equal(client.calls[0].context?.authId, 'admin-token', 'живой admin-контекст имеет приоритет');
+});
+
+test('GET /search: шлёт FIND без конфликтующих ACTIVE/START (Б24: FIND только один)', async () => {
+  const client = makeCapturingClient([makeUser()]);
+  const router = createUsersRouter({ bitrixClient: client, getAdminContext: stubDeps.getAdminContext });
+  const handler = findRoute(router, 'get', '/search');
+
+  const req = makeReq({ query: { q: 'Иван' } });
+  const res = makeRes();
+  await handler(req, res);
+
+  assert.equal(client.calls.length, 1);
+  assert.equal(client.calls[0].params.FIND, 'Иван', 'должен искать по FIND');
+  assert.equal(client.calls[0].params.ACTIVE, undefined, 'ACTIVE не должен идти рядом с FIND');
+  assert.equal(client.calls[0].params.START, undefined, 'START не должен идти рядом с FIND');
+});

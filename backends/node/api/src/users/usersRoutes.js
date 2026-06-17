@@ -60,7 +60,13 @@ export const createUsersRouter = ({
     if (typeof getAdminContext === 'function') {
       try {
         const ctx = await getAdminContext();
-        if (ctx) return ctx;
+        // FEED-USERS: admin-контекст годен ТОЛЬКО если несёт авторизацию. Пустой {}
+        // (admin протух — BUG-022) непригоден: вернуть его → user.search уходит без
+        // auth → пустой список. Тогда используем OAuth-контекст запроса — проверяющий
+        // открыл приложение и имеет права на user.search.
+        if (ctx && (String(ctx.authId || '').trim() || ctx.isWebhook)) {
+          return ctx;
+        }
       } catch {
         // best-effort — fall back to request context
       }
@@ -90,11 +96,10 @@ export const createUsersRouter = ({
 
       const result = await bitrixClient.callMethod(
         'user.search',
-        {
-          FIND: q,
-          ACTIVE: 'Y',
-          START: 0
-        },
+        // Б24: FIND нельзя сочетать с другими полями фильтра («FIND cannot be used
+        // with any other field») — отправляем ОДИН FIND. Активных отфильтруем ниже
+        // по полю ACTIVE из ответа (FEED-USERS).
+        { FIND: q },
         context
       );
 

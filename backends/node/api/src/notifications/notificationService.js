@@ -8,6 +8,12 @@ const normalizeMode = (value) => {
 // Error codes that indicate the bot registration is stale / missing — self-heal applies
 const BOT_NOT_FOUND_PATTERN = /BOT_ID|BOT_NOT_FOUND|bot not found/i;
 
+// NOTIF-1: ошибки авторизации бот-доставки. Под webhook imbot.v2.Chat.Message.send
+// требует botToken (которого у OAuth-бота нет) → BOT_TOKEN_NOT_SPECIFIED; под OAuth —
+// валидный access_token (иначе invalid_client/wrong_client/expired_token, см. BUG-022).
+// Такие случаи логируем человеческим actionable-логом, а не тонем в degraded-warn.
+const AUTH_PROBLEM_PATTERN = /BOT_TOKEN_NOT_SPECIFIED|invalid_client|wrong_client|expired_token|NO_AUTH_FOUND|Authorization required/i;
+
 const formatLocalTime = (iso, timezone) => {
   if (!iso) {
     return '';
@@ -108,13 +114,53 @@ export const createNotificationService = ({
     return currentBotId;
   };
 
-  const notify = async ({ userId, message, keyboard = null, context = {}, fallbackToNotify = true }) => {
+  const notify = async ({
+    userId,
+    message,
+    keyboard = null,
+    context = {},
+    fallbackToNotify = true,
+    // NOTIF-1: azsId — только для диагностического лога (кому ушла доставка).
+    azsId = null,
+    // NOTIF-1: при доставке через notify-фоллбэк кнопки бота теряются, поэтому к
+    // тексту добавляется этот хвост — сохраняет путь «указать причину» (/reason N).
+    fallbackSuffix = ''
+  }) => {
     if (!Number(userId)) {
       throw new Error('notify requires userId');
     }
     if (!String(message || '').trim()) {
       throw new Error('notify requires non-empty message');
     }
+
+    // NOTIF-1 диагностика: webhook-контекст не несёт OAuth `auth`; под ним бот-методы
+    // требуют botToken (которого у OAuth-бота нет). transport фиксирует это в логе.
+    const transport = context && context.isWebhook ? 'webhook' : 'oauth';
+    const logDelivery = (channel, extra = {}) => {
+      if (typeof logger?.info === 'function') {
+        logger.info('notification_delivery', {
+          userId: Number(userId),
+          azsId: azsId ?? null,
+          channel,
+          transport,
+          ...extra
+        });
+      }
+    };
+    const logAuthProblem = (botError) => {
+      if (botError && AUTH_PROBLEM_PATTERN.test(String(botError)) && typeof logger?.error === 'function') {
+        logger.error('bot_delivery_auth_problem', {
+          userId: Number(userId),
+          azsId: azsId ?? null,
+          transport,
+          botError: String(botError),
+          hint: 'Доставка бота без рабочей авторизации: OAuth протух (CLIENT_ID/SECRET — BUG-022) или вызов под webhook без botToken. NOTIF-1.'
+        });
+      }
+    };
+    const withSuffix = (text) => (
+      String(fallbackSuffix || '').trim() ? `${text}\n\n${fallbackSuffix}` : text
+    );
 
     if (resolvedMode === 'bot') {
       let botError = null;
@@ -154,6 +200,7 @@ export const createNotificationService = ({
           }
         }
 
+        logDelivery('bot');
         return {
           channel: 'bot',
           result,
@@ -165,13 +212,17 @@ export const createNotificationService = ({
           reason: botError,
           dialogId: String(Number(userId))
         });
+        // NOTIF-1: auth-сбой бота виден явно, а не тонет в общем degraded-warn.
+        logAuthProblem(botError);
         if (!fallbackToNotify) {
+          logDelivery('failed', { botError });
           throw error;
         }
       }
 
       // Fallback path — bot failed
-      const notifyResult = await sendViaNotify({ bitrixClient, userId, message, context });
+      const notifyResult = await sendViaNotify({ bitrixClient, userId, message: withSuffix(message), context });
+      logDelivery('notify', { botError });
       return {
         delivered: true,
         channel: 'notify',
@@ -180,7 +231,8 @@ export const createNotificationService = ({
       };
     }
 
-    const result = await sendViaNotify({ bitrixClient, userId, message, context });
+    const result = await sendViaNotify({ bitrixClient, userId, message: withSuffix(message), context });
+    logDelivery('notify');
     return {
       channel: 'notify',
       result
@@ -194,7 +246,8 @@ export const createNotificationService = ({
     deadlineAt,
     timezone,
     keyboard = null,
-    context = {}
+    context = {},
+    fallbackSuffix = ''
   }) => {
     const message = buildDispatchMessage({
       azsId,
@@ -206,7 +259,9 @@ export const createNotificationService = ({
       userId,
       message,
       keyboard,
-      context
+      context,
+      azsId,
+      fallbackSuffix
     });
   };
 
@@ -220,7 +275,8 @@ export const createNotificationService = ({
     return notify({
       userId,
       message,
-      context
+      context,
+      azsId
     });
   };
 
@@ -236,7 +292,8 @@ export const createNotificationService = ({
     return notify({
       userId,
       message: lines.join('\n'),
-      context
+      context,
+      azsId
     });
   };
 

@@ -149,10 +149,10 @@ test('BITRIX_APP_CODE set — notifyDispatch receives keyboard with COMMAND reas
     const reasonBtn = keyboard.BUTTONS.find(b => String(b.TEXT || '').includes('причину'));
     assert.ok(reasonBtn, '«Указать причину» button must be present');
     assert.equal(reasonBtn.ACTION, 'SEND', '«Указать причину» must be ACTION=SEND (BUG-019 v2)');
-    // Must embed the INTERNAL report id (reserve.id = dispatch_log.id), NOT the CRM
-    // item id (5503) — the bot side-effects look up via reportsStore.getById.
-    assert.match(String(reasonBtn.ACTION_VALUE), /^\/reason \d+$/, 'ACTION_VALUE must be /reason <numeric internal id>');
-    assert.ok(!String(reasonBtn.ACTION_VALUE).includes('5503'), 'ACTION_VALUE must NOT embed the CRM item id (reportItemId)');
+    // REASON-BTN-TEXT: ACTION_VALUE — человеческая фраза, без id в тексте (бот сам
+    // находит активный отчёт). Ни internal id, ни CRM item id (5503) не светятся.
+    assert.ok(String(reasonBtn.ACTION_VALUE).toLowerCase().includes('причин'), 'ACTION_VALUE — человеческий текст');
+    assert.ok(!/\d/.test(String(reasonBtn.ACTION_VALUE)), 'ACTION_VALUE must NOT embed any id');
     assert.equal(reasonBtn.LINK, undefined, 'reason button must not have LINK');
   } finally {
     if (prevAppCode === undefined) {
@@ -196,8 +196,9 @@ test('BITRIX_APP_CODE set — keyboard is single COMMAND button (no NEWLINE, no 
     assert.equal(realButtons.length, 1, 'must have exactly 1 real button (reason only)');
     assert.equal(realButtons[0].ACTION, 'SEND', 'sole button must be ACTION=SEND');
     assert.equal(realButtons[0].TEXT, 'Не успеваю — указать причину');
-    assert.match(String(realButtons[0].ACTION_VALUE), /^\/reason \d+$/, 'ACTION_VALUE must be /reason <numeric internal id>');
-    assert.ok(!String(realButtons[0].ACTION_VALUE).includes('5510'), 'ACTION_VALUE must NOT embed the CRM item id (reportItemId)');
+    // REASON-BTN-TEXT: ACTION_VALUE — человеческая фраза, без id
+    assert.equal(realButtons[0].ACTION_VALUE, 'Не успеваю — указать причину', 'ACTION_VALUE — человеческий текст');
+    assert.ok(!/\d/.test(String(realButtons[0].ACTION_VALUE)), 'ACTION_VALUE must NOT embed any id');
   } finally {
     if (prevAppCode === undefined) {
       delete process.env.BITRIX_APP_CODE;

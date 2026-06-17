@@ -213,8 +213,14 @@ test('timeoutWatcher: expired без причины + BITRIX_APP_CODE → COMMAN
     assert.equal(btn.TEXT, 'Указать причину', 'текст кнопки должен быть «Указать причину»');
     // BUG-019 v2: ACTION:SEND button, not LINK/COMMAND
     assert.equal(btn.ACTION, 'SEND', 'кнопка должна быть ACTION=SEND (BUG-019 v2)');
-    assert.ok(String(btn.ACTION_VALUE).includes('30'), 'ACTION_VALUE должен содержать id отчёта (30)');
+    // REASON-BTN-TEXT: ACTION_VALUE — человеческая фраза, без id отчёта в тексте
+    assert.equal(btn.ACTION_VALUE, 'Указать причину', 'ACTION_VALUE — человеческий текст');
+    assert.ok(!/\d/.test(String(btn.ACTION_VALUE)), 'в тексте кнопки нет номера отчёта');
     assert.equal(btn.LINK, undefined, 'кнопка причины не должна иметь LINK');
+
+    // NOTIF-1: текстовый путь /reason сохраняется при фоллбэке на notify (кнопка теряется)
+    assert.ok(doborNotifyCalls[0].fallbackSuffix, 'добор должен получить fallbackSuffix');
+    assert.match(doborNotifyCalls[0].fallbackSuffix, /\/reason 30/, 'fallbackSuffix содержит /reason <report.id>');
   } finally {
     if (prevAppCode === undefined) {
       delete process.env.BITRIX_APP_CODE;
