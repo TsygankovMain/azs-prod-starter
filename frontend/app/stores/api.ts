@@ -516,6 +516,17 @@ export const useApiStore = defineStore(
     }
 
     /**
+     * Фоновая загрузка всех активных сотрудников портала (FEED-USERS-BG).
+     * GET /api/users/list — кэшируется на сервере (~10 мин); фронт ищет локально
+     * по этому списку (мгновенно), а сервер дёргается только как дозапрос-fallback.
+     */
+    const fetchEmployees = async (): Promise<{ items: Array<{ id: number; name: string; position: string | null }>; cached?: boolean; total?: number }> => {
+      return await $api('/api/users/list', {
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    /**
      * Отправка замечания к фото.
      * Обратная совместимость: старый код передаёт recipientRole — оно по-прежнему принимается.
      * Новый код передаёт recipientType + recipientUserId (для произвольного сотрудника).
@@ -728,6 +739,7 @@ export const useApiStore = defineStore(
       getPhotoCategories,
       getPhotoRecipients,
       searchUsers,
+      fetchEmployees,
       sendPhotoRemark,
       getPhotoRemarks,
       retryPhotoRemark,
