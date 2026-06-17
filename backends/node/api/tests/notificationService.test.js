@@ -381,3 +381,112 @@ test('bitrix client auth id can be updated at runtime', async () => {
     globalThis.fetch = fetchOriginal;
   }
 });
+
+// ─── NOTIF-1: диагностика доставки (transport/канал/получатель) ──────────────
+// Цель: при следующей рассылке логи однозначно показывают для КАЖДОЙ доставки —
+// кому (userId/azsId), каким каналом (bot/notify), под какой авторизацией
+// (oauth/webhook) и с какой ошибкой. Это добывает прод-данные для 485/486.
+
+test('NOTIF-1: успешная доставка ботом логирует notification_delivery channel=bot transport=oauth', async () => {
+  const infoCalls = [];
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod() { return { id: 1 }; },
+      async notifyUser() { throw new Error('фоллбэк не должен вызываться'); }
+    },
+    mode: 'bot',
+    botId: 77,
+    logger: {
+      info(event, meta) { infoCalls.push({ event, meta }); },
+      warn() {},
+      error() {}
+    }
+  });
+
+  await service.notifyDispatch({
+    userId: 11,
+    azsId: 'azs-485',
+    deadlineAt: '2026-06-16T09:00:00.000Z',
+    timezone: 'Europe/Moscow',
+    context: { authId: 'live-token', domain: 'p.bitrix24.ru' }
+  });
+
+  const delivery = infoCalls.find((c) => c.event === 'notification_delivery');
+  assert.ok(delivery, 'должен логироваться notification_delivery');
+  assert.equal(delivery.meta.channel, 'bot');
+  assert.equal(delivery.meta.transport, 'oauth');
+  assert.equal(delivery.meta.userId, 11);
+  assert.equal(delivery.meta.azsId, 'azs-485');
+});
+
+test('NOTIF-1: под webhook bot падает → notification_delivery channel=notify transport=webhook + bot_delivery_auth_problem', async () => {
+  const infoCalls = [];
+  const errorCalls = [];
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod() {
+        throw new Error('BOT_TOKEN_NOT_SPECIFIED (botToken required for webhook auth)');
+      },
+      async notifyUser() { return { ok: true }; }
+    },
+    mode: 'bot',
+    botId: 77,
+    logger: {
+      info(event, meta) { infoCalls.push({ event, meta }); },
+      warn() {},
+      error(event, meta) { errorCalls.push({ event, meta }); }
+    }
+  });
+
+  const result = await service.notify({
+    userId: 486,
+    message: 'тест доставки',
+    azsId: 'azs-486',
+    context: { isWebhook: true, endpoint: 'https://p.bitrix24.ru/rest/1/abc' }
+  });
+
+  assert.equal(result.channel, 'notify');
+
+  const delivery = infoCalls.find((c) => c.event === 'notification_delivery' && c.meta.channel === 'notify');
+  assert.ok(delivery, 'должен логироваться notification_delivery для notify-канала');
+  assert.equal(delivery.meta.transport, 'webhook');
+  assert.equal(delivery.meta.azsId, 'azs-486');
+  assert.ok(
+    typeof delivery.meta.botError === 'string' && delivery.meta.botError.includes('BOT_TOKEN_NOT_SPECIFIED'),
+    'в логе доставки должна быть причина падения бот-канала'
+  );
+
+  const authProblem = errorCalls.find((c) => c.event === 'bot_delivery_auth_problem');
+  assert.ok(authProblem, 'на auth-ошибке должен быть человеческий error-лог bot_delivery_auth_problem');
+  assert.equal(authProblem.meta.transport, 'webhook');
+  assert.equal(authProblem.meta.userId, 486);
+  assert.ok(authProblem.meta.botError.includes('BOT_TOKEN_NOT_SPECIFIED'));
+  assert.ok(
+    typeof authProblem.meta.hint === 'string' && authProblem.meta.hint.length > 0,
+    'auth-лог должен содержать человеческую подсказку'
+  );
+});
+
+test('NOTIF-1: при фоллбэке на notify к сообщению добавляется fallbackSuffix (путь «указать причину»)', async () => {
+  const notifyCalls = [];
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod() { throw new Error('imbot недоступен'); },
+      async notifyUser(payload) { notifyCalls.push(payload); return { ok: true }; }
+    },
+    mode: 'bot',
+    botId: 77,
+    logger: { info() {}, warn() {}, error() {} }
+  });
+
+  const result = await service.notify({
+    userId: 11,
+    message: 'Отчёт просрочен.',
+    fallbackSuffix: 'Не успеваете? Ответьте этому боту: /reason 42'
+  });
+
+  assert.equal(result.channel, 'notify');
+  assert.equal(notifyCalls.length, 1);
+  assert.match(notifyCalls[0].message, /Отчёт просрочен\./);
+  assert.match(notifyCalls[0].message, /\/reason 42/, 'текстовый путь «указать причину» должен сохраниться при фоллбэке');
+});

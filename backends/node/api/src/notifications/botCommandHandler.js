@@ -33,6 +33,27 @@ export const parseReasonCommand = (command) => {
  */
 export const buildReasonCommand = (reportId) => `reason:${Number(reportId)}`;
 
+// REASON-BTN-TEXT: человеческие подписи кнопки причины. Кнопка отправляет ЭТУ
+// фразу (ACTION:SEND) — в чате видно человеческий текст, а не «/reason 871».
+// Бот распознаёт нажатие по тексту-маркеру и сам находит активный отчёт юзера.
+export const REASON_BUTTON_LABEL_DISPATCH = 'Не успеваю — указать причину';
+export const REASON_BUTTON_LABEL_TIMEOUT = 'Указать причину';
+const REASON_BUTTON_LABELS = [REASON_BUTTON_LABEL_DISPATCH, REASON_BUTTON_LABEL_TIMEOUT];
+
+/**
+ * True, если входящий текст — нажатие кнопки причины (точное совпадение с
+ * известной подписью; trim + регистронезависимо). Произвольная причина → false,
+ * чтобы реальный текст причины не был принят за повторное нажатие кнопки.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+export const isReasonButtonPress = (text) => {
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return false;
+  return REASON_BUTTON_LABELS.some((label) => label.toLowerCase() === t);
+};
+
 /**
  * @param {{
  *   bitrixClient: object,

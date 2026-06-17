@@ -1,4 +1,5 @@
 import { NOTIFY_FALLBACK_PREFIX } from '../notifications/notificationService.js';
+import { REASON_BUTTON_LABEL_DISPATCH } from '../notifications/botCommandHandler.js';
 import { buildZonedDatetime } from './dispatchPlanGenerator.js';
 
 const MINUTES_TO_MS = 60 * 1000;
@@ -250,6 +251,7 @@ export const createDispatchService = ({
         });
 
         let dispatchKeyboard = null;
+        let dispatchFallbackSuffix = '';
         try {
           // «Указать причину» button: ACTION:SEND makes the press send the text as a
           // message from the user → fires ONIMBOTV2MESSAGEADD → /api/bot/event parses it.
@@ -266,12 +268,18 @@ export const createDispatchService = ({
             const resolvedBotId = Number(notificationService?.botId || botId || process.env.BITRIX_BOT_ID || 0);
             const buttons = [
               {
-                TEXT: 'Не успеваю — указать причину',
+                TEXT: REASON_BUTTON_LABEL_DISPATCH,
                 ACTION: 'SEND',
-                ACTION_VALUE: `/reason ${reasonReportId}`
+                // REASON-BTN-TEXT: отправляем человеческую фразу, а не «/reason N».
+                // В чате видно нормальный текст; бот распознаёт нажатие по тексту и
+                // сам находит активный отчёт пользователя (см. server.js /api/bot/event).
+                ACTION_VALUE: REASON_BUTTON_LABEL_DISPATCH
               }
             ];
             dispatchKeyboard = { BOT_ID: resolvedBotId, BUTTONS: buttons };
+            // NOTIF-1: тот же путь причины текстом — на случай notify-фоллбэка,
+            // где кнопка бота теряется (im.notify кнопок не несёт).
+            dispatchFallbackSuffix = `Не успеваете? Ответьте этому боту: /reason ${reasonReportId}`;
           }
         } catch {
           // Defensive: skip keyboard if building fails
@@ -284,7 +292,8 @@ export const createDispatchService = ({
           deadlineAt,
           timezone: settings.timezone,
           keyboard: dispatchKeyboard,
-          context
+          context,
+          fallbackSuffix: dispatchFallbackSuffix
         });
 
         // W1-2: if delivered via notify fallback, annotate the dispatch log error_text

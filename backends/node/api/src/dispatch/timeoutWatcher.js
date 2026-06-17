@@ -1,5 +1,6 @@
 import { updateReportCrmItem } from '../reports/reportCrmSync.js';
 import { NOTIFY_FALLBACK_PREFIX } from '../notifications/notificationService.js';
+import { REASON_BUTTON_LABEL_TIMEOUT } from '../notifications/botCommandHandler.js';
 
 const normalizeLimit = (value) => {
   const n = Number(value);
@@ -110,9 +111,11 @@ export const createTimeoutWatcher = ({
                     BOT_ID: resolvedBotId,
                     BUTTONS: [
                       {
-                        TEXT: 'Указать причину',
+                        TEXT: REASON_BUTTON_LABEL_TIMEOUT,
                         ACTION: 'SEND',
-                        ACTION_VALUE: `/reason ${report.id}`
+                        // REASON-BTN-TEXT: человеческая фраза вместо «/reason N» —
+                        // бот распознаёт нажатие и находит активный отчёт юзера.
+                        ACTION_VALUE: REASON_BUTTON_LABEL_TIMEOUT
                       }
                     ]
                   }
@@ -123,7 +126,12 @@ export const createTimeoutWatcher = ({
                 message: `Отчёт по АЗС ${azsTitle} просрочен. Пожалуйста, укажите причину.`,
                 keyboard: reasonKeyboard,
                 context,
-                fallbackToNotify: true
+                fallbackToNotify: true,
+                azsId: report.azsId,
+                // NOTIF-1: при notify-фоллбэке кнопка теряется — сохраняем путь причины текстом.
+                fallbackSuffix: (appCode && report.id)
+                  ? `Не успеваете? Ответьте этому боту: /reason ${report.id}`
+                  : ''
               });
 
               // W1-2: annotate report if delivered via notify fallback.

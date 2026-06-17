@@ -1,7 +1,7 @@
 /**
  * BUG-019 v2 fix: tests for the corrected Bitrix24 bot webhook integration.
  *
- * (a) Button is ACTION:SEND with ACTION_VALUE '/reason <id>', NOT COMMAND/LINK.
+ * (a) Button is ACTION:SEND with human-text ACTION_VALUE (no /reason <id>), NOT COMMAND/LINK.
  * (b) Registration uses eventMode:'webhook' + webhookUrl with ?s, NO event_message_add.
  * (c) /api/bot/event parses v2 urlencoded ONIMBOTV2MESSAGEADD '/reason 42' →
  *     starts awaiting + replies.
@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { createBotRegistryService } from '../src/notifications/botRegistryService.js';
 import { createDispatchService } from '../src/dispatch/dispatchService.js';
 import { createTimeoutWatcher } from '../src/dispatch/timeoutWatcher.js';
-import { createBotCommandHandler } from '../src/notifications/botCommandHandler.js';
+import { createBotCommandHandler, isReasonButtonPress, REASON_BUTTON_LABEL_DISPATCH, REASON_BUTTON_LABEL_TIMEOUT } from '../src/notifications/botCommandHandler.js';
 import { createReasonCaptureStore } from '../src/notifications/reasonCaptureStore.js';
 
 // ─── (b) Registration: eventMode:'webhook', webhookUrl, no event_message_add ──
@@ -197,7 +197,7 @@ const baseSettings = {
   }
 };
 
-test('(a) dispatchService: keyboard button is ACTION:SEND with ACTION_VALUE containing /reason <id>', async () => {
+test('(a) dispatchService: keyboard button is ACTION:SEND with human-text ACTION_VALUE (REASON-BTN-TEXT)', async () => {
   const prevAppCode = process.env.BITRIX_APP_CODE;
   try {
     process.env.BITRIX_APP_CODE = 'local.test.v2send';
@@ -247,11 +247,13 @@ test('(a) dispatchService: keyboard button is ACTION:SEND with ACTION_VALUE cont
     assert.equal(reasonBtn.COMMAND, undefined, 'button must NOT have COMMAND field');
     assert.equal(reasonBtn.LINK, undefined, 'button must NOT have LINK field');
 
-    // ACTION_VALUE must be '/reason <reportId>'
-    assert.ok(
-      typeof reasonBtn.ACTION_VALUE === 'string' && reasonBtn.ACTION_VALUE.match(/^\/reason\s+\d+$/),
-      `ACTION_VALUE must be '/reason <id>', got: ${reasonBtn.ACTION_VALUE}`
+    // REASON-BTN-TEXT: ACTION_VALUE — человеческая фраза (не «/reason N»)
+    assert.equal(
+      reasonBtn.ACTION_VALUE,
+      REASON_BUTTON_LABEL_DISPATCH,
+      `ACTION_VALUE must be human label, got: ${reasonBtn.ACTION_VALUE}`
     );
+    assert.ok(!String(reasonBtn.ACTION_VALUE).includes('/reason'), 'технического /reason быть не должно');
   } finally {
     if (prevAppCode === undefined) {
       delete process.env.BITRIX_APP_CODE;
@@ -261,7 +263,7 @@ test('(a) dispatchService: keyboard button is ACTION:SEND with ACTION_VALUE cont
   }
 });
 
-test('(a) dispatchService: ACTION_VALUE uses the internal report id, not the CRM item id', async () => {
+test('(a) dispatchService: ACTION_VALUE — человеческая фраза без id (ни internal, ни CRM)', async () => {
   const prevAppCode = process.env.BITRIX_APP_CODE;
   try {
     process.env.BITRIX_APP_CODE = 'local.test.v2send2';
@@ -296,16 +298,13 @@ test('(a) dispatchService: ACTION_VALUE uses the internal report id, not the CRM
       String(b.TEXT || '').includes('причину') || String(b.TEXT || '').includes('Указать')
     );
 
-    // ACTION_VALUE must be the INTERNAL report id (reserve.id), NOT the CRM item id
-    // (9999) — the bot side-effects resolve the report via reportsStore.getById.
-    assert.match(
-      String(reasonBtn.ACTION_VALUE),
-      /^\/reason \d+$/,
-      `ACTION_VALUE must be /reason <numeric internal id>, got: ${reasonBtn.ACTION_VALUE}`
-    );
+    // REASON-BTN-TEXT: id больше НЕ в ACTION_VALUE — человеческая фраза без номеров.
+    // Бот находит отчёт сам (listActiveByAdminUserId), поэтому ни internal id, ни
+    // CRM item id (9999) в тексте кнопки не светятся.
+    assert.equal(reasonBtn.ACTION_VALUE, REASON_BUTTON_LABEL_DISPATCH);
     assert.ok(
-      !String(reasonBtn.ACTION_VALUE).includes('9999'),
-      `ACTION_VALUE must NOT embed the CRM item id 9999, got: ${reasonBtn.ACTION_VALUE}`
+      !/\d/.test(String(reasonBtn.ACTION_VALUE)),
+      `ACTION_VALUE must not embed any id, got: ${reasonBtn.ACTION_VALUE}`
     );
   } finally {
     if (prevAppCode === undefined) {
@@ -361,9 +360,11 @@ test('(a) timeoutWatcher: overdue reason button is ACTION:SEND, not COMMAND', as
     assert.equal(reasonBtn.ACTION, 'SEND', 'overdue reason button must be ACTION:SEND');
     assert.equal(reasonBtn.TYPE, undefined, 'overdue reason button must NOT have TYPE field');
     assert.equal(reasonBtn.COMMAND, undefined, 'overdue reason button must NOT have COMMAND field');
-    assert.ok(
-      typeof reasonBtn.ACTION_VALUE === 'string' && reasonBtn.ACTION_VALUE.match(/^\/reason\s+\d+$/),
-      `ACTION_VALUE must be '/reason <id>', got: ${reasonBtn.ACTION_VALUE}`
+    // REASON-BTN-TEXT: человеческая фраза, без «/reason N»
+    assert.equal(
+      reasonBtn.ACTION_VALUE,
+      REASON_BUTTON_LABEL_TIMEOUT,
+      `ACTION_VALUE must be human label, got: ${reasonBtn.ACTION_VALUE}`
     );
   } finally {
     if (prevAppCode === undefined) {
@@ -408,7 +409,8 @@ function makeV2EventHandler({ jobSecret, reportsStore: rs } = {}) {
     }
   };
   const reportsStore = rs || {
-    async getById(id) { return { id, azsId: `azs-${id}` }; }
+    async getById(id) { return { id, azsId: `azs-${id}` }; },
+    async listActiveByAdminUserId() { return []; }
   };
 
   const botCmdHandler = createBotCommandHandler({
@@ -474,6 +476,20 @@ function makeV2EventHandler({ jobSecret, reportsStore: rs } = {}) {
 
       await botCmdHandler.handleCommand({ userId, dialogId, reportId, azsId });
       return res.json({ ok: true, handled: true, action: 'awaiting_reason' });
+    }
+
+    // REASON-BTN-TEXT: человеческая кнопка причины → найти активный отчёт юзера сами
+    if ((event === 'ONIMBOTV2MESSAGEADD' || event === 'ONIMBOTMESSAGEADD') && isReasonButtonPress(messageText)) {
+      let activeReport = null;
+      try {
+        const items = await reportsStore.listActiveByAdminUserId({ adminUserId: userId, limit: 1 });
+        activeReport = Array.isArray(items) && items.length ? items[0] : null;
+      } catch { /* best-effort */ }
+      if (activeReport?.id) {
+        await botCmdHandler.handleCommand({ userId, dialogId, reportId: Number(activeReport.id), azsId: String(activeReport.azsId || '') });
+        return res.json({ ok: true, handled: true, action: 'awaiting_reason' });
+      }
+      return res.json({ ok: true, handled: false, action: 'no_active_report' });
     }
 
     // Plain message (possibly reason capture)
@@ -693,4 +709,62 @@ test('(c) v2 bot/event: parses userId from data.user.id when authorId absent', a
   assert.equal(res.state.payload?.handled, true);
   const state = reasonCaptureStore.getAwaiting({ userId: 50, dialogId: 'u50' });
   assert.ok(state !== null, 'awaiting must be set using data.user.id as fallback');
+});
+
+// ─── REASON-BTN-TEXT: человеческая кнопка причины → резолв активного отчёта ──
+
+test('(c2) v2 bot/event: нажатие кнопки причины (человеческий текст) → резолв активного отчёта → awaiting', async () => {
+  const reportsStore = {
+    async getById(id) { return { id, azsId: `azs-${id}` }; },
+    async listActiveByAdminUserId({ adminUserId }) {
+      assert.equal(adminUserId, 10, 'резолв по автору сообщения');
+      return [{ id: 871, azsId: 'azs-871', status: 'in_progress' }];
+    }
+  };
+  const { handler, repliedMessages, reasonCaptureStore } = makeV2EventHandler({ jobSecret: 'secret123', reportsStore });
+
+  const req = makeReq({
+    body: {
+      event: 'ONIMBOTV2MESSAGEADD',
+      data: {
+        message: { id: 2, text: REASON_BUTTON_LABEL_DISPATCH, authorId: '10' },
+        chat: { dialogId: 'u10' },
+        user: { id: '10' }
+      }
+    },
+    query: { s: 'secret123' }
+  });
+  const res = makeRes();
+  await handler(req, res);
+
+  assert.equal(res.state.payload?.handled, true, 'нажатие кнопки должно обработаться');
+  assert.equal(res.state.payload?.action, 'awaiting_reason');
+  assert.equal(repliedMessages.length, 1, 'бот ответил «укажите причину»');
+  const awaiting = reasonCaptureStore.getAwaiting({ userId: 10, dialogId: 'u10' });
+  assert.ok(awaiting, 'awaiting state должен быть выставлен');
+  assert.equal(awaiting.reportId, 871, 'awaiting привязан к найденному активному отчёту 871');
+});
+
+test('(c3) v2 bot/event: кнопка причины без активных отчётов → no_active_report', async () => {
+  const reportsStore = {
+    async getById(id) { return { id, azsId: `azs-${id}` }; },
+    async listActiveByAdminUserId() { return []; }
+  };
+  const { handler } = makeV2EventHandler({ jobSecret: 'secret123', reportsStore });
+
+  const req = makeReq({
+    body: {
+      event: 'ONIMBOTV2MESSAGEADD',
+      data: {
+        message: { text: REASON_BUTTON_LABEL_DISPATCH, authorId: '10' },
+        chat: { dialogId: 'u10' },
+        user: { id: '10' }
+      }
+    },
+    query: { s: 'secret123' }
+  });
+  const res = makeRes();
+  await handler(req, res);
+
+  assert.equal(res.state.payload?.action, 'no_active_report', 'нет активных отчётов → no_active_report');
 });
