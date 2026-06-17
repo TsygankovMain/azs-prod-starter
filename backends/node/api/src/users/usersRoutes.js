@@ -120,6 +120,66 @@ export const createUsersRouter = ({
     }
   });
 
+  // -------------------------------------------------------------------------
+  // GET /list — фоновая загрузка всех активных сотрудников (FEED-USERS-BG)
+  //
+  // Тянет активных employee постранично через user.get и кэширует в памяти на
+  // CACHE_TTL_MS, чтобы фоновая загрузка от множества проверяющих не штормила Б24.
+  // Фронт грузит список один раз и фильтрует ЛОКАЛЬНО (мгновенный поиск).
+  // Ошибка Б24: отдаём устаревший кэш если есть, иначе 502 (не маскируем пустотой).
+  // -------------------------------------------------------------------------
+  const CACHE_TTL_MS = 10 * 60 * 1000;
+  const MAX_EMPLOYEES = 2000;
+  const PAGE_SIZE = 50;
+  let listCache = null; // { items, ts }
+
+  const fetchAllEmployees = async (context) => {
+    const items = [];
+    let start = 0;
+    while (items.length < MAX_EMPLOYEES) {
+      const result = await bitrixClient.callMethod(
+        'user.get',
+        { FILTER: { ACTIVE: true, USER_TYPE: 'employee' }, sort: 'LAST_NAME', order: 'ASC', start },
+        context
+      );
+      const rows = Array.isArray(result) ? result
+        : Array.isArray(result?.result) ? result.result
+        : [];
+      if (!rows.length) break;
+      for (const row of rows) {
+        const mapped = mapUser(row);
+        if (mapped) items.push(mapped);
+        if (items.length >= MAX_EMPLOYEES) break;
+      }
+      if (rows.length < PAGE_SIZE) break; // короче полной страницы → последняя
+      start += PAGE_SIZE;
+    }
+    return items;
+  };
+
+  router.get('/list', async (req, res) => {
+    if (!canReview(req)) return res.status(403).json({ error: 'forbidden' });
+
+    const now = Date.now();
+    if (listCache && (now - listCache.ts) < CACHE_TTL_MS) {
+      return res.json({ items: listCache.items, cached: true, total: listCache.items.length });
+    }
+
+    try {
+      const context = await resolveAdminCtx(req.bitrixContext || {});
+      const items = await fetchAllEmployees(context);
+      listCache = { items, ts: now };
+      return res.json({ items, cached: false, total: items.length });
+    } catch (err) {
+      console.warn('[users/list] Bitrix call failed:', err.message);
+      if (listCache) {
+        // лучше отдать старый список, чем пусто
+        return res.json({ items: listCache.items, cached: true, stale: true, total: listCache.items.length });
+      }
+      return res.status(502).json({ items: [], error: 'users_list_failed' });
+    }
+  });
+
   return router;
 };
 

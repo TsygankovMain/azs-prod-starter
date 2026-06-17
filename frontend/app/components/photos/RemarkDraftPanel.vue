@@ -97,6 +97,41 @@ const selectedUser = ref<UserSearchResult | null>(null)
 
 let userSearchTimer: ReturnType<typeof setTimeout> | null = null
 
+// FEED-USERS-BG: фоновый список всех активных сотрудников — мгновенный локальный поиск.
+const allEmployees = ref<UserSearchResult[]>([])
+const employeesLoading = ref(false)
+const employeesLoaded = ref(false)
+const employeesError = ref('')
+
+const loadAllEmployees = async () => {
+  if (employeesLoading.value) return
+  employeesLoading.value = true
+  employeesError.value = ''
+  try {
+    const resp = await apiStore.fetchEmployees()
+    allEmployees.value = (resp.items ?? []) as UserSearchResult[]
+    employeesLoaded.value = true
+  } catch {
+    employeesError.value = 'Не удалось загрузить список сотрудников'
+    employeesLoaded.value = false
+  } finally {
+    employeesLoading.value = false
+  }
+}
+
+// Грузим список в фоне сразу при появлении панели — к моменту поиска он готов.
+onMounted(() => { void loadAllEmployees() })
+
+// Локальный фильтр по загруженному списку (имя + должность), мгновенно.
+const filterLocal = (q: string): UserSearchResult[] => {
+  const needle = q.trim().toLowerCase()
+  if (!needle) return []
+  return allEmployees.value
+    .filter((u) => u.name.toLowerCase().includes(needle) || (u.position || '').toLowerCase().includes(needle))
+    .slice(0, 30)
+}
+
+// Серверный дозапрос-fallback: когда список не загрузился ИЛИ локально пусто.
 const runUserSearch = async (q: string) => {
   if (!q.trim()) {
     userSearchResults.value = []
@@ -118,11 +153,24 @@ const runUserSearch = async (q: string) => {
 watch(userQuery, (val) => {
   selectedUser.value = null
   if (userSearchTimer) clearTimeout(userSearchTimer)
-  if (!val.trim()) {
+  userSearchError.value = ''
+  const q = val.trim()
+  if (!q) {
     userSearchResults.value = []
     return
   }
-  userSearchTimer = setTimeout(() => void runUserSearch(val), 300)
+
+  // 1) Мгновенный локальный поиск по загруженному списку.
+  if (employeesLoaded.value) {
+    const local = filterLocal(q)
+    userSearchResults.value = local
+    if (local.length > 0) return // нашли локально — сервер не трогаем
+  }
+
+  // 2) Fallback: список не загружен ИЛИ локально ничего → серверный дозапрос (debounce).
+  if (q.length >= 2) {
+    userSearchTimer = setTimeout(() => void runUserSearch(q), 300)
+  }
 })
 
 const selectUser = (u: UserSearchResult) => {
@@ -332,6 +380,15 @@ const getCategoryLabel = (entry: MarkEntry): string =>
             </div>
           </div>
 
+          <!-- FEED-USERS-BG: фоновая загрузка списка сотрудников -->
+          <p v-if="employeesLoading" class="text-xs text-gray-400">
+            Загрузка списка сотрудников…
+          </p>
+          <p v-else-if="employeesError" class="text-xs text-red-500">
+            {{ employeesError }}
+            <button class="ml-1 underline hover:text-red-700" @click="loadAllEmployees">Повторить</button>
+          </p>
+
           <!-- Ошибка поиска -->
           <p v-if="userSearchError" class="text-xs text-red-500">{{ userSearchError }}</p>
 
@@ -353,7 +410,7 @@ const getCategoryLabel = (entry: MarkEntry): string =>
 
           <!-- Нет результатов (запрос был, но список пустой) -->
           <p
-            v-else-if="userQuery.trim() && !userSearchLoading"
+            v-else-if="userQuery.trim() && !userSearchLoading && !employeesLoading"
             class="text-xs text-gray-400"
           >
             Сотрудники не найдены

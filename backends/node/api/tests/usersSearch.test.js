@@ -384,3 +384,91 @@ test('GET /search: шлёт FIND без конфликтующих ACTIVE/START 
   assert.equal(client.calls[0].params.ACTIVE, undefined, 'ACTIVE не должен идти рядом с FIND');
   assert.equal(client.calls[0].params.START, undefined, 'START не должен идти рядом с FIND');
 });
+
+// ---------------------------------------------------------------------------
+// FEED-USERS-BG · GET /list — фоновая загрузка всех активных сотрудников
+// ---------------------------------------------------------------------------
+
+test('GET /list: маппит активных сотрудников в {id,name,position} через user.get', async () => {
+  const client = makeCapturingClient([
+    makeUser({ ID: 7, NAME: 'Анна', LAST_NAME: 'Сидорова', WORK_POSITION: 'Директор' })
+  ]);
+  const router = createUsersRouter({ bitrixClient: client, getAdminContext: stubDeps.getAdminContext });
+  const handler = findRoute(router, 'get', '/list');
+  assert.ok(handler, 'маршрут /list должен существовать');
+
+  const res = makeRes();
+  await handler(makeReq({}), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.ok(Array.isArray(res._payload?.items));
+  assert.equal(res._payload.items[0].id, 7);
+  assert.equal(res._payload.items[0].name, 'Анна Сидорова');
+  assert.equal(res._payload.items[0].position, 'Директор');
+  assert.equal(client.calls[0].method, 'user.get', 'список тянем через user.get, не user.search');
+});
+
+test('GET /list: 403 без reviewer/settings', async () => {
+  const client = makeCapturingClient([makeUser()]);
+  const router = createUsersRouter({ bitrixClient: client, getAdminContext: stubDeps.getAdminContext });
+  const handler = findRoute(router, 'get', '/list');
+  const res = makeRes();
+  await handler(makeReq({ accessContext: { capabilities: {} } }), res);
+  assert.equal(res.statusCode, 403);
+});
+
+test('GET /list: кэширует результат — повторный запрос не дёргает Б24', async () => {
+  const client = makeCapturingClient([makeUser()]);
+  const router = createUsersRouter({ bitrixClient: client, getAdminContext: stubDeps.getAdminContext });
+  const handler = findRoute(router, 'get', '/list');
+
+  await handler(makeReq({}), makeRes());
+  const afterFirst = client.calls.length;
+  assert.ok(afterFirst >= 1, 'первый запрос дёргает Б24');
+
+  const res2 = makeRes();
+  await handler(makeReq({}), res2);
+  assert.equal(client.calls.length, afterFirst, 'второй запрос — из кэша, без Б24');
+  assert.equal(res2._payload.cached, true, 'флаг cached=true при отдаче из кэша');
+});
+
+test('GET /list: пагинация — тянет страницы пока Б24 отдаёт по 50', async () => {
+  const page1 = Array.from({ length: 50 }, (_, i) => makeUser({ ID: i + 1, NAME: `U${i}` }));
+  const page2 = Array.from({ length: 5 }, (_, i) => makeUser({ ID: 100 + i, NAME: `V${i}` }));
+  let call = 0;
+  const client = {
+    calls: [],
+    async callMethod(method, params, context) {
+      this.calls.push({ method, params, context });
+      call += 1;
+      return call === 1 ? page1 : page2;
+    }
+  };
+  const router = createUsersRouter({ bitrixClient: client, getAdminContext: stubDeps.getAdminContext });
+  const handler = findRoute(router, 'get', '/list');
+  const res = makeRes();
+  await handler(makeReq({}), res);
+
+  assert.equal(res._payload.items.length, 55, 'обе страницы (50 + 5)');
+  assert.equal(client.calls.length, 2, 'два запроса (start=0, затем start=50)');
+  assert.equal(client.calls[1].params.start, 50, 'вторая страница со start=50');
+});
+
+test('GET /list: при пустом admin-контексте — под OAuth запроса', async () => {
+  const client = makeCapturingClient([makeUser()]);
+  const router = createUsersRouter({ bitrixClient: client, getAdminContext: async () => ({}) });
+  const handler = findRoute(router, 'get', '/list');
+  const res = makeRes();
+  await handler(makeReq({ bitrixContext: { authId: 'reviewer-token' } }), res);
+  assert.equal(client.calls[0].context?.authId, 'reviewer-token');
+});
+
+test('GET /list: ошибка Б24 без кэша → 502 + items:[]', async () => {
+  const client = { calls: [], async callMethod() { this.calls.push(1); throw new Error('ACCESS_DENIED'); } };
+  const router = createUsersRouter({ bitrixClient: client, getAdminContext: stubDeps.getAdminContext });
+  const handler = findRoute(router, 'get', '/list');
+  const res = makeRes();
+  await handler(makeReq({}), res);
+  assert.equal(res.statusCode, 502, 'честная ошибка, не маскируем под пустой список');
+  assert.deepEqual(res._payload.items, []);
+});
