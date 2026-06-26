@@ -21,7 +21,7 @@ test('cancelPlanned (postgres) updates a planned row to cancelled by id', async 
 test('cancelPlanned (mysql) updates a planned row to cancelled by id', async () => {
   const queries = [];
   const pool = {
-    async query(sql, params) {
+    async execute(sql, params) {
       queries.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
       return [{ affectedRows: 1 }];
     }

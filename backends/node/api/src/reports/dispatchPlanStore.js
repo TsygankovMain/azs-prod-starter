@@ -269,7 +269,7 @@ const createMysqlStore = (pool) => ({
   },
 
   async cancelPlanned({ id }) {
-    const [res] = await pool.query(
+    const [res] = await pool.execute(
       `UPDATE dispatch_plan SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='planned'`,
       [Number(id)]
     );
