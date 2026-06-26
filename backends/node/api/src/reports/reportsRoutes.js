@@ -1041,6 +1041,7 @@ export const createReportsRouter = ({
       const items = [];
       for (const row of rows) {
         items.push({
+          id: row.id,
           azsId: row.azs_id,
           azsTitle: await resolveAzsTitle(row.azs_id),
           adminUserId: row.admin_user_id,
@@ -1053,6 +1054,21 @@ export const createReportsRouter = ({
       return res.json({ items, planDate, enabled: true });
     } catch (error) {
       return res.status(502).json({ error: 'plan_failed', message: error.message });
+    }
+  });
+
+  router.post('/plan/slot/cancel', async (req, res) => {
+    if (!canUseReviewerTools(req)) return res.status(403).json({ error: 'forbidden', message: 'Reviewer access is required' });
+    try {
+      const id = Number(req.body?.id);
+      if (!id) return res.status(400).json({ error: 'bad_request', message: 'id слота обязателен' });
+      if (!dispatchPlanStore || typeof dispatchPlanStore.cancelPlanned !== 'function') {
+        return res.status(503).json({ error: 'plan_mode_unavailable', message: 'План рассылки недоступен' });
+      }
+      const result = await dispatchPlanStore.cancelPlanned({ id });
+      return res.json({ ok: true, cancelled: result.cancelled });
+    } catch (error) {
+      return res.status(502).json({ error: 'plan_cancel_failed', message: error.message });
     }
   });
 
