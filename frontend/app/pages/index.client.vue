@@ -362,6 +362,13 @@ onMounted(async () => {
       return
     }
 
+    // IMMOBILE_CONTEXT_MENU placement: always open the reviewer dashboard.
+    const placementTitle = String(($b24 as any)?.placement?.title || route.query.PLACEMENT || '').trim()
+    if (placementTitle === 'IMMOBILE_CONTEXT_MENU') {
+      await navigateTo('/reviewer')
+      return
+    }
+
     if (currentRole.value === 'azs_admin') {
       const redirectedToActive = await openMyActiveReportIfAny()
       if (redirectedToActive) {
