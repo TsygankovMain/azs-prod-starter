@@ -6,6 +6,14 @@
 
 ---
 
+## «Перевыпустить задания на сегодня» — 2026-06-26 (фича)
+
+Кнопка для админа на дашборде проверяющего: снимает несданные сегодняшние задания по всем АЗС (новый статус `dispatch_log.status='cancelled'`), предупреждает затронутых сотрудников сообщением бота и пересоздаёт план на сегодня по текущему расписанию из настроек (уже сдавшие АЗС пропускаются). Сданные отчёты и фото не трогаются.
+
+- **Бэкенд:** `reportsStore` — `listNotSubmittedForDate`/`cancelNotSubmittedForDate`/`listSubmittedAzsForDate` (PG+MySQL); `cancelled` инертен в `getSummary`/`listOverdueReports`/`getActiveReportForAzsOnDate`. Новый `reissueTodayService` (снять → уведомить best-effort с дедупом по пользователю → `generateDailyPlan(regenerate)`). Эндпоинт `POST /api/reports/today/reissue` (только `capabilities.settings`, dry-run + выполнение). Тесты: +9 (863 всего, 0 падений).
+- **Фронт:** `apiStore.reissueTodayTasks`; кнопка «Перевыпустить задания на сегодня» на карточке плана (`reviewer.client.vue`) — предпросмотр в подтверждении (снято/сданные/пропущено) + тост-результат; гейт `hasSettingsAccess`.
+- **Доки:** `docs/superpowers/specs/2026-06-26-reissue-today-photo-tasks-design.md`, `docs/superpowers/plans/2026-06-26-reissue-today-photo-tasks.md`.
+
 ## Sprint 7 «Логика и доступ» — 2026-06-15 (ветка feature/sprints-stability-ux)
 
 Закрыто 20 пунктов бэклога волнами 1–5: доступ (BUG-A1/A2/A3 — getToken/admin_user_ids/retry настроек), логика отправки (BUG-024/LOGIC-D2 — дедлайн/таймзона ручной рассылки), безопасность (BUG-S1/S2 — /api/install верификация + JOB_SECRET fail-closed), фотолента (BUG-P1/P2/P3/P4/P6 — логирование потерь/превью 503/diskFolderId/commit-режим/CRM-синк по portal), фронтенд (BUG-F1/LOGIC-F2/F3/F4/F6 — черновик замечаний v-show/загрузка с причиной/ошибка отправки/гейт capabilities/кнопка роли). Бэкенд: 643 теста, 0 падений.
