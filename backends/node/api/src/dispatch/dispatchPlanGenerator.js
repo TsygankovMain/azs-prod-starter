@@ -481,6 +481,36 @@ export const generateDailyPlan = async ({
       ? undefined   // профиль A: без глобального clamping, слоты профиля и есть расписание
       : workWindow;
 
+    // -----------------------------------------------------------------------
+    // Режим «случайно в рабочем окне» (глобальный, без фиксированных времён):
+    // если конкретные dispatchTimes не заданы, но есть валидное workWindow —
+    // запрашиваем отчёт ОДИН раз в день в детерминированный случайный момент
+    // внутри окна. Обратно совместимо: применяется ТОЛЬКО к глобальному пути
+    // (profile === null) с пустыми временами и валидным окном.
+    // -----------------------------------------------------------------------
+    const windowStart = String(workWindow?.start || '').trim();
+    const windowEnd = String(workWindow?.end || '').trim();
+    const hasValidWindow = windowStart !== '' && windowEnd !== '';
+    if (profile === null && effectiveBaseTimes.length === 0 && hasValidWindow) {
+      const baseTime = pickRandomMomentInWindow(
+        planDate,
+        candidate.azsId,
+        { from: windowStart, to: windowEnd },
+        0
+      );
+      const executeAt = buildZonedDatetime(planDate, baseTime, timezone);
+      await planStore.upsertPlanned({
+        planDate,
+        azsId: candidate.azsId,
+        adminUserId: Number(candidate.adminUserId),
+        baseTime,
+        executeAt,
+        jitterMinutes: 0
+      });
+      planned += 1;
+      continue;
+    }
+
     for (const baseTime of effectiveBaseTimes) {
       const jitterMinutes = pickJitterMinutes(effectiveJitterLimit, rng);
       const { executeAt } = computeExecuteAt({
