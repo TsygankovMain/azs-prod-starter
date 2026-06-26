@@ -141,6 +141,8 @@ export const createDispatchPlanMirror = ({
 
     let restored = 0;
     for (const row of mirror.rows) {
+      // A cancelled slot must stay cancelled across a redeploy — never resurrect it.
+      if (String(row.status || 'planned').trim() === 'cancelled') continue;
       try {
         await planStore.upsertPlanned({
           planDate: date,

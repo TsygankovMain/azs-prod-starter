@@ -100,3 +100,27 @@ test('rehydrateIfEmpty no-op when mirror missing or for a different date', async
   await mirror.write({ planDate: '2026-06-04', rows: [{ azsId: '1', adminUserId: 7, baseTime: '0900', executeAt: '2026-06-04T06:00:00.000Z', jitterMinutes: 0 }] });
   assert.equal(await mirror.rehydrateIfEmpty({ planDate: '2026-06-05' }), 0);
 });
+
+test('rehydrateIfEmpty skips cancelled rows from the mirror', async () => {
+  const bitrix = createFakeBitrix();
+  const upserts = [];
+  const planStore = {
+    async listByDate() { return []; }, // DB empty for the date
+    async upsertPlanned(x) { upserts.push(x); return x; }
+  };
+  const mirror = createDispatchPlanMirror({ bitrixClient: bitrix, planStore });
+  // Mirror has two rows for the date: one planned, one cancelled.
+  await mirror.write({
+    planDate: '2026-06-05',
+    rows: [
+      { azsId: '16', adminUserId: 11, baseTime: '1200', executeAt: '2026-06-05T05:01:00.000Z', jitterMinutes: -239, status: 'planned' },
+      { azsId: '28', adminUserId: 22, baseTime: '1200', executeAt: '2026-06-05T05:32:00.000Z', jitterMinutes: -208, status: 'cancelled' }
+    ]
+  });
+
+  const restored = await mirror.rehydrateIfEmpty({ planDate: '2026-06-05' });
+  // Only the planned row is restored; the cancelled one is skipped.
+  assert.equal(restored, 1);
+  assert.equal(upserts.length, 1);
+  assert.equal(upserts[0].azsId, '16');
+});

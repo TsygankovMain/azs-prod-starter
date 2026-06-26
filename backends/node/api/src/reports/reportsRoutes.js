@@ -1066,6 +1066,18 @@ export const createReportsRouter = ({
         return res.status(503).json({ error: 'plan_mode_unavailable', message: 'План рассылки недоступен' });
       }
       const result = await dispatchPlanStore.cancelPlanned({ id });
+
+      // Re-mirror so the cancellation survives a redeploy that wipes the DB. The UI
+      // passes the viewed date; without it we skip the mirror step gracefully.
+      const planDate = normalizePlanDate(req.body?.date);
+      if (dispatchPlanMirror && result.cancelled > 0 && planDate) {
+        try {
+          const rows = await dispatchPlanStore.listByDate({ planDate });
+          await dispatchPlanMirror.write({ context: req.bitrixContext || {}, planDate, rows });
+        } catch (mirrorError) {
+          console.warn('plan_cancel_mirror_failed', { planDate, message: mirrorError.message });
+        }
+      }
       return res.json({ ok: true, cancelled: result.cancelled });
     } catch (error) {
       return res.status(502).json({ error: 'plan_cancel_failed', message: error.message });
