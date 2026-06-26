@@ -4,6 +4,7 @@ import exifr from 'exifr';
 import { ensureRootFolder, isSupportedPhotoUpload, uploadPhoto } from '../disk/diskService.js';
 import { updateReportCrmItem } from './reportCrmSync.js';
 import { generateDailyPlan } from '../dispatch/dispatchPlanGenerator.js';
+import { reissueToday } from './reissueTodayService.js';
 import { createAnalyticsRouter } from './analyticsRoutes.js';
 import { assertDispatchAvailable } from '../dispatch/dispatchScheduler.js';
 
@@ -1087,6 +1088,45 @@ export const createReportsRouter = ({
       return res.json({ ok: true, planDate, azsCount: candidates.length, planned: summary?.planned ?? null, summary });
     } catch (error) {
       return res.status(502).json({ error: 'plan_generate_failed', message: error.message });
+    }
+  });
+
+  // S-REISSUE: «Перевыпустить задания на сегодня» (смена расписания среди дня).
+  // Снимает несданные сегодняшние задания (status→cancelled) по всем АЗС, шлёт
+  // затронутым сотрудникам уведомление об отмене и пересоздаёт план на сегодня
+  // из настроек (уже сдавшие АЗС пропускаются). Только админ (capabilities.settings).
+  router.post('/today/reissue', async (req, res) => {
+    if (!req.accessContext?.capabilities?.settings) {
+      return res.status(403).json({ error: 'forbidden', message: 'Settings (admin) access is required' });
+    }
+    try {
+      if (!dispatchPlanStore || typeof dispatchPlanStore.upsertPlanned !== 'function') {
+        return res.status(503).json({ error: 'plan_mode_unavailable', message: 'План рассылки недоступен (хранилище не инициализировано)' });
+      }
+      await dispatchPlanStore.ensureSchema();
+      const settings = await settingsStore.read();
+      const tz = String(settings?.timezone || 'Europe/Moscow').trim();
+      const planDate = normalizePlanDate(req.body?.date) || todayInTz(tz);
+      const dryRun = Boolean(req.body?.dryRun);
+      const context = req.bitrixContext || {};
+      const candidates = await loadEnabledAzsCandidates({ settings, bitrixClient, context });
+
+      const result = await reissueToday({
+        planDate,
+        dryRun,
+        reportsStore,
+        dispatchPlanStore,
+        settings,
+        candidates,
+        notify: (a) => notificationService.notify(a),
+        notifyContext: context,
+        generateDailyPlan,
+        logger: console,
+      });
+
+      return res.json({ ok: true, ...result });
+    } catch (error) {
+      return res.status(502).json({ error: 'reissue_failed', message: error.message });
     }
   });
 

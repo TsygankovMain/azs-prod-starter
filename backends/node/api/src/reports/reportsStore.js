@@ -231,13 +231,56 @@ const createPostgresStore = (pool) => ({
     );
   },
 
+  async listNotSubmittedForDate({ planDate }) {
+    if (!planDate) return [];
+    const result = await pool.query(
+      `SELECT id, azs_id, admin_user_id, report_item_id, status FROM dispatch_log
+       WHERE (slot_key LIKE $1 OR slot_key LIKE $2)
+         AND slot_key NOT LIKE $3
+         AND status NOT IN ('done', 'cancelled')
+       ORDER BY id`,
+      [`${planDate}:%`, `manual:${planDate}:%`, '%:reminder:%']
+    );
+    return result.rows.map((r) => ({
+      id: Number(r.id),
+      azsId: String(r.azs_id),
+      adminUserId: Number(r.admin_user_id),
+      reportItemId: r.report_item_id == null ? null : Number(r.report_item_id),
+      status: r.status,
+    }));
+  },
+
+  async cancelNotSubmittedForDate({ planDate }) {
+    if (!planDate) return 0;
+    const result = await pool.query(
+      `UPDATE dispatch_log SET status='cancelled', updated_at = NOW()
+       WHERE (slot_key LIKE $1 OR slot_key LIKE $2)
+         AND slot_key NOT LIKE $3
+         AND status NOT IN ('done', 'cancelled')`,
+      [`${planDate}:%`, `manual:${planDate}:%`, '%:reminder:%']
+    );
+    return result.rowCount ?? 0;
+  },
+
+  async listSubmittedAzsForDate({ planDate }) {
+    if (!planDate) return [];
+    const result = await pool.query(
+      `SELECT DISTINCT azs_id FROM dispatch_log
+       WHERE (slot_key LIKE $1 OR slot_key LIKE $2)
+         AND slot_key NOT LIKE $3
+         AND status = 'done'`,
+      [`${planDate}:%`, `manual:${planDate}:%`, '%:reminder:%']
+    );
+    return result.rows.map((r) => String(r.azs_id));
+  },
+
   async listOverdueReports({ now = new Date(), limit = 200 } = {}) {
     const result = await pool.query(
       `SELECT *
        FROM dispatch_log
        WHERE deadline_at IS NOT NULL
          AND deadline_at < $1
-         AND status NOT IN ('done', 'expired')
+         AND status NOT IN ('done', 'expired', 'cancelled')
        ORDER BY deadline_at ASC
        LIMIT $2`,
       [new Date(now), Math.min(Number(limit) || 200, 500)]
@@ -290,7 +333,7 @@ const createPostgresStore = (pool) => ({
       total += Number(row.count);
     }
 
-    const overdueWhere = [...where, `deadline_at IS NOT NULL`, `deadline_at < $${idx}`, `status NOT IN ('done', 'expired')`];
+    const overdueWhere = [...where, `deadline_at IS NOT NULL`, `deadline_at < $${idx}`, `status NOT IN ('done', 'expired', 'cancelled')`];
     const overdueParams = [...params, new Date(now)];
     const overdueResult = await pool.query(
       `SELECT COUNT(*)::int AS count FROM dispatch_log WHERE ${overdueWhere.join(' AND ')}`,
@@ -454,6 +497,7 @@ const createPostgresStore = (pool) => ({
        WHERE azs_id = $1
          AND (slot_key LIKE $2 OR slot_key LIKE $3)
          AND slot_key NOT LIKE $4
+         AND status <> 'cancelled'
        ORDER BY
          CASE status
            WHEN 'done' THEN 0
@@ -642,6 +686,49 @@ const createMysqlStore = (pool) => ({
     );
   },
 
+  async listNotSubmittedForDate({ planDate }) {
+    if (!planDate) return [];
+    const [rows] = await pool.execute(
+      `SELECT id, azs_id, admin_user_id, report_item_id, status FROM dispatch_log
+       WHERE (slot_key LIKE ? OR slot_key LIKE ?)
+         AND slot_key NOT LIKE ?
+         AND status NOT IN ('done', 'cancelled')
+       ORDER BY id`,
+      [`${planDate}:%`, `manual:${planDate}:%`, '%:reminder:%']
+    );
+    return rows.map((r) => ({
+      id: Number(r.id),
+      azsId: String(r.azs_id),
+      adminUserId: Number(r.admin_user_id),
+      reportItemId: r.report_item_id == null ? null : Number(r.report_item_id),
+      status: r.status,
+    }));
+  },
+
+  async cancelNotSubmittedForDate({ planDate }) {
+    if (!planDate) return 0;
+    const [result] = await pool.execute(
+      `UPDATE dispatch_log SET status='cancelled', updated_at = CURRENT_TIMESTAMP
+       WHERE (slot_key LIKE ? OR slot_key LIKE ?)
+         AND slot_key NOT LIKE ?
+         AND status NOT IN ('done', 'cancelled')`,
+      [`${planDate}:%`, `manual:${planDate}:%`, '%:reminder:%']
+    );
+    return result?.affectedRows ?? 0;
+  },
+
+  async listSubmittedAzsForDate({ planDate }) {
+    if (!planDate) return [];
+    const [rows] = await pool.execute(
+      `SELECT DISTINCT azs_id FROM dispatch_log
+       WHERE (slot_key LIKE ? OR slot_key LIKE ?)
+         AND slot_key NOT LIKE ?
+         AND status = 'done'`,
+      [`${planDate}:%`, `manual:${planDate}:%`, '%:reminder:%']
+    );
+    return rows.map((r) => String(r.azs_id));
+  },
+
   async listOverdueReports({ now = new Date(), limit = 200 } = {}) {
     const dt = new Date(now);
     const sqlDate = Number.isNaN(dt.getTime())
@@ -652,7 +739,7 @@ const createMysqlStore = (pool) => ({
        FROM dispatch_log
        WHERE deadline_at IS NOT NULL
          AND deadline_at < ?
-         AND status NOT IN ('done', 'expired')
+         AND status NOT IN ('done', 'expired', 'cancelled')
        ORDER BY deadline_at ASC
        LIMIT ?`,
       [sqlDate, Math.min(Number(limit) || 200, 500)]
@@ -704,7 +791,7 @@ const createMysqlStore = (pool) => ({
     const nowSql = Number.isNaN(dt.getTime())
       ? new Date().toISOString().slice(0, 19).replace('T', ' ')
       : dt.toISOString().slice(0, 19).replace('T', ' ');
-    const overdueWhere = [...where, 'deadline_at IS NOT NULL', 'deadline_at < ?', "status NOT IN ('done', 'expired')"];
+    const overdueWhere = [...where, 'deadline_at IS NOT NULL', 'deadline_at < ?', "status NOT IN ('done', 'expired', 'cancelled')"];
     const overdueParams = [...params, nowSql];
     const [overdueRows] = await pool.execute(
       `SELECT COUNT(*) AS count FROM dispatch_log WHERE ${overdueWhere.join(' AND ')}`,
@@ -867,6 +954,7 @@ const createMysqlStore = (pool) => ({
        WHERE azs_id = ?
          AND (slot_key LIKE ? OR slot_key LIKE ?)
          AND slot_key NOT LIKE ?
+         AND status <> 'cancelled'
        ORDER BY
          CASE status
            WHEN 'done' THEN 0
