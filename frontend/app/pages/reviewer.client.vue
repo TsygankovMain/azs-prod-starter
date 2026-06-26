@@ -80,8 +80,6 @@ let $b24: null | B24Frame = null
 
 const isLoading = ref(false)
 const loadError = ref('')
-const saveScheduleError = ref('')
-const saveScheduleSuccess = ref('')
 const manualError = ref('')
 const manualSuccess = ref('')
 const timeoutMessage = ref('')
@@ -117,13 +115,6 @@ const statusFilter = ref<string>('')
 const feedFilterMode = ref<'all' | 'problems'>('all')
 // AZS filter for feed (#3)
 const azsFilter = ref<string>('')
-
-const scheduleSettings = reactive({
-  dispatchTimes: [] as string[],
-  dispatchJitterMinutes: 15,
-  timeoutMinutes: 30,
-  newTimeInput: ''
-})
 
 const timeSlots = computed(() => {
   const slots: string[] = []
@@ -435,74 +426,16 @@ const loadAzsOptions = async () => {
   }
 }
 
+// Loads report settings needed by the dashboard (entity type id for CRM links).
+// Dispatch schedule itself lives on the Settings page (single source of truth).
 const loadScheduleSettings = async () => {
   try {
     const response = await apiStore.getSettings()
     const settings = (response.settings ?? {}) as Record<string, unknown>
     const report = (settings.report ?? {}) as Record<string, unknown>
     reportEntityTypeId.value = Number(report.entityTypeId || 0)
-
-    const times = report.dispatchTimes
-    if (Array.isArray(times)) {
-      scheduleSettings.dispatchTimes = times.map(t => String(t).trim()).filter(Boolean)
-    }
-
-    const jitter = report.dispatchJitterMinutes
-    if (typeof jitter === 'number') {
-      scheduleSettings.dispatchJitterMinutes = jitter
-    }
-
-    const timeout = report.timeoutMinutes
-    if (typeof timeout === 'number') {
-      scheduleSettings.timeoutMinutes = timeout
-    }
   } catch (error) {
     console.warn('Failed to load schedule settings', error)
-  }
-}
-
-const removeDispatchTime = (index: number) => {
-  scheduleSettings.dispatchTimes.splice(index, 1)
-}
-
-const addDispatchTime = () => {
-  const time = scheduleSettings.newTimeInput.trim()
-  if (time && /^\d{2}:\d{2}$/.test(time)) {
-    if (!scheduleSettings.dispatchTimes.includes(time)) {
-      scheduleSettings.dispatchTimes.push(time)
-      scheduleSettings.dispatchTimes.sort()
-      scheduleSettings.newTimeInput = ''
-    }
-  }
-}
-
-const saveSchedule = async () => {
-  saveScheduleError.value = ''
-  saveScheduleSuccess.value = ''
-  if (!hasSettingsAccess.value) {
-    saveScheduleError.value = 'Недостаточно прав: расписание может менять только администратор'
-    return
-  }
-  try {
-    const response = await apiStore.getSettings()
-    const settings = (response.settings ?? {}) as Record<string, unknown>
-    const report = (settings.report ?? {}) as Record<string, unknown>
-
-    const updated = {
-      ...settings,
-      report: {
-        ...report,
-        dispatchTimes: scheduleSettings.dispatchTimes,
-        dispatchJitterMinutes: scheduleSettings.dispatchJitterMinutes,
-        timeoutMinutes: scheduleSettings.timeoutMinutes
-      }
-    }
-
-    await apiStore.saveSettings(updated)
-    saveScheduleSuccess.value = 'Расписание сохранено'
-    setTimeout(() => { saveScheduleSuccess.value = '' }, 3000)
-  } catch (error) {
-    saveScheduleError.value = error instanceof Error ? error.message : 'Ошибка при сохранении'
   }
 }
 
@@ -1195,12 +1128,12 @@ onMounted(async () => {
               </div>
             </div>
 
-            <div class="p-5 space-y-4">
+            <div class="p-5 space-y-3 max-h-[520px] overflow-y-auto">
               <!-- Скелетоны ленты при первичной загрузке -->
               <template v-if="isLoading && filteredEvents.length === 0">
                 <div v-for="n in 5" :key="`skel-${n}`" class="flex gap-3">
                   <!-- Иконка-аватар -->
-                  <SkeletonBlock height="2.5rem" width="2.5rem" rounded="rounded-full" class="flex-shrink-0" />
+                  <SkeletonBlock height="2rem" width="2rem" rounded="rounded-full" class="flex-shrink-0" />
                   <!-- Тело карточки события -->
                   <div class="flex-1 flex flex-col gap-2 pb-1">
                     <div class="flex justify-between gap-3">
@@ -1223,7 +1156,7 @@ onMounted(async () => {
               >
                 <div class="feed-line">
                   <div class="flex gap-3">
-                    <div :class="`flex-shrink-0 w-10 h-10 rounded-full ${getEventBgColor(event)} flex items-center justify-center text-lg`">
+                    <div :class="`flex-shrink-0 w-8 h-8 rounded-full ${getEventBgColor(event)} flex items-center justify-center text-base`">
                       {{ getEventIcon(event) }}
                     </div>
                     <div class="flex-1 pb-1">
@@ -1277,98 +1210,6 @@ onMounted(async () => {
 
           <!-- Right panel -->
           <aside class="space-y-6">
-
-            <!-- Schedule card -->
-            <section class="bg-white rounded-2xl shadow-sm border border-gray-100">
-              <div class="flex items-center gap-2 border-b border-gray-100 px-5 py-4">
-                <span class="text-lg">📅</span>
-                <h2 class="text-base font-semibold">Расписание рассылки</h2>
-              </div>
-              <div class="p-5 space-y-4">
-
-                <div>
-                  <label class="block text-xs text-gray-500 mb-1.5">Время рассылки заданий</label>
-                  <div class="flex flex-wrap gap-2">
-                    <span
-                      v-for="(time, idx) in scheduleSettings.dispatchTimes"
-                      :key="time"
-                      class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-blue-50 text-blue-800 text-sm"
-                    >
-                      {{ time }}
-                      <button class="text-blue-400 hover:text-blue-700" @click="removeDispatchTime(idx)">×</button>
-                    </span>
-                    <div class="flex gap-1 flex-1 min-w-[200px]">
-                      <B24InputMenu
-                        v-model="scheduleSettings.newTimeInput"
-                        :items="timeSlots"
-                        placeholder="HH:mm"
-                        create-item
-                        class="flex-1"
-                        @keyup.enter="addDispatchTime"
-                      />
-                      <button
-                        class="px-2.5 py-1.5 rounded-md border border-dashed border-gray-300 text-sm text-gray-500 hover:bg-gray-50"
-                        @click="addDispatchTime"
-                      >
-                        +
-                      </button>
-                    </div>
-                  </div>
-                  <!-- Hint #1 -->
-                  <p class="text-xs text-gray-400 mt-2 leading-relaxed">
-                    Задаётся один раз. Дальше задания уходят автоматически каждый день в это время — каждый день настраивать не нужно.
-                  </p>
-                </div>
-
-                <div>
-                  <label class="block text-xs text-gray-500 mb-1.5">Случайный разброс ±, мин</label>
-                  <div class="flex items-center gap-2">
-                    <input
-                      v-model.number="scheduleSettings.dispatchJitterMinutes"
-                      type="number"
-                      class="w-20 px-3 py-1.5 rounded-md border border-gray-200 text-sm"
-                    >
-                    <span class="text-sm text-gray-600">мин в обе стороны</span>
-                  </div>
-                  <p class="text-xs text-gray-400 mt-1">Чтобы все АЗС не получили push одновременно</p>
-                </div>
-
-                <div>
-                  <label class="block text-xs text-gray-500 mb-1.5">Время на сдачу, мин</label>
-                  <div class="flex items-center gap-2">
-                    <input
-                      v-model.number="scheduleSettings.timeoutMinutes"
-                      type="number"
-                      class="w-20 px-3 py-1.5 rounded-md border border-gray-200 text-sm"
-                    >
-                    <span class="text-sm text-gray-600">минут</span>
-                  </div>
-                </div>
-
-                <button
-                  class="w-full px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium"
-                  :disabled="!hasSettingsAccess"
-                  :title="!hasSettingsAccess ? 'Расписание может менять только администратор' : undefined"
-                  @click="saveSchedule"
-                >
-                  Сохранить расписание
-                </button>
-                <p v-if="!hasSettingsAccess" class="text-xs text-gray-400 text-center">
-                  Только администратор может изменять расписание
-                </p>
-
-                <B24Alert
-                  v-if="saveScheduleSuccess"
-                  color="air-primary-success"
-                  :description="saveScheduleSuccess"
-                />
-                <B24Alert
-                  v-if="saveScheduleError"
-                  color="air-primary-alert"
-                  :description="saveScheduleError"
-                />
-              </div>
-            </section>
 
             <!-- Quick request card -->
             <section id="quick-request-card" class="bg-white rounded-2xl shadow-sm border border-gray-100">
@@ -1525,105 +1366,105 @@ onMounted(async () => {
               </div>
             </section>
 
+            <!-- Plan section (RD-6) -->
+            <section class="bg-white rounded-2xl shadow-sm border border-gray-100">
+              <div class="flex items-center gap-2 border-b border-gray-100 px-5 py-4 flex-wrap">
+                <span class="text-lg">🗓</span>
+                <h2 class="text-base font-semibold">План отчётов</h2>
+                <label class="ml-auto flex items-center gap-2 text-sm text-gray-500">
+                  На дату:
+                  <input
+                    v-model="planViewDate"
+                    type="date"
+                    class="px-2 py-1 rounded-lg border border-gray-200 text-sm text-gray-700"
+                    @change="loadDispatchPlan"
+                  >
+                </label>
+              </div>
+              <div class="p-5">
+                <div class="flex items-center gap-3 mb-4">
+                  <button
+                    class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-sm disabled:opacity-50"
+                    :disabled="planGenerating"
+                    @click="handleGeneratePlan"
+                  >
+                    {{ planGenerating ? 'Формирование…' : 'Сформировать график' }}
+                  </button>
+                  <span v-if="planGenerateMessage" class="text-sm text-green-700 font-medium">{{ planGenerateMessage }}</span>
+                  <span v-if="planGenerateError" class="text-sm text-red-600">{{ planGenerateError }}</span>
+                </div>
+                <div class="flex items-center gap-3 mb-4 flex-wrap">
+                  <button
+                    class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    :disabled="reissuing || !hasSettingsAccess"
+                    :title="!hasSettingsAccess ? 'Только администратор' : undefined"
+                    @click="handleReissueToday"
+                  >
+                    {{ reissuing ? 'Перевыпуск…' : 'Перевыпустить задания на сегодня' }}
+                  </button>
+                  <span v-if="reissueMessage" class="text-sm text-green-700 font-medium">{{ reissueMessage }}</span>
+                  <span v-if="reissueError" class="text-sm text-red-600">{{ reissueError }}</span>
+                </div>
+                <p v-if="hasSettingsAccess" class="text-xs text-gray-400 -mt-2 mb-3">
+                  Снимет несданные задания на сегодня по всем АЗС, предупредит сотрудников и пересоздаст по текущему расписанию. Сданные не трогает.
+                </p>
+                <div v-if="!dispatchPlanEnabled" class="text-sm text-gray-400 py-2">
+                  Случайный план рассылки не включён
+                </div>
+                <div v-else-if="dispatchPlan.length === 0" class="text-sm text-gray-400 py-2">
+                  Нет запланированных заданий
+                </div>
+                <div v-else class="overflow-x-auto">
+                  <table class="min-w-full text-sm">
+                    <thead>
+                      <tr class="text-left border-b border-gray-200">
+                        <th class="py-2 pr-3 font-medium text-gray-600">АЗС</th>
+                        <th class="py-2 pr-3 font-medium text-gray-600">Время запроса</th>
+                        <th class="py-2 pr-3 font-medium text-gray-600">Ответственный</th>
+                        <th class="py-2 pr-3 font-medium text-gray-600">Статус</th>
+                        <th class="py-2 font-medium text-gray-600">Действие</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="(row, idx) in dispatchPlan"
+                        :key="idx"
+                        class="border-b border-gray-100 last:border-0"
+                      >
+                        <td class="py-2 pr-3">{{ row.azsTitle || row.azsId }}</td>
+                        <td class="py-2 pr-3 tabular-nums">{{ formatPlanTime(row.executeAt) }}</td>
+                        <td class="py-2 pr-3 tabular-nums text-gray-500">{{ row.adminUserId || '—' }}</td>
+                        <td class="py-2 pr-3">
+                          <B24Badge
+                            :color="row.status === 'dispatched' ? 'air-primary-success' : row.status === 'failed' ? 'air-primary-alert' : 'air-secondary'"
+                          >
+                            {{
+                              row.status === 'planned' ? 'запланирован' :
+                              row.status === 'dispatched' ? 'отправлен' :
+                              row.status === 'failed' ? 'ошибка' :
+                              row.status
+                            }}
+                          </B24Badge>
+                        </td>
+                        <td class="py-2">
+                          <button
+                            v-if="row.status === 'planned'"
+                            class="px-3 py-1 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 text-xs font-medium"
+                            @click="handleCancelSlot(row)"
+                          >
+                            Отменить
+                          </button>
+                          <span v-else class="text-gray-300">—</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+
           </aside>
         </div>
-
-        <!-- Plan section (RD-6) -->
-        <section class="mt-6 bg-white rounded-2xl shadow-sm border border-gray-100">
-          <div class="flex items-center gap-2 border-b border-gray-100 px-5 py-4 flex-wrap">
-            <span class="text-lg">🗓</span>
-            <h2 class="text-base font-semibold">План отчётов</h2>
-            <label class="ml-auto flex items-center gap-2 text-sm text-gray-500">
-              На дату:
-              <input
-                v-model="planViewDate"
-                type="date"
-                class="px-2 py-1 rounded-lg border border-gray-200 text-sm text-gray-700"
-                @change="loadDispatchPlan"
-              >
-            </label>
-          </div>
-          <div class="p-5">
-            <div class="flex items-center gap-3 mb-4">
-              <button
-                class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-sm disabled:opacity-50"
-                :disabled="planGenerating"
-                @click="handleGeneratePlan"
-              >
-                {{ planGenerating ? 'Формирование…' : 'Сформировать график' }}
-              </button>
-              <span v-if="planGenerateMessage" class="text-sm text-green-700 font-medium">{{ planGenerateMessage }}</span>
-              <span v-if="planGenerateError" class="text-sm text-red-600">{{ planGenerateError }}</span>
-            </div>
-            <div class="flex items-center gap-3 mb-4 flex-wrap">
-              <button
-                class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                :disabled="reissuing || !hasSettingsAccess"
-                :title="!hasSettingsAccess ? 'Только администратор' : undefined"
-                @click="handleReissueToday"
-              >
-                {{ reissuing ? 'Перевыпуск…' : 'Перевыпустить задания на сегодня' }}
-              </button>
-              <span v-if="reissueMessage" class="text-sm text-green-700 font-medium">{{ reissueMessage }}</span>
-              <span v-if="reissueError" class="text-sm text-red-600">{{ reissueError }}</span>
-            </div>
-            <p v-if="hasSettingsAccess" class="text-xs text-gray-400 -mt-2 mb-3">
-              Снимет несданные задания на сегодня по всем АЗС, предупредит сотрудников и пересоздаст по текущему расписанию. Сданные не трогает.
-            </p>
-            <div v-if="!dispatchPlanEnabled" class="text-sm text-gray-400 py-2">
-              Случайный план рассылки не включён
-            </div>
-            <div v-else-if="dispatchPlan.length === 0" class="text-sm text-gray-400 py-2">
-              Нет запланированных заданий
-            </div>
-            <div v-else class="overflow-auto">
-              <table class="min-w-full text-sm">
-                <thead>
-                  <tr class="text-left border-b border-gray-200">
-                    <th class="py-2 pr-4 font-medium text-gray-600">АЗС</th>
-                    <th class="py-2 pr-4 font-medium text-gray-600">Время запроса</th>
-                    <th class="py-2 pr-4 font-medium text-gray-600">Ответственный</th>
-                    <th class="py-2 pr-4 font-medium text-gray-600">Статус</th>
-                    <th class="py-2 font-medium text-gray-600">Действие</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    v-for="(row, idx) in dispatchPlan"
-                    :key="idx"
-                    class="border-b border-gray-100 last:border-0"
-                  >
-                    <td class="py-2 pr-4">{{ row.azsTitle || row.azsId }}</td>
-                    <td class="py-2 pr-4 tabular-nums">{{ formatPlanTime(row.executeAt) }}</td>
-                    <td class="py-2 pr-4 tabular-nums text-gray-500">{{ row.adminUserId || '—' }}</td>
-                    <td class="py-2 pr-4">
-                      <B24Badge
-                        :color="row.status === 'dispatched' ? 'air-primary-success' : row.status === 'failed' ? 'air-primary-alert' : 'air-secondary'"
-                      >
-                        {{
-                          row.status === 'planned' ? 'запланирован' :
-                          row.status === 'dispatched' ? 'отправлен' :
-                          row.status === 'failed' ? 'ошибка' :
-                          row.status
-                        }}
-                      </B24Badge>
-                    </td>
-                    <td class="py-2">
-                      <button
-                        v-if="row.status === 'planned'"
-                        class="px-3 py-1 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 text-xs font-medium"
-                        @click="handleCancelSlot(row)"
-                      >
-                        Отменить
-                      </button>
-                      <span v-else class="text-gray-300">—</span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
 
         <!-- Tech info panel (collapsible) -->
         <details class="mt-8 text-center">
@@ -1746,9 +1587,9 @@ onMounted(async () => {
 .feed-line::before {
   content: "";
   position: absolute;
-  left: 19px;
-  top: 40px;
-  bottom: -16px;
+  left: 15px;
+  top: 32px;
+  bottom: -12px;
   width: 2px;
   background: #e5e7eb;
 }
