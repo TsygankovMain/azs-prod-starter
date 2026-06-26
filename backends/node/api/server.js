@@ -25,6 +25,7 @@ import createDispatchPlanMirror from './src/reports/dispatchPlanMirror.js';
 import { buildWebhookContext } from './src/auth/webhookContext.js';
 import createCrmSyncJobStore from './src/reports/crmSyncJobStore.js';
 import { createCrmSyncWorker } from './src/reports/crmSyncWorker.js';
+import { ensureAppPlacements } from './src/bitrix/placementBinder.js';
 import createNotificationService from './src/notifications/notificationService.js';
 import createBotRegistryService from './src/notifications/botRegistryService.js';
 import { createAuthContextStore } from './src/auth/authContextStore.js';
@@ -137,82 +138,6 @@ const buildInstallContext = ({ authId, refreshToken, domain, memberId, userId, a
   userId,
   appSid
 });
-
-const ensureRestAppUriPlacement = async ({
-  bitrixClient,
-  authId,
-  context,
-  handlerUrl
-}) => {
-  if (!authId) {
-    throw new Error('AUTH_ID is required to bind REST_APP_URI placement');
-  }
-  if (!handlerUrl) {
-    throw new Error('APP_BASE_URL or VIRTUAL_HOST is required to bind REST_APP_URI placement');
-  }
-
-  const placements = await bitrixClient.callMethodWithAuth(
-    'placement.get',
-    {},
-    authId,
-    context
-  );
-
-  const list = Array.isArray(placements) ? placements : [];
-  const existing = list.find((row) => String(row?.placement || '').trim() === 'REST_APP_URI');
-  if (existing) {
-    return {
-      bound: true,
-      alreadyExists: true,
-      handler: String(existing.handler || handlerUrl)
-    };
-  }
-
-  await bitrixClient.callMethodWithAuth(
-    'placement.bind',
-    {
-      PLACEMENT: 'REST_APP_URI',
-      HANDLER: handlerUrl,
-      TITLE: 'Фото-отчёт АЗС',
-      DESCRIPTION: 'Открытие отчёта АЗС по ссылке из уведомления',
-      LANG_ALL: {
-        ru: {
-          TITLE: 'Фото-отчёт АЗС',
-          DESCRIPTION: 'Открытие отчёта АЗС по ссылке из уведомления',
-          GROUP_NAME: ''
-        },
-        en: {
-          TITLE: 'AZS Photo Report',
-          DESCRIPTION: 'Open AZS photo report from bot link',
-          GROUP_NAME: ''
-        }
-      }
-    },
-    authId,
-    context
-  ).catch(async (error) => {
-    if (!String(error?.message || '').includes('ERROR_PLACEMENT_MAX_COUNT')) {
-      throw error;
-    }
-    const nextPlacements = await bitrixClient.callMethodWithAuth(
-      'placement.get',
-      {},
-      authId,
-      context
-    );
-    const nextList = Array.isArray(nextPlacements) ? nextPlacements : [];
-    const existsAfterError = nextList.find((row) => String(row?.placement || '').trim() === 'REST_APP_URI');
-    if (!existsAfterError) {
-      throw error;
-    }
-  });
-
-  return {
-    bound: true,
-    alreadyExists: false,
-    handler: handlerUrl
-  };
-};
 
 const dispatchLogStore = createDispatchLogStore({ pool, dbType });
 const reportsStore = createReportsStore({ pool, dbType });
@@ -839,16 +764,18 @@ app.post('/api/install', async (req, res) => {
 
     if (authId) {
       try {
-        const placementStatus = await ensureRestAppUriPlacement({
+        const placementStatus = await ensureAppPlacements({
           bitrixClient,
           authId,
           context: installContext,
           handlerUrl: resolveAppHandlerUrl()
         });
+        const restAppUri = placementStatus.placements.find((p) => p.code === 'REST_APP_URI');
         payload.placement = {
           restAppUri: placementStatus.bound,
-          alreadyExists: placementStatus.alreadyExists,
-          handler: placementStatus.handler
+          alreadyExists: Boolean(restAppUri?.alreadyExists),
+          handler: placementStatus.handler,
+          placements: placementStatus.placements
         };
       } catch (error) {
         return res.status(502).json({
