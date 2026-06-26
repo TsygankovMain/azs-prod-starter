@@ -1102,17 +1102,6 @@ function seedDefaultReasons() {
   form.report.reasons = DEFAULT_REASONS_SEED.map(r => ({ ...r }))
 }
 
-function addDispatchTimeSlot() {
-  if (!Array.isArray(form.report.dispatchTimes)) {
-    form.report.dispatchTimes = []
-  }
-  form.report.dispatchTimes.push('09:00')
-}
-
-function removeDispatchTimeSlot(index: number) {
-  form.report.dispatchTimes.splice(index, 1)
-}
-
 // ─── Профили рассылки ─────────────────────────────────────────────────────────
 
 /** Множество АЗС, занятых в других профилях (для disabledAzsIds в AzsMultiSelect) */
@@ -1639,63 +1628,6 @@ onUnmounted(() => {
                     :disabled="!isAdminReady"
                   />
                 </B24FormField>
-                <B24FormField label="Джиттер отправки, минут" class="w-full">
-                  <template #label>
-                    <span class="inline-flex items-center gap-1">
-                      Джиттер отправки, минут
-                      <B24Tooltip text="Случайная задержка (в минутах) для каждой АЗС при авто-рассылке. Разбрасывает запросы во времени, чтобы не нагружать сервер одновременно.">
-                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
-                      </B24Tooltip>
-                    </span>
-                  </template>
-                  <B24InputNumber
-                    v-model="form.report.dispatchJitterMinutes"
-                    class="w-full"
-                    :disabled="!isAdminReady"
-                  />
-                </B24FormField>
-                <B24FormField label="Авто-отправка по времени" class="w-full sm:col-span-2">
-                  <template #label>
-                    <span class="inline-flex items-center gap-1">
-                      Авто-отправка по времени
-                      <B24Tooltip text="Список времён (HH:MM) для автоматической рассылки запросов отчёта. Бот отправит push в каждую из указанных точек. Поле необязательное — можно оставить пустым.">
-                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
-                      </B24Tooltip>
-                    </span>
-                  </template>
-                  <div class="space-y-2">
-                    <div
-                      v-for="(slot, index) in form.report.dispatchTimes"
-                      :key="`dispatch-time-${index}`"
-                      class="flex items-center gap-2"
-                    >
-                      <input
-                        v-model="form.report.dispatchTimes[index]"
-                        type="time"
-                        step="60"
-                        class="w-full rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
-                        :disabled="!isAdminReady"
-                      >
-                      <B24Button
-                        size="xs"
-                        color="air-primary-alert"
-                        label="Удалить"
-                        :disabled="!isAdminReady"
-                        @click="removeDispatchTimeSlot(index)"
-                      />
-                    </div>
-                    <B24Button
-                      size="xs"
-                      color="air-secondary"
-                      label="Добавить время"
-                      :disabled="!isAdminReady"
-                      @click="addDispatchTimeSlot"
-                    />
-                    <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
-                      Выберите время через тайм-пикер. В эти моменты бот автоматически отправит запрос отчёта.
-                    </ProseP>
-                  </div>
-                </B24FormField>
                 <B24FormField label="Рабочее окно рассылки" class="w-full sm:col-span-2">
                   <template #label>
                     <span class="inline-flex items-center gap-1">
@@ -1705,23 +1637,28 @@ onUnmounted(() => {
                       </B24Tooltip>
                     </span>
                   </template>
-                  <div class="flex items-center gap-3">
-                    <label class="text-sm text-(--ui-color-base-70)">с</label>
-                    <input
-                      v-model="form.report.workWindow.start"
-                      type="time"
-                      step="60"
-                      class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
-                      :disabled="!isAdminReady"
-                    >
-                    <label class="text-sm text-(--ui-color-base-70)">до</label>
-                    <input
-                      v-model="form.report.workWindow.end"
-                      type="time"
-                      step="60"
-                      class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
-                      :disabled="!isAdminReady"
-                    >
+                  <div class="space-y-2">
+                    <div class="flex items-center gap-3">
+                      <label class="text-sm text-(--ui-color-base-70)">с</label>
+                      <input
+                        v-model="form.report.workWindow.start"
+                        type="time"
+                        step="60"
+                        class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                        :disabled="!isAdminReady"
+                      >
+                      <label class="text-sm text-(--ui-color-base-70)">до</label>
+                      <input
+                        v-model="form.report.workWindow.end"
+                        type="time"
+                        step="60"
+                        class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                        :disabled="!isAdminReady"
+                      >
+                    </div>
+                    <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
+                      Бот спросит отчёт один раз в день в случайный момент внутри этого окна.
+                    </ProseP>
                   </div>
                 </B24FormField>
               </div>
@@ -2528,63 +2465,6 @@ onUnmounted(() => {
                   :disabled="!isAdminReady"
                 />
               </B24FormField>
-              <B24FormField label="Джиттер отправки, минут" class="w-full">
-                <template #label>
-                  <span class="inline-flex items-center gap-1">
-                    Джиттер отправки, минут
-                    <B24Tooltip text="Случайная задержка (в минутах) для каждой АЗС при авто-рассылке. Разбрасывает запросы во времени, чтобы не нагружать сервер одновременно.">
-                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
-                    </B24Tooltip>
-                  </span>
-                </template>
-                <B24InputNumber
-                  v-model="form.report.dispatchJitterMinutes"
-                  class="w-full"
-                  :disabled="!isAdminReady"
-                />
-              </B24FormField>
-              <B24FormField label="Авто-отправка по времени" class="w-full sm:col-span-2">
-                <template #label>
-                  <span class="inline-flex items-center gap-1">
-                    Авто-отправка по времени
-                    <B24Tooltip text="Список времён (HH:MM) для автоматической рассылки запросов отчёта. Бот отправит push в каждую из указанных точек. Поле необязательное — можно оставить пустым.">
-                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
-                    </B24Tooltip>
-                  </span>
-                </template>
-                <div class="space-y-2">
-                  <div
-                    v-for="(slot, index) in form.report.dispatchTimes"
-                    :key="`dispatch-time-${index}`"
-                    class="flex items-center gap-2"
-                  >
-                    <input
-                      v-model="form.report.dispatchTimes[index]"
-                      type="time"
-                      step="60"
-                      class="w-full rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
-                      :disabled="!isAdminReady"
-                    >
-                    <B24Button
-                      size="xs"
-                      color="air-primary-alert"
-                      label="Удалить"
-                      :disabled="!isAdminReady"
-                      @click="removeDispatchTimeSlot(index)"
-                    />
-                  </div>
-                  <B24Button
-                    size="xs"
-                    color="air-secondary"
-                    label="Добавить время"
-                    :disabled="!isAdminReady"
-                    @click="addDispatchTimeSlot"
-                  />
-                  <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
-                    Выберите время через тайм-пикер. В эти моменты бот автоматически отправит запрос отчёта.
-                  </ProseP>
-                </div>
-              </B24FormField>
               <B24FormField label="Рабочее окно рассылки" class="w-full sm:col-span-2">
                 <template #label>
                   <span class="inline-flex items-center gap-1">
@@ -2594,23 +2474,28 @@ onUnmounted(() => {
                     </B24Tooltip>
                   </span>
                 </template>
-                <div class="flex items-center gap-3">
-                  <label class="text-sm text-(--ui-color-base-70)">с</label>
-                  <input
-                    v-model="form.report.workWindow.start"
-                    type="time"
-                    step="60"
-                    class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
-                    :disabled="!isAdminReady"
-                  >
-                  <label class="text-sm text-(--ui-color-base-70)">до</label>
-                  <input
-                    v-model="form.report.workWindow.end"
-                    type="time"
-                    step="60"
-                    class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
-                    :disabled="!isAdminReady"
-                  >
+                <div class="space-y-2">
+                  <div class="flex items-center gap-3">
+                    <label class="text-sm text-(--ui-color-base-70)">с</label>
+                    <input
+                      v-model="form.report.workWindow.start"
+                      type="time"
+                      step="60"
+                      class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                      :disabled="!isAdminReady"
+                    >
+                    <label class="text-sm text-(--ui-color-base-70)">до</label>
+                    <input
+                      v-model="form.report.workWindow.end"
+                      type="time"
+                      step="60"
+                      class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                      :disabled="!isAdminReady"
+                    >
+                  </div>
+                  <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
+                    Бот спросит отчёт один раз в день в случайный момент внутри этого окна.
+                  </ProseP>
                 </div>
               </B24FormField>
             </div>
