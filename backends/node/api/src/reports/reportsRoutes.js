@@ -5,6 +5,7 @@ import { ensureRootFolder, isSupportedPhotoUpload, uploadPhoto } from '../disk/d
 import { updateReportCrmItem } from './reportCrmSync.js';
 import { generateDailyPlan } from '../dispatch/dispatchPlanGenerator.js';
 import { reissueToday } from './reissueTodayService.js';
+import { clearToday } from './clearTodayService.js';
 import { createAnalyticsRouter } from './analyticsRoutes.js';
 import { assertDispatchAvailable } from '../dispatch/dispatchScheduler.js';
 
@@ -1155,6 +1156,41 @@ export const createReportsRouter = ({
       return res.json({ ok: true, ...result });
     } catch (error) {
       return res.status(502).json({ error: 'reissue_failed', message: error.message });
+    }
+  });
+
+  router.post('/today/clear', async (req, res) => {
+    if (!req.accessContext?.capabilities?.settings) {
+      return res.status(403).json({ error: 'forbidden', message: 'Settings (admin) access is required' });
+    }
+    try {
+      const settings = await settingsStore.read();
+      const tz = String(settings?.timezone || 'Europe/Moscow').trim();
+      const planDate = normalizePlanDate(req.body?.date) || todayInTz(tz);
+      const context = req.bitrixContext || {};
+
+      const result = await clearToday({
+        planDate,
+        reportsStore,
+        dispatchPlanStore,
+        notify: (a) => notificationService.notify(a),
+        notifyContext: context,
+        logger: console,
+      });
+
+      // Durability: пере-пишем mirror, чтобы очистка пережила вайп БД при редеплое
+      if (dispatchPlanMirror && typeof dispatchPlanStore?.listByDate === 'function') {
+        try {
+          const rows = await dispatchPlanStore.listByDate({ planDate });
+          await dispatchPlanMirror.write({ context, planDate, rows });
+        } catch (mirrorError) {
+          console.warn('today_clear_mirror_failed', { planDate, message: mirrorError.message });
+        }
+      }
+
+      return res.json({ ok: true, ...result });
+    } catch (error) {
+      return res.status(502).json({ error: 'clear_failed', message: error.message });
     }
   });
 

@@ -123,6 +123,14 @@ const createPostgresStore = (pool) => ({
     return { cancelled: res.rowCount ?? 0 };
   },
 
+  async cancelPlannedForDate({ planDate }) {
+    const res = await pool.query(
+      `UPDATE dispatch_plan SET status='cancelled', updated_at=NOW() WHERE plan_date=$1 AND status='planned'`,
+      [String(planDate)]
+    );
+    return { cancelled: res.rowCount ?? 0 };
+  },
+
   async markFailed({ id, error }) {
     await pool.query(
       `UPDATE dispatch_plan SET status='failed', error_text=$1, updated_at=NOW() WHERE id=$2`,
@@ -272,6 +280,14 @@ const createMysqlStore = (pool) => ({
     const [res] = await pool.execute(
       `UPDATE dispatch_plan SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='planned'`,
       [Number(id)]
+    );
+    return { cancelled: res?.affectedRows ?? 0 };
+  },
+
+  async cancelPlannedForDate({ planDate }) {
+    const [res] = await pool.execute(
+      `UPDATE dispatch_plan SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE plan_date=? AND status='planned'`,
+      [String(planDate)]
     );
     return { cancelled: res?.affectedRows ?? 0 };
   },
