@@ -34,12 +34,25 @@ test('window-only mode: no dispatchTimes + valid workWindow → one random-in-wi
   assert.equal(store2.rows[0].baseTime, store.rows[0].baseTime);
 });
 
-test('backward compatible: dispatchTimes present → fixed-times behavior (window-mode NOT used)', async () => {
+test('work window is authoritative: valid workWindow wins over non-empty dispatchTimes → one row in window', async () => {
   const store = makeStore();
-  const settings = { timezone: 'Europe/Moscow', report: { dispatchTimes: ['06:00','12:00'], dispatchJitterMinutes: 0, workWindow: { start: '06:00', end: '23:00' } } };
+  // Stale dispatchTimes spread across the day, but a valid (narrow) workWindow exists.
+  const settings = { timezone: 'Europe/Moscow', report: { dispatchTimes: ['06:00','12:00','18:00'], workWindow: { start: '06:00', end: '09:00' } } };
   const candidates = [{ azsId: 'a1', adminUserId: 11 }];
   const res = await generateDailyPlan({ planDate: '2026-06-27', candidates, settings, planStore: store, regenerate: true });
-  // two fixed times → two rows (existing behavior)
+  // window-mode wins: exactly ONE row per AZS, inside the window — NOT three fixed-times rows
+  assert.equal(res.planned, 1);
+  assert.equal(store.rows.length, 1);
+  const m = hhmmToMin(store.rows[0].baseTime);
+  assert.ok(m >= hhmmToMin('06:00') && m <= hhmmToMin('09:00'), `baseTime ${store.rows[0].baseTime} must be within 06:00-09:00`);
+});
+
+test('legacy fallback: no workWindow but dispatchTimes present → fixed-times behavior', async () => {
+  const store = makeStore();
+  const settings = { timezone: 'Europe/Moscow', report: { dispatchTimes: ['06:00','12:00'], dispatchJitterMinutes: 0, workWindow: undefined } };
+  const candidates = [{ azsId: 'a1', adminUserId: 11 }];
+  const res = await generateDailyPlan({ planDate: '2026-06-27', candidates, settings, planStore: store, regenerate: true });
+  // no valid window → fall back to two fixed times → two rows
   assert.equal(res.planned, 2);
 });
 

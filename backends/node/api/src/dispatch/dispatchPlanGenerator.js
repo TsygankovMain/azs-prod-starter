@@ -482,16 +482,18 @@ export const generateDailyPlan = async ({
       : workWindow;
 
     // -----------------------------------------------------------------------
-    // Режим «случайно в рабочем окне» (глобальный, без фиксированных времён):
-    // если конкретные dispatchTimes не заданы, но есть валидное workWindow —
-    // запрашиваем отчёт ОДИН раз в день в детерминированный случайный момент
-    // внутри окна. Обратно совместимо: применяется ТОЛЬКО к глобальному пути
-    // (profile === null) с пустыми временами и валидным окном.
+    // Режим «случайно в рабочем окне» (глобальный путь, profile === null):
+    // рабочее окно — ПРИОРИТЕТНЫЙ источник расписания. Если есть валидное
+    // workWindow — запрашиваем отчёт ОДИН раз в день в детерминированный
+    // случайный момент внутри окна и ИГНОРИРУЕМ устаревший dispatchTimes
+    // (его редактор удалён, но «протухшие» значения могли остаться в settings).
+    // К фиксированным временам ниже падаем ТОЛЬКО при отсутствии валидного окна.
+    // Профили A/B сюда не заходят (gated on profile === null) — без изменений.
     // -----------------------------------------------------------------------
     const windowStart = String(workWindow?.start || '').trim();
     const windowEnd = String(workWindow?.end || '').trim();
     const hasValidWindow = windowStart !== '' && windowEnd !== '';
-    if (profile === null && effectiveBaseTimes.length === 0 && hasValidWindow) {
+    if (profile === null && hasValidWindow) {
       const baseTime = pickRandomMomentInWindow(
         planDate,
         candidate.azsId,
