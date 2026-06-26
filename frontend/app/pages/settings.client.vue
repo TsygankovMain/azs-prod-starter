@@ -1613,21 +1613,6 @@ onUnmounted(() => {
                     @update:model-value="(v) => setStageSelectValue('rejected', String(v ?? ''))"
                   />
                 </B24FormField>
-                <B24FormField label="Таймаут, минут" class="w-full">
-                  <template #label>
-                    <span class="inline-flex items-center gap-1">
-                      Таймаут, минут
-                      <B24Tooltip text="Сколько минут отводится сотруднику на сдачу отчёта после получения запроса. По истечении статус переходит в «Просрочено».">
-                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
-                      </B24Tooltip>
-                    </span>
-                  </template>
-                  <B24InputNumber
-                    v-model="form.report.timeoutMinutes"
-                    class="w-full"
-                    :disabled="!isAdminReady"
-                  />
-                </B24FormField>
               </div>
             </template>
 
@@ -1769,8 +1754,52 @@ onUnmounted(() => {
             <template #dispatch-profiles-body>
               <div class="space-y-3 p-4">
                 <ProseP class="mb-0 text-sm text-(--ui-color-base-60)">
-                  Каждый профиль задаёт расписание для группы АЗС. АЗС, не входящие ни в один профиль, получают глобальное расписание.
+                  Группы АЗС с индивидуальным расписанием. АЗС вне профилей используют глобальное расписание ниже.
                 </ProseP>
+                <!-- Глобальное расписание (АЗС вне профилей) -->
+                <div class="rounded-lg border border-(--ui-color-base-20) bg-(--ui-color-base-5) p-3 space-y-3">
+                  <div class="text-xs font-medium text-(--ui-color-base-60) uppercase tracking-wide">
+                    Глобальное расписание (АЗС вне профилей)
+                  </div>
+                  <B24FormField label="Рабочее окно рассылки" class="w-full">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <label class="text-sm text-(--ui-color-base-70)">с</label>
+                      <input
+                        v-model="form.report.workWindow.start"
+                        type="time"
+                        step="60"
+                        class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                        :disabled="!isAdminReady"
+                      >
+                      <label class="text-sm text-(--ui-color-base-70)">до</label>
+                      <input
+                        v-model="form.report.workWindow.end"
+                        type="time"
+                        step="60"
+                        class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                        :disabled="!isAdminReady"
+                      >
+                    </div>
+                  </B24FormField>
+                  <B24FormField label="Таймаут на сдачу, минут" class="w-full">
+                    <template #label>
+                      <span class="inline-flex items-center gap-1">
+                        Таймаут на сдачу, минут
+                        <B24Tooltip text="Сколько минут отводится сотруднику на сдачу отчёта после получения запроса. По истечении статус переходит в «Просрочено».">
+                          <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                        </B24Tooltip>
+                      </span>
+                    </template>
+                    <B24InputNumber
+                      v-model="form.report.timeoutMinutes"
+                      class="w-full"
+                      :disabled="!isAdminReady"
+                    />
+                  </B24FormField>
+                  <ProseP class="mb-0 text-xs text-(--ui-color-base-60)">
+                    Применяется к АЗС вне профилей: бот спросит отчёт один раз в день в случайный момент окна; на сдачу даётся таймаут.
+                  </ProseP>
+                </div>
                 <div class="space-y-4">
                   <div
                     v-for="(profile, pIdx) in form.dispatchProfiles"
@@ -2360,7 +2389,7 @@ onUnmounted(() => {
                     />
                   </div>
                   <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                    Стадии отчёта, общий timezone и таймаут.
+                    Стадии отчёта и общий timezone.
                   </ProseP>
                 </div>
               </div>
@@ -2415,21 +2444,6 @@ onUnmounted(() => {
                   placeholder="Выберите стадию"
                   class="w-full"
                   @update:model-value="(v) => setStageSelectValue('rejected', String(v ?? ''))"
-                />
-              </B24FormField>
-              <B24FormField label="Таймаут, минут" class="w-full">
-                <template #label>
-                  <span class="inline-flex items-center gap-1">
-                    Таймаут, минут
-                    <B24Tooltip text="Сколько минут отводится сотруднику на сдачу отчёта после получения запроса. По истечении статус переходит в «Просрочено».">
-                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
-                    </B24Tooltip>
-                  </span>
-                </template>
-                <B24InputNumber
-                  v-model="form.report.timeoutMinutes"
-                  class="w-full"
-                  :disabled="!isAdminReady"
                 />
               </B24FormField>
             </div>
@@ -2658,7 +2672,7 @@ onUnmounted(() => {
                     />
                   </div>
                   <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                    Группы АЗС с индивидуальным расписанием рассылки. АЗС вне профилей получают глобальное расписание (раздел «Сроки и этапы»).
+                    Группы АЗС с индивидуальным расписанием. АЗС вне профилей используют глобальное расписание ниже.
                   </ProseP>
                 </div>
                 <B24Button
@@ -2672,6 +2686,51 @@ onUnmounted(() => {
             </template>
 
             <div class="space-y-4">
+              <!-- Глобальное расписание (АЗС вне профилей) -->
+              <div class="rounded-lg border border-(--ui-color-base-20) bg-(--ui-color-base-5) p-4 space-y-3">
+                <div class="text-xs font-medium text-(--ui-color-base-60) uppercase tracking-wide">
+                  Глобальное расписание (АЗС вне профилей)
+                </div>
+                <B24FormField label="Рабочее окно рассылки" class="w-full">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <label class="text-sm text-(--ui-color-base-70)">с</label>
+                    <input
+                      v-model="form.report.workWindow.start"
+                      type="time"
+                      step="60"
+                      class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                      :disabled="!isAdminReady"
+                    >
+                    <label class="text-sm text-(--ui-color-base-70)">до</label>
+                    <input
+                      v-model="form.report.workWindow.end"
+                      type="time"
+                      step="60"
+                      class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
+                      :disabled="!isAdminReady"
+                    >
+                  </div>
+                </B24FormField>
+                <B24FormField label="Таймаут на сдачу, минут" class="w-full">
+                  <template #label>
+                    <span class="inline-flex items-center gap-1">
+                      Таймаут на сдачу, минут
+                      <B24Tooltip text="Сколько минут отводится сотруднику на сдачу отчёта после получения запроса. По истечении статус переходит в «Просрочено».">
+                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
+                      </B24Tooltip>
+                    </span>
+                  </template>
+                  <B24InputNumber
+                    v-model="form.report.timeoutMinutes"
+                    class="w-full"
+                    :disabled="!isAdminReady"
+                  />
+                </B24FormField>
+                <ProseP class="mb-0 text-xs text-(--ui-color-base-60)">
+                  Применяется к АЗС вне профилей: бот спросит отчёт один раз в день в случайный момент окна; на сдачу даётся таймаут.
+                </ProseP>
+              </div>
+
               <ProseP
                 v-if="form.dispatchProfiles.length === 0"
                 class="mb-0 text-sm text-(--ui-color-base-50)"
