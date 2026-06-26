@@ -1,5 +1,4 @@
 import { updateReportCrmItem } from '../reports/reportCrmSync.js';
-import { NOTIFY_FALLBACK_PREFIX } from '../notifications/notificationService.js';
 import { REASON_BUTTON_LABEL_TIMEOUT } from '../notifications/botCommandHandler.js';
 
 const normalizeLimit = (value) => {
@@ -121,33 +120,16 @@ export const createTimeoutWatcher = ({
                   }
                 : null;
               const azsTitle = await resolveAzsTitle(report.azsId);
-              const doborResult = await notificationService.notify({
+              // NOTIF-BOT-ONLY: доставка только ботом; кнопка «Указать причину»
+              // (ACTION:SEND) всегда уходит в чат — notify-фоллбэк удалён, текстовый
+              // путь /reason больше не нужен.
+              await notificationService.notify({
                 userId: Number(report.adminUserId),
                 message: `Отчёт по АЗС ${azsTitle} просрочен. Пожалуйста, укажите причину.`,
                 keyboard: reasonKeyboard,
                 context,
-                fallbackToNotify: true,
-                azsId: report.azsId,
-                // NOTIF-1: при notify-фоллбэке кнопка теряется — сохраняем путь причины текстом.
-                fallbackSuffix: (appCode && report.id)
-                  ? `Не успеваете? Ответьте этому боту: /reason ${report.id}`
-                  : ''
+                azsId: report.azsId
               });
-
-              // W1-2: annotate report if delivered via notify fallback.
-              // Use dispatchLogStore.appendErrorText (canonical); reportsStore
-              // duplicate has been removed (I-1 dedup).
-              if (doborResult?.channel === 'notify' && doborResult?.botError) {
-                const appendFn = dispatchLogStore?.appendErrorText
-                  ? dispatchLogStore.appendErrorText.bind(dispatchLogStore)
-                  : null;
-                if (appendFn) {
-                  await appendFn({
-                    id: report.id,
-                    errorText: `${NOTIFY_FALLBACK_PREFIX}${doborResult.botError}`
-                  }).catch(() => {});
-                }
-              }
             }
           } catch (doborError) {
             logger.warn('reason_dobor_failed', {

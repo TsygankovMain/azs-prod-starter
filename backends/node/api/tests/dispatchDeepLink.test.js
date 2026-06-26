@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDispatchService } from '../src/dispatch/dispatchService.js';
-import { NOTIFY_FALLBACK_PREFIX } from '../src/notifications/notificationService.js';
 
 const createStoreFake = () => {
   let seq = 20;
@@ -240,8 +239,9 @@ test('BITRIX_APP_CODE missing — keyboard is null (defensive, no appCode)', asy
   }
 });
 
-// W1-2: bot fell, notify fallback delivered → appendErrorText called with NOTIFY_FALLBACK_PREFIX
-test('W1-2: notify fallback → appendErrorText annotated with NOTIFY_FALLBACK_PREFIX, success status kept', async () => {
+// NOTIF-BOT-ONLY: notify-фоллбэк удалён — при недоставке бот-уведомления dispatch
+// остаётся ok, но NOTIFY_FALLBACK_PREFIX-аннотация в dispatch_log больше НЕ пишется.
+test('NOTIF-BOT-ONLY: недоставленное бот-уведомление НЕ аннотирует dispatch_log notify-фоллбэком, dispatch ok', async () => {
   const prevAppCode = process.env.BITRIX_APP_CODE;
   try {
     process.env.BITRIX_APP_CODE = '';
@@ -260,7 +260,8 @@ test('W1-2: notify fallback → appendErrorText annotated with NOTIFY_FALLBACK_P
       },
       notificationService: {
         async notifyDispatch() {
-          return { delivered: true, channel: 'notify', result: { ok: true }, botError: 'PARAM_KEYBOARD_ERROR' };
+          // Bot-only: бот упал, без админов → undelivered (no notify fallback)
+          return { delivered: false, channel: 'undelivered', botError: 'PARAM_KEYBOARD_ERROR' };
         }
       },
       nowFn: () => new Date('2026-05-31T10:00:00.000Z'),
@@ -269,17 +270,9 @@ test('W1-2: notify fallback → appendErrorText annotated with NOTIFY_FALLBACK_P
 
     const batchResult = await service.dispatchBatch({ candidates: [{ ...baseCandidate, azsId: 'azs-fallback-1' }] });
 
-    // dispatch itself succeeds (ok: true)
-    assert.equal(batchResult.items[0].ok, true, 'dispatch ok must remain true on notify fallback');
-    assert.equal(appendErrorTextCalls.length, 1, 'appendErrorText must be called once');
-    assert.ok(
-      appendErrorTextCalls[0].errorText.startsWith(NOTIFY_FALLBACK_PREFIX),
-      'error_text must start with NOTIFY_FALLBACK_PREFIX'
-    );
-    assert.ok(
-      appendErrorTextCalls[0].errorText.includes('PARAM_KEYBOARD_ERROR'),
-      'error_text must include the bot error reason'
-    );
+    // dispatch itself succeeds (ok: true) — недоставка уведомления не валит резерв слота
+    assert.equal(batchResult.items[0].ok, true, 'dispatch ok must remain true even if bot notify undelivered');
+    assert.equal(appendErrorTextCalls.length, 0, 'notify-фоллбэк-аннотации больше нет (bot-only)');
   } finally {
     if (prevAppCode === undefined) {
       delete process.env.BITRIX_APP_CODE;

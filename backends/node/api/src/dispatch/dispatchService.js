@@ -1,4 +1,3 @@
-import { NOTIFY_FALLBACK_PREFIX } from '../notifications/notificationService.js';
 import { REASON_BUTTON_LABEL_DISPATCH } from '../notifications/botCommandHandler.js';
 import { buildZonedDatetime } from './dispatchPlanGenerator.js';
 
@@ -251,7 +250,6 @@ export const createDispatchService = ({
         });
 
         let dispatchKeyboard = null;
-        let dispatchFallbackSuffix = '';
         try {
           // «Указать причину» button: ACTION:SEND makes the press send the text as a
           // message from the user → fires ONIMBOTV2MESSAGEADD → /api/bot/event parses it.
@@ -277,32 +275,22 @@ export const createDispatchService = ({
               }
             ];
             dispatchKeyboard = { BOT_ID: resolvedBotId, BUTTONS: buttons };
-            // NOTIF-1: тот же путь причины текстом — на случай notify-фоллбэка,
-            // где кнопка бота теряется (im.notify кнопок не несёт).
-            dispatchFallbackSuffix = `Не успеваете? Ответьте этому боту: /reason ${reasonReportId}`;
           }
         } catch {
           // Defensive: skip keyboard if building fails
         }
 
-        const notifyResult = await notificationService.notifyDispatch({
+        // NOTIF-BOT-ONLY: доставка только ботом; кнопка «Указать причину» всегда
+        // уходит в чат — notify-фоллбэк удалён, текстовый путь /reason не нужен.
+        await notificationService.notifyDispatch({
           userId: Number(candidate.adminUserId),
           azsId: candidate.azsId,
           azsTitle,
           deadlineAt,
           timezone: settings.timezone,
           keyboard: dispatchKeyboard,
-          context,
-          fallbackSuffix: dispatchFallbackSuffix
+          context
         });
-
-        // W1-2: if delivered via notify fallback, annotate the dispatch log error_text
-        if (notifyResult?.channel === 'notify' && notifyResult?.botError) {
-          await dispatchLogStore.appendErrorText?.({
-            id: reserve.id,
-            errorText: `${NOTIFY_FALLBACK_PREFIX}${notifyResult.botError}`
-          });
-        }
       } catch (notifyError) {
         logger.warn('dispatchCandidate notification failed', {
           slotKey,

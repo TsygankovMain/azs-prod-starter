@@ -222,8 +222,7 @@ export const createNotificationService = ({
     deadlineAt,
     timezone,
     keyboard = null,
-    context = {},
-    fallbackSuffix = ''
+    context = {}
   }) => {
     const message = buildDispatchMessage({
       azsId,
@@ -236,8 +235,7 @@ export const createNotificationService = ({
       message,
       keyboard,
       context,
-      azsId,
-      fallbackSuffix
+      azsId
     });
   };
 

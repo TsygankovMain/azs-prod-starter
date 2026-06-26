@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTimeoutWatcher } from '../src/dispatch/timeoutWatcher.js';
-import { NOTIFY_FALLBACK_PREFIX } from '../src/notifications/notificationService.js';
 
 test('timeout watcher expires overdue reports and skips done/expired', async () => {
   const changed = [];
@@ -218,9 +217,9 @@ test('timeoutWatcher: expired без причины + BITRIX_APP_CODE → COMMAN
     assert.ok(!/\d/.test(String(btn.ACTION_VALUE)), 'в тексте кнопки нет номера отчёта');
     assert.equal(btn.LINK, undefined, 'кнопка причины не должна иметь LINK');
 
-    // NOTIF-1: текстовый путь /reason сохраняется при фоллбэке на notify (кнопка теряется)
-    assert.ok(doborNotifyCalls[0].fallbackSuffix, 'добор должен получить fallbackSuffix');
-    assert.match(doborNotifyCalls[0].fallbackSuffix, /\/reason 30/, 'fallbackSuffix содержит /reason <report.id>');
+    // NOTIF-BOT-ONLY: notify-фоллбэк удалён — fallbackSuffix больше не передаётся.
+    // Кнопка «Указать причину» (ACTION:SEND) всегда уходит ботом в чат.
+    assert.equal(doborNotifyCalls[0].fallbackSuffix, undefined, 'fallbackSuffix больше не передаётся (bot-only)');
   } finally {
     if (prevAppCode === undefined) {
       delete process.env.BITRIX_APP_CODE;
@@ -450,9 +449,10 @@ test('timeoutWatcher: after CRM recovers, next tick expires report and sends not
   assert.equal(notifications.length, 1, 'tick 2: notification sent after successful CRM+DB update');
 });
 
-// W1-2 / I-1: timeout watcher dobor via notify fallback → NOTIFY_FALLBACK_PREFIX written via dispatchLogStore
-// (reportsStore.appendErrorText removed as duplicate; dispatchLogStore is the canonical location)
-test('W1-2: timeoutWatcher добор через notify fallback → appendErrorText с NOTIFY_FALLBACK_PREFIX (dispatchLogStore)', async () => {
+// NOTIF-BOT-ONLY: notify-фоллбэк удалён — при сбое бот-добора timeoutWatcher НЕ
+// пишет NOTIFY_FALLBACK_PREFIX-аннотацию (этого кода-пути больше нет). Доставка
+// только ботом: при сбое алерт уходит админам внутри notificationService.
+test('NOTIF-BOT-ONLY: timeoutWatcher при сбое бот-добора НЕ аннотирует dispatch_log notify-фоллбэком', async () => {
   const prevAppCode = process.env.BITRIX_APP_CODE;
   const appendErrorTextCalls = [];
   try {
@@ -477,8 +477,8 @@ test('W1-2: timeoutWatcher добор через notify fallback → appendError
       notificationService: {
         async notifyReportExpired() {},
         async notify() {
-          // Simulate bot failure → notify fallback
-          return { delivered: true, channel: 'notify', result: { ok: true }, botError: 'PARAM_KEYBOARD_ERROR' };
+          // Bot-only: бот упал, без админов → undelivered (no notify fallback)
+          return { delivered: false, channel: 'undelivered', botError: 'PARAM_KEYBOARD_ERROR' };
         }
       },
       settingsStore: {
@@ -499,15 +499,7 @@ test('W1-2: timeoutWatcher добор через notify fallback → appendError
 
     const summary = await watcher.runOnce();
     assert.equal(summary.expired, 1, 'отчёт должен быть просрочен');
-    assert.equal(appendErrorTextCalls.length, 1, 'appendErrorText должен быть вызван через dispatchLogStore');
-    assert.ok(
-      appendErrorTextCalls[0].errorText.startsWith(NOTIFY_FALLBACK_PREFIX),
-      'errorText должен начинаться с NOTIFY_FALLBACK_PREFIX'
-    );
-    assert.ok(
-      appendErrorTextCalls[0].errorText.includes('PARAM_KEYBOARD_ERROR'),
-      'errorText должен содержать причину ошибки бота'
-    );
+    assert.equal(appendErrorTextCalls.length, 0, 'notify-фоллбэк-аннотации больше нет (bot-only)');
   } finally {
     if (prevAppCode === undefined) {
       delete process.env.BITRIX_APP_CODE;
