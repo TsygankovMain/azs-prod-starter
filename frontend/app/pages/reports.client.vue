@@ -86,7 +86,10 @@ onMounted(loadPage)
               ←
             </button>
             <div>
-              <h1 class="text-2xl font-semibold">Отчёты АЗС</h1>
+              <div class="flex items-center gap-2">
+                <h1 class="text-2xl font-semibold">Отчёты АЗС</h1>
+                <HelpButton default-role="reviewer" class="w-7 h-7" />
+              </div>
             </div>
           </div>
         </header>

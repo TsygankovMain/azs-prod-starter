@@ -362,13 +362,16 @@ onUnmounted(() => {
           </ProseP>
         </div>
       </div>
-      <B24Badge
-        rounded
-        size="md"
-        :color="isAdminReady ? 'air-primary-success' : 'air-primary-alert'"
-        inverted
-        :label="isAdminReady ? 'роль: администратор' : 'нет доступа'"
-      />
+      <div class="flex flex-wrap items-center gap-2">
+        <B24Badge
+          rounded
+          size="md"
+          :color="isAdminReady ? 'air-primary-success' : 'air-primary-alert'"
+          inverted
+          :label="isAdminReady ? 'роль: администратор' : 'нет доступа'"
+        />
+        <HelpButton default-role="settings" />
+      </div>
     </div>
 
     <!-- Access denied -->
