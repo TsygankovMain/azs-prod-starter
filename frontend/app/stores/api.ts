@@ -363,6 +363,7 @@ export const useApiStore = defineStore(
 
     const getDispatchPlan = async (date?: string): Promise<{
       items: Array<{
+        id: number
         azsId: string
         azsTitle: string
         adminUserId: number
@@ -399,6 +400,14 @@ export const useApiStore = defineStore(
       return await $api('/api/reports/today/reissue', {
         method: 'POST',
         body: { ...opts },
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
+    const cancelDispatchSlot = async (id: number, date?: string): Promise<{ ok: boolean; cancelled: number }> => {
+      return await $api('/api/reports/plan/slot/cancel', {
+        method: 'POST',
+        body: date ? { id, date } : { id },
         headers: { Authorization: `Bearer ${tokenJWT.value}` }
       })
     }
@@ -751,6 +760,7 @@ export const useApiStore = defineStore(
       getDispatchPlan,
       generateDispatchPlan,
       reissueTodayTasks,
+      cancelDispatchSlot,
       getReportsRating,
       getReportsTrend,
       getDayPhotos,

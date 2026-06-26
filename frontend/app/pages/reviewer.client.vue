@@ -641,6 +641,7 @@ const handleFeedAction = (event: FeedEvent, action: FeedAction) => {
 
 // Dispatch plan (RD-6)
 type DispatchPlanRow = {
+  id: number
   azsId: string
   azsTitle: string
   adminUserId: number
@@ -651,6 +652,12 @@ type DispatchPlanRow = {
 }
 const dispatchPlan = ref<DispatchPlanRow[]>([])
 const dispatchPlanEnabled = ref(false)
+// Selected day for the plan list view (local date, YYYY-MM-DD). Defaults to today.
+const planViewDate = ref<string>((() => {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+})())
 
 // Resync (#4)
 const resyncingIds = ref<Set<number>>(new Set())
@@ -691,7 +698,7 @@ const formatPlanTime = (isoString: string): string => {
 
 const loadDispatchPlan = async () => {
   try {
-    const response = await apiStore.getDispatchPlan()
+    const response = await apiStore.getDispatchPlan(planViewDate.value)
     dispatchPlanEnabled.value = Boolean(response.enabled)
     dispatchPlan.value = Array.isArray(response.items) ? response.items : []
   } catch (error) {
@@ -724,6 +731,23 @@ const handleGeneratePlan = async () => {
     planGenerateError.value = extractApiError(error, 'Ошибка при формировании графика')
   } finally {
     planGenerating.value = false
+  }
+}
+
+const handleCancelSlot = async (row: DispatchPlanRow) => {
+  const ok = await confirm({
+    title: 'Отменить запланированное задание?',
+    text: `Задание для «${row.azsTitle || row.azsId}» (${formatPlanTime(row.executeAt)}) не будет отправлено. Отмена сохранится после переразвёртывания.`,
+    confirmLabel: 'Отменить задание',
+  })
+  if (!ok) return
+
+  planGenerateError.value = ''
+  try {
+    await apiStore.cancelDispatchSlot(row.id, planViewDate.value)
+    await loadDispatchPlan()
+  } catch (error) {
+    planGenerateError.value = extractApiError(error, 'Ошибка при отмене задания')
   }
 }
 
@@ -1506,9 +1530,18 @@ onMounted(async () => {
 
         <!-- Plan section (RD-6) -->
         <section class="mt-6 bg-white rounded-2xl shadow-sm border border-gray-100">
-          <div class="flex items-center gap-2 border-b border-gray-100 px-5 py-4">
+          <div class="flex items-center gap-2 border-b border-gray-100 px-5 py-4 flex-wrap">
             <span class="text-lg">🗓</span>
-            <h2 class="text-base font-semibold">План отчётов на сегодня</h2>
+            <h2 class="text-base font-semibold">План отчётов</h2>
+            <label class="ml-auto flex items-center gap-2 text-sm text-gray-500">
+              На дату:
+              <input
+                v-model="planViewDate"
+                type="date"
+                class="px-2 py-1 rounded-lg border border-gray-200 text-sm text-gray-700"
+                @change="loadDispatchPlan"
+              >
+            </label>
           </div>
           <div class="p-5">
             <div class="flex items-center gap-3 mb-4">
@@ -1541,7 +1574,7 @@ onMounted(async () => {
               Случайный план рассылки не включён
             </div>
             <div v-else-if="dispatchPlan.length === 0" class="text-sm text-gray-400 py-2">
-              Нет запланированных заданий на сегодня
+              Нет запланированных заданий
             </div>
             <div v-else class="overflow-auto">
               <table class="min-w-full text-sm">
@@ -1550,7 +1583,8 @@ onMounted(async () => {
                     <th class="py-2 pr-4 font-medium text-gray-600">АЗС</th>
                     <th class="py-2 pr-4 font-medium text-gray-600">Время запроса</th>
                     <th class="py-2 pr-4 font-medium text-gray-600">Ответственный</th>
-                    <th class="py-2 font-medium text-gray-600">Статус</th>
+                    <th class="py-2 pr-4 font-medium text-gray-600">Статус</th>
+                    <th class="py-2 font-medium text-gray-600">Действие</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1562,7 +1596,7 @@ onMounted(async () => {
                     <td class="py-2 pr-4">{{ row.azsTitle || row.azsId }}</td>
                     <td class="py-2 pr-4 tabular-nums">{{ formatPlanTime(row.executeAt) }}</td>
                     <td class="py-2 pr-4 tabular-nums text-gray-500">{{ row.adminUserId || '—' }}</td>
-                    <td class="py-2">
+                    <td class="py-2 pr-4">
                       <B24Badge
                         :color="row.status === 'dispatched' ? 'air-primary-success' : row.status === 'failed' ? 'air-primary-alert' : 'air-secondary'"
                       >
@@ -1573,6 +1607,16 @@ onMounted(async () => {
                           row.status
                         }}
                       </B24Badge>
+                    </td>
+                    <td class="py-2">
+                      <button
+                        v-if="row.status === 'planned'"
+                        class="px-3 py-1 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 text-xs font-medium"
+                        @click="handleCancelSlot(row)"
+                      >
+                        Отменить
+                      </button>
+                      <span v-else class="text-gray-300">—</span>
                     </td>
                   </tr>
                 </tbody>
