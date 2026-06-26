@@ -76,3 +76,26 @@ test('execute: сбой одного уведомления не валит оп
   assert.equal(r.notifyFailed, 1);
   assert.equal(r.regenerated, 2); // регенерация всё равно прошла
 });
+
+test('execute: бот-only — delivered:false считается в notifyFailed, а не в notified', async () => {
+  // NOTIF-BOT-ONLY: notify больше НЕ бросает на сбое доставки, а возвращает
+  // { delivered:false, channel:'undelivered'|'admin_alert' }. Это всё равно провал.
+  const { deps } = makeDeps({
+    notify: async (a) => (
+      a.userId === 11
+        ? { delivered: false, channel: 'undelivered', botError: 'BOT_TOKEN_NOT_SPECIFIED' }
+        : { delivered: true, channel: 'bot' }
+    ),
+  });
+  const r = await reissueToday({ ...deps, dryRun: false });
+  assert.equal(r.notified, 1);      // user 12 доставлен
+  assert.equal(r.notifyFailed, 1);  // user 11 не доставлен
+  assert.equal(r.regenerated, 2);
+});
+
+test('execute: явный delivered:true считается в notified', async () => {
+  const { deps } = makeDeps({ notify: async () => ({ delivered: true, channel: 'bot' }) });
+  const r = await reissueToday({ ...deps, dryRun: false });
+  assert.equal(r.notified, 2);
+  assert.equal(r.notifyFailed, 0);
+});

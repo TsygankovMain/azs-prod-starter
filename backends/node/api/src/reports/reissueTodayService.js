@@ -43,8 +43,13 @@ export const reissueToday = async ({
   let notifyFailed = 0;
   for (const userId of userIds) {
     try {
-      await notify({ userId, message: notifyMessage, context: notifyContext });
-      notified += 1;
+      const result = await notify({ userId, message: notifyMessage, context: notifyContext });
+      if (result && result.delivered === false) {
+        notifyFailed += 1;
+        logger.warn?.('reissue_notify_undelivered', { userId, channel: result?.channel, botError: result?.botError });
+      } else {
+        notified += 1;
+      }
     } catch (err) {
       notifyFailed += 1;
       logger.warn?.('reissue_notify_failed', { userId, message: err?.message });
