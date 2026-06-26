@@ -54,35 +54,57 @@ test('notifyDispatch sends message via bot channel when mode=bot', async () => {
   assert.doesNotMatch(botCalls[0].payload.fields.message, /Дедлайн:/);
 });
 
-test('notifyDispatch falls back to notify channel when bot send fails', async () => {
-  const notifyCalls = [];
-
+test('notify uses bot by default (mode not specified)', async () => {
+  const botCalls = [];
   const service = createNotificationService({
     bitrixClient: {
-      async callMethod() {
-        throw new Error('imbot failed');
-      },
-      async notifyUser(payload) {
-        notifyCalls.push(payload);
-        return { ok: true };
-      }
+      async callMethod(method, payload) { botCalls.push({ method, payload }); return { id: 1 }; },
+      async notifyUser() { throw new Error('im.notify must never be called'); }
     },
-    mode: 'bot',
-    botId: 77,
-    appCode: 'local.69f0c4a7dc8632.03848830',
-    publicBaseUrl: 'https://simply-staid-mollusk.cloudpub.ru'
+    botId: 42
   });
+  const result = await service.notify({ userId: 5, message: 'привет' });
+  assert.equal(result.channel, 'bot');
+  assert.equal(botCalls[0].method, 'imbot.v2.Chat.Message.send');
+});
 
-  const result = await service.notifyDispatch({
-    userId: 11,
-    azsId: 'azs-9',
-    deadlineAt: '2026-04-29T09:45:00.000Z',
-    timezone: 'Europe/Moscow'
+test('on bot failure notify alerts admins via bot, never the bell', async () => {
+  const calls = [];
+  let notifyUserCalled = false;
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod(method, payload) {
+        calls.push({ method, payload });
+        if (payload.dialogId === '5') throw new Error('BOT_TOKEN_NOT_SPECIFIED');
+        return { id: 2 };
+      },
+      async notifyUser() { notifyUserCalled = true; return { ok: true }; }
+    },
+    botId: 42,
+    adminUserIds: [900, 901]
   });
+  const result = await service.notify({ userId: 5, message: 'пора сдать отчёт', azsId: 'azs-1' });
+  assert.equal(notifyUserCalled, false, 'колокольчик не должен вызываться');
+  assert.equal(result.channel, 'admin_alert');
+  assert.equal(result.delivered, false);
+  const adminMsgs = calls.filter((c) => c.payload.dialogId === '900' || c.payload.dialogId === '901');
+  assert.equal(adminMsgs.length, 2);
+  assert.match(adminMsgs[0].payload.fields.message, /Не удалось доставить/);
+  assert.match(adminMsgs[0].payload.fields.message, /azs-1/);
+});
 
-  assert.equal(result.channel, 'notify');
-  assert.equal(notifyCalls.length, 1);
-  assert.equal(notifyCalls[0].userId, 11);
+test('on total bot failure (no admins reachable) returns undelivered without throwing', async () => {
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod() { throw new Error('BOT_TOKEN_NOT_SPECIFIED'); },
+      async notifyUser() { throw new Error('im.notify must never be called'); }
+    },
+    botId: 42,
+    adminUserIds: [900]
+  });
+  const result = await service.notify({ userId: 5, message: 'x' });
+  assert.equal(result.delivered, false);
+  assert.equal(result.channel, 'undelivered');
 });
 
 test('notifyDispatch resolves bot id dynamically when env bot id is empty', async () => {
@@ -200,22 +222,27 @@ test('notify in bot-mode with flat keyboard forwards keyboard to API call', asyn
   assert.deepEqual(botCalls[0].payload.fields.keyboard, keyboard, 'keyboard must be passed through in bot mode');
 });
 
-test('notify in notify-mode ignores keyboard — no keyboard field in notifyUser call', async () => {
-  const notifyCalls = [];
+// NOTIF-BOT-ONLY: даже при mode='notify' доставка идёт ТОЛЬКО ботом (колокольчик вырезан).
+test('notify-only: даже mode=notify доставляет ботом с клавиатурой, im.notify не зовётся', async () => {
+  const botCalls = [];
 
   const service = createNotificationService({
     bitrixClient: {
-      async notifyUser(payload) {
-        notifyCalls.push(payload);
-        return { ok: true };
+      async callMethod(method, payload) {
+        botCalls.push({ method, payload });
+        return { id: 7001 };
+      },
+      async notifyUser() {
+        throw new Error('im.notify must never be called');
       }
     },
-    mode: 'notify'
+    mode: 'notify',
+    botId: 55
   });
 
-  // W1-1: flat {BOT_ID, BUTTONS} format (should be dropped in notify mode)
+  // W1-1: flat {BOT_ID, BUTTONS} format — forwarded to bot
   const keyboard = {
-    BOT_ID: 0,
+    BOT_ID: 55,
     BUTTONS: [{ TEXT: 'Открыть приложение', LINK: '/marketplace/view/local.app/?params%5BreportId%5D=99' }]
   };
 
@@ -227,10 +254,10 @@ test('notify in notify-mode ignores keyboard — no keyboard field in notifyUser
     keyboard
   });
 
-  assert.equal(result.channel, 'notify', 'must use notify channel');
-  assert.equal(notifyCalls.length, 1, 'notifyUser must be called once');
-  // keyboard is not part of the notifyUser contract — no keyboard field expected
-  assert.equal(notifyCalls[0].keyboard, undefined, 'keyboard must NOT be forwarded in notify mode');
+  assert.equal(result.channel, 'bot', 'must use bot channel only');
+  assert.equal(botCalls.length, 1, 'bot send must be called once');
+  assert.equal(botCalls[0].method, 'imbot.v2.Chat.Message.send');
+  assert.deepEqual(botCalls[0].payload.fields.keyboard, keyboard, 'keyboard must be forwarded to bot');
 });
 
 // W1-2: NOTIFY_FALLBACK_PREFIX exported and correct
@@ -239,8 +266,8 @@ test('W1-2: NOTIFY_FALLBACK_PREFIX is exported with correct format', () => {
   assert.ok(NOTIFY_FALLBACK_PREFIX.startsWith('delivered via notify fallback'), 'must start with expected prefix');
 });
 
-// W1-2: bot fails → fallback → return {delivered, channel:'notify', botError}; warn logged
-test('W1-2: bot failure → notify fallback returns {delivered:true, channel:notify, botError}; bot_channel_degraded warn logged', async () => {
+// NOTIF-BOT-ONLY: bot fails, no admins → return {delivered:false, channel:'undelivered', botError}; warn logged
+test('bot failure без админов → {delivered:false, channel:undelivered, botError}; bot_channel_degraded warn logged', async () => {
   const warnCalls = [];
 
   const service = createNotificationService({
@@ -249,7 +276,7 @@ test('W1-2: bot failure → notify fallback returns {delivered:true, channel:not
         throw new Error('PARAM_KEYBOARD_ERROR');
       },
       async notifyUser() {
-        return { ok: true };
+        throw new Error('im.notify must never be called');
       }
     },
     mode: 'bot',
@@ -266,8 +293,8 @@ test('W1-2: bot failure → notify fallback returns {delivered:true, channel:not
     message: 'Тест деградации'
   });
 
-  assert.equal(result.delivered, true, 'delivered must be true');
-  assert.equal(result.channel, 'notify', 'channel must be notify');
+  assert.equal(result.delivered, false, 'delivered must be false (bot-only, no fallback)');
+  assert.equal(result.channel, 'undelivered', 'channel must be undelivered');
   assert.ok(typeof result.botError === 'string' && result.botError.length > 0, 'botError must be non-empty string');
   assert.ok(result.botError.includes('PARAM_KEYBOARD_ERROR'), 'botError must contain original error reason');
 
@@ -320,19 +347,17 @@ test('self-heal: BOT_NOT_FOUND → ensureBot called 1x → retry succeeds, no no
   assert.equal(sendAttempts[1].botId, 99, 'retry must use healed botId');
 });
 
-// Self-heal: PARAM_KEYBOARD_ERROR → ensureBot NOT called
-test('self-heal: PARAM_KEYBOARD_ERROR → ensureBot NOT called → goes directly to notify fallback', async () => {
+// Self-heal: PARAM_KEYBOARD_ERROR → ensureBot NOT called, no bell, undelivered
+test('self-heal: PARAM_KEYBOARD_ERROR → ensureBot NOT called → undelivered, im.notify не зовётся', async () => {
   const ensureBotCalls = [];
-  const notifyCalls = [];
 
   const service = createNotificationService({
     bitrixClient: {
       async callMethod() {
         throw new Error('PARAM_KEYBOARD_ERROR');
       },
-      async notifyUser(payload) {
-        notifyCalls.push(payload);
-        return { ok: true };
+      async notifyUser() {
+        throw new Error('im.notify must never be called');
       }
     },
     mode: 'bot',
@@ -350,8 +375,8 @@ test('self-heal: PARAM_KEYBOARD_ERROR → ensureBot NOT called → goes directly
   });
 
   assert.equal(ensureBotCalls.length, 0, 'ensureBot must NOT be called for PARAM_* errors');
-  assert.equal(result.channel, 'notify', 'must fallback to notify');
-  assert.equal(notifyCalls.length, 1, 'notify must be called once');
+  assert.equal(result.channel, 'undelivered', 'must be undelivered (no notify fallback, no admins)');
+  assert.equal(result.delivered, false);
 });
 
 test('bitrix client auth id can be updated at runtime', async () => {
@@ -419,7 +444,7 @@ test('NOTIF-1: успешная доставка ботом логирует not
   assert.equal(delivery.meta.azsId, 'azs-485');
 });
 
-test('NOTIF-1: под webhook bot падает → notification_delivery channel=notify transport=webhook + bot_delivery_auth_problem', async () => {
+test('NOTIF-1: под webhook bot падает → notification_delivery channel=undelivered transport=webhook + bot_delivery_auth_problem', async () => {
   const infoCalls = [];
   const errorCalls = [];
   const service = createNotificationService({
@@ -427,7 +452,7 @@ test('NOTIF-1: под webhook bot падает → notification_delivery channel
       async callMethod() {
         throw new Error('BOT_TOKEN_NOT_SPECIFIED (botToken required for webhook auth)');
       },
-      async notifyUser() { return { ok: true }; }
+      async notifyUser() { throw new Error('im.notify must never be called'); }
     },
     mode: 'bot',
     botId: 77,
@@ -445,10 +470,10 @@ test('NOTIF-1: под webhook bot падает → notification_delivery channel
     context: { isWebhook: true, endpoint: 'https://p.bitrix24.ru/rest/1/abc' }
   });
 
-  assert.equal(result.channel, 'notify');
+  assert.equal(result.channel, 'undelivered');
 
-  const delivery = infoCalls.find((c) => c.event === 'notification_delivery' && c.meta.channel === 'notify');
-  assert.ok(delivery, 'должен логироваться notification_delivery для notify-канала');
+  const delivery = infoCalls.find((c) => c.event === 'notification_delivery' && c.meta.channel === 'undelivered');
+  assert.ok(delivery, 'должен логироваться notification_delivery для undelivered-канала');
   assert.equal(delivery.meta.transport, 'webhook');
   assert.equal(delivery.meta.azsId, 'azs-486');
   assert.ok(
@@ -467,26 +492,34 @@ test('NOTIF-1: под webhook bot падает → notification_delivery channel
   );
 });
 
-test('NOTIF-1: при фоллбэке на notify к сообщению добавляется fallbackSuffix (путь «указать причину»)', async () => {
-  const notifyCalls = [];
+// NOTIF-BOT-ONLY: при сбое бота алерт уходит админам тем же ботом, im.notify не зовётся
+test('NOTIF-BOT-ONLY: при сбое бота алерт админам идёт ботом, без колокольчика', async () => {
+  const calls = [];
   const service = createNotificationService({
     bitrixClient: {
-      async callMethod() { throw new Error('imbot недоступен'); },
-      async notifyUser(payload) { notifyCalls.push(payload); return { ok: true }; }
+      async callMethod(method, payload) {
+        calls.push({ method, payload });
+        if (payload.dialogId === '11') { throw new Error('imbot недоступен'); }
+        return { id: 1 };
+      },
+      async notifyUser() { throw new Error('im.notify must never be called'); }
     },
     mode: 'bot',
     botId: 77,
+    adminUserIds: [900],
     logger: { info() {}, warn() {}, error() {} }
   });
 
   const result = await service.notify({
     userId: 11,
     message: 'Отчёт просрочен.',
-    fallbackSuffix: 'Не успеваете? Ответьте этому боту: /reason 42'
+    azsId: 'azs-42'
   });
 
-  assert.equal(result.channel, 'notify');
-  assert.equal(notifyCalls.length, 1);
-  assert.match(notifyCalls[0].message, /Отчёт просрочен\./);
-  assert.match(notifyCalls[0].message, /\/reason 42/, 'текстовый путь «указать причину» должен сохраниться при фоллбэке');
+  assert.equal(result.channel, 'admin_alert');
+  assert.equal(result.delivered, false);
+  const adminMsg = calls.find((c) => c.payload.dialogId === '900');
+  assert.ok(adminMsg, 'админ должен получить алерт ботом');
+  assert.match(adminMsg.payload.fields.message, /Не удалось доставить/);
+  assert.match(adminMsg.payload.fields.message, /azs-42/);
 });

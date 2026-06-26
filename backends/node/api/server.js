@@ -397,6 +397,8 @@ const settingsStore = createCompositeSettingsStore({
 const botRegistryService = createBotRegistryService({ bitrixClient });
 const notificationService = createNotificationService({
   bitrixClient,
+  adminUserIds: String(process.env.SYSTEM_ADMIN_USER_IDS || process.env.ADMIN_USER_IDS || '')
+    .split(/[\s,]+/).map(Number).filter(Boolean),
   resolveBotId: async (context = {}) => {
     const authId = String(context?.authId || context?.auth_id || '').trim();
     if (!authId) {

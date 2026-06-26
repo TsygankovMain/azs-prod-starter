@@ -69,21 +69,11 @@ const sendViaBot = async ({ bitrixClient, botId, userId, message, keyboard = nul
   }, context);
 };
 
-const sendViaNotify = async ({ bitrixClient, userId, message, context = {} }) => {
-  if (typeof bitrixClient?.notifyUser !== 'function') {
-    throw new Error('bitrixClient.notifyUser is required for notify mode');
-  }
-  return bitrixClient.notifyUser({
-    userId: Number(userId),
-    message,
-    context
-  });
-};
-
 export const createNotificationService = ({
   bitrixClient,
-  mode = process.env.BITRIX_BOT_MODE || 'notify',
+  mode = process.env.BITRIX_BOT_MODE || 'bot',
   botId = Number(process.env.BITRIX_BOT_ID || 0),
+  adminUserIds = [],
   appCode = process.env.BITRIX_APP_CODE || '',
   publicBaseUrl = process.env.APP_PUBLIC_BASE_URL || process.env.VIRTUAL_HOST || '',
   resolveBotId = null,
@@ -114,17 +104,44 @@ export const createNotificationService = ({
     return currentBotId;
   };
 
+  const alertAdmins = async ({ botError, userId, azsId, context }) => {
+    const ids = Array.isArray(adminUserIds) ? adminUserIds.map(Number).filter(Boolean) : [];
+    if (!ids.length) {
+      return false;
+    }
+    const azsPart = azsId ? ` по АЗС ${azsId}` : '';
+    const text = `⚠️ Не удалось доставить сообщение сотруднику ${Number(userId)}${azsPart}.\nПричина: ${botError}`;
+    let delivered = false;
+    for (const adminId of ids) {
+      try {
+        const bid = await ensureBotId(context);
+        if (!bid) {
+          break;
+        }
+        await sendViaBot({ bitrixClient, botId: bid, userId: adminId, message: text, context });
+        delivered = true;
+      } catch (alertError) {
+        if (typeof logger?.error === 'function') {
+          logger.error('notification_undelivered', {
+            adminId: Number(adminId),
+            forUserId: Number(userId),
+            azsId: azsId ?? null,
+            original: String(botError),
+            alertError: alertError?.message || String(alertError)
+          });
+        }
+      }
+    }
+    return delivered;
+  };
+
   const notify = async ({
     userId,
     message,
     keyboard = null,
     context = {},
-    fallbackToNotify = true,
     // NOTIF-1: azsId — только для диагностического лога (кому ушла доставка).
-    azsId = null,
-    // NOTIF-1: при доставке через notify-фоллбэк кнопки бота теряются, поэтому к
-    // тексту добавляется этот хвост — сохраняет путь «указать причину» (/reason N).
-    fallbackSuffix = ''
+    azsId = null
   }) => {
     if (!Number(userId)) {
       throw new Error('notify requires userId');
@@ -158,85 +175,44 @@ export const createNotificationService = ({
         });
       }
     };
-    const withSuffix = (text) => (
-      String(fallbackSuffix || '').trim() ? `${text}\n\n${fallbackSuffix}` : text
-    );
+    let botError = null;
+    try {
+      const runtimeBotId = await ensureBotId(context);
+      if (!runtimeBotId) {
+        throw new Error('BITRIX_BOT_ID is required (bot-only delivery)');
+      }
+      const trySend = async (bid) => sendViaBot({ bitrixClient, botId: bid, userId, message, keyboard, context });
 
-    if (resolvedMode === 'bot') {
-      let botError = null;
+      let result;
       try {
-        const runtimeBotId = await ensureBotId(context);
-        if (!runtimeBotId) {
-          throw new Error('BITRIX_BOT_ID is required when BITRIX_BOT_MODE=bot');
-        }
-
-        const trySend = async (bid) => sendViaBot({
-          bitrixClient,
-          botId: bid,
-          userId,
-          message,
-          keyboard,
-          context
-        });
-
-        let result;
-        try {
-          result = await trySend(runtimeBotId);
-        } catch (firstError) {
-          const reason = firstError?.message || String(firstError);
-          // Self-heal: only for BOT_ID / BOT_NOT_FOUND errors, never for PARAM_* errors
-          if (BOT_NOT_FOUND_PATTERN.test(reason) && typeof ensureBot === 'function') {
-            logger.warn('bot_self_heal_triggered', { reason, userId });
-            const healed = await ensureBot(context);
-            const healedBotId = Number(healed?.botId || 0);
-            if (healedBotId) {
-              currentBotId = healedBotId;
-              result = await trySend(healedBotId);
-            } else {
-              throw firstError;
-            }
+        result = await trySend(runtimeBotId);
+      } catch (firstError) {
+        const reason = firstError?.message || String(firstError);
+        if (BOT_NOT_FOUND_PATTERN.test(reason) && typeof ensureBot === 'function') {
+          logger.warn('bot_self_heal_triggered', { reason, userId });
+          const healed = await ensureBot(context);
+          const healedBotId = Number(healed?.botId || 0);
+          if (healedBotId) {
+            currentBotId = healedBotId;
+            result = await trySend(healedBotId);
           } else {
             throw firstError;
           }
-        }
-
-        logDelivery('bot');
-        return {
-          channel: 'bot',
-          result,
-          delivered: true
-        };
-      } catch (error) {
-        botError = error?.message || String(error);
-        logger.warn('bot_channel_degraded', {
-          reason: botError,
-          dialogId: String(Number(userId))
-        });
-        // NOTIF-1: auth-сбой бота виден явно, а не тонет в общем degraded-warn.
-        logAuthProblem(botError);
-        if (!fallbackToNotify) {
-          logDelivery('failed', { botError });
-          throw error;
+        } else {
+          throw firstError;
         }
       }
 
-      // Fallback path — bot failed
-      const notifyResult = await sendViaNotify({ bitrixClient, userId, message: withSuffix(message), context });
-      logDelivery('notify', { botError });
-      return {
-        delivered: true,
-        channel: 'notify',
-        result: notifyResult,
-        botError
-      };
+      logDelivery('bot');
+      return { channel: 'bot', result, delivered: true };
+    } catch (error) {
+      botError = error?.message || String(error);
+      logger.warn('bot_channel_degraded', { reason: botError, dialogId: String(Number(userId)) });
+      logAuthProblem(botError);
+      const alerted = await alertAdmins({ botError, userId, azsId, context });
+      logDelivery(alerted ? 'admin_alert' : 'undelivered', { botError });
+      return { channel: alerted ? 'admin_alert' : 'undelivered', delivered: false, botError };
     }
-
-    const result = await sendViaNotify({ bitrixClient, userId, message: withSuffix(message), context });
-    logDelivery('notify');
-    return {
-      channel: 'notify',
-      result
-    };
   };
 
   const notifyDispatch = async ({
