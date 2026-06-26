@@ -434,6 +434,9 @@ const loadScheduleSettings = async () => {
     const settings = (response.settings ?? {}) as Record<string, unknown>
     const report = (settings.report ?? {}) as Record<string, unknown>
     reportEntityTypeId.value = Number(report.entityTypeId || 0)
+    const workWindow = (report.workWindow ?? {}) as Record<string, unknown>
+    if (workWindow.start) windowStart.value = String(workWindow.start)
+    if (workWindow.end) windowEnd.value = String(workWindow.end)
   } catch (error) {
     console.warn('Failed to load schedule settings', error)
   }
@@ -644,6 +647,30 @@ const loadDispatchPlan = async () => {
 const planGenerating = ref(false)
 const planGenerateMessage = ref('')
 const planGenerateError = ref('')
+
+// Work window (single remaining schedule config): bot asks for a report once/day
+// at a random moment inside it. Edited here on the plan card via partial PUT.
+const windowStart = ref('06:00')
+const windowEnd = ref('09:00')
+const savingWindow = ref(false)
+const windowSaveMessage = ref('')
+const windowSaveError = ref('')
+
+const handleSaveWindow = async () => {
+  if (!hasSettingsAccess.value) return
+  savingWindow.value = true
+  windowSaveError.value = ''
+  windowSaveMessage.value = ''
+  try {
+    await apiStore.saveSettings({ report: { workWindow: { start: windowStart.value, end: windowEnd.value } } } as Record<string, unknown>)
+    windowSaveMessage.value = 'Окно сохранено'
+    setTimeout(() => { windowSaveMessage.value = '' }, 6000)
+  } catch (error) {
+    windowSaveError.value = extractApiError(error, 'Не удалось сохранить окно')
+  } finally {
+    savingWindow.value = false
+  }
+}
 
 const handleGeneratePlan = async () => {
   const ok = await confirm({
@@ -1410,6 +1437,25 @@ onMounted(async () => {
                 </label>
               </div>
               <div class="p-5">
+                <div v-if="hasSettingsAccess" class="mb-4 pb-4 border-b border-gray-100">
+                  <label class="block text-xs text-gray-500 mb-1.5">Рабочее окно рассылки</label>
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-sm text-gray-500">с</span>
+                    <input v-model="windowStart" type="time" class="px-2 py-1 rounded-lg border border-gray-200 text-sm">
+                    <span class="text-sm text-gray-500">до</span>
+                    <input v-model="windowEnd" type="time" class="px-2 py-1 rounded-lg border border-gray-200 text-sm">
+                    <button
+                      class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-sm disabled:opacity-50"
+                      :disabled="savingWindow"
+                      @click="handleSaveWindow"
+                    >
+                      {{ savingWindow ? 'Сохранение…' : 'Сохранить окно' }}
+                    </button>
+                    <span v-if="windowSaveMessage" class="text-sm text-green-700 font-medium">{{ windowSaveMessage }}</span>
+                    <span v-if="windowSaveError" class="text-sm text-red-600">{{ windowSaveError }}</span>
+                  </div>
+                  <p class="text-xs text-gray-400 mt-1.5">Бот спросит отчёт один раз в день в случайный момент внутри этого окна.</p>
+                </div>
                 <div class="flex items-center gap-3 mb-4">
                   <button
                     class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-sm disabled:opacity-50"

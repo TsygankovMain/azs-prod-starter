@@ -1628,39 +1628,6 @@ onUnmounted(() => {
                     :disabled="!isAdminReady"
                   />
                 </B24FormField>
-                <B24FormField label="Рабочее окно рассылки" class="w-full sm:col-span-2">
-                  <template #label>
-                    <span class="inline-flex items-center gap-1">
-                      Рабочее окно рассылки
-                      <B24Tooltip text="Случайное время запроса отчёта будет ограничено этим окном — раньше начала и позже конца запросы не уйдут.">
-                        <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
-                      </B24Tooltip>
-                    </span>
-                  </template>
-                  <div class="space-y-2">
-                    <div class="flex items-center gap-3">
-                      <label class="text-sm text-(--ui-color-base-70)">с</label>
-                      <input
-                        v-model="form.report.workWindow.start"
-                        type="time"
-                        step="60"
-                        class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
-                        :disabled="!isAdminReady"
-                      >
-                      <label class="text-sm text-(--ui-color-base-70)">до</label>
-                      <input
-                        v-model="form.report.workWindow.end"
-                        type="time"
-                        step="60"
-                        class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
-                        :disabled="!isAdminReady"
-                      >
-                    </div>
-                    <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
-                      Бот спросит отчёт один раз в день в случайный момент внутри этого окна.
-                    </ProseP>
-                  </div>
-                </B24FormField>
               </div>
             </template>
 
@@ -2393,7 +2360,7 @@ onUnmounted(() => {
                     />
                   </div>
                   <ProseP class="mb-0 text-sm text-(--ui-color-base-70)">
-                    Стадии отчёта, общий timezone, таймаут и джиттер.
+                    Стадии отчёта, общий timezone и таймаут.
                   </ProseP>
                 </div>
               </div>
@@ -2464,39 +2431,6 @@ onUnmounted(() => {
                   class="w-full"
                   :disabled="!isAdminReady"
                 />
-              </B24FormField>
-              <B24FormField label="Рабочее окно рассылки" class="w-full sm:col-span-2">
-                <template #label>
-                  <span class="inline-flex items-center gap-1">
-                    Рабочее окно рассылки
-                    <B24Tooltip text="Случайное время запроса отчёта будет ограничено этим окном — раньше начала и позже конца запросы не уйдут.">
-                      <span class="cursor-help rounded-full bg-(--ui-color-base-20) px-1 text-xs text-(--ui-color-base-50)">?</span>
-                    </B24Tooltip>
-                  </span>
-                </template>
-                <div class="space-y-2">
-                  <div class="flex items-center gap-3">
-                    <label class="text-sm text-(--ui-color-base-70)">с</label>
-                    <input
-                      v-model="form.report.workWindow.start"
-                      type="time"
-                      step="60"
-                      class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
-                      :disabled="!isAdminReady"
-                    >
-                    <label class="text-sm text-(--ui-color-base-70)">до</label>
-                    <input
-                      v-model="form.report.workWindow.end"
-                      type="time"
-                      step="60"
-                      class="rounded border border-(--ui-color-base-30) bg-(--ui-color-base-0) px-3 py-2 text-sm"
-                      :disabled="!isAdminReady"
-                    >
-                  </div>
-                  <ProseP class="mb-0 text-xs text-(--ui-color-base-70)">
-                    Бот спросит отчёт один раз в день в случайный момент внутри этого окна.
-                  </ProseP>
-                </div>
               </B24FormField>
             </div>
           </B24Card>
