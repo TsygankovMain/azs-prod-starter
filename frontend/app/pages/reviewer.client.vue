@@ -727,6 +727,45 @@ const handleGeneratePlan = async () => {
   }
 }
 
+const reissuing = ref(false)
+const reissueMessage = ref('')
+const reissueError = ref('')
+
+const handleReissueToday = async () => {
+  reissueMessage.value = ''
+  reissueError.value = ''
+
+  let preview
+  try {
+    preview = await apiStore.reissueTodayTasks({ dryRun: true })
+  } catch (error) {
+    reissueError.value = extractApiError(error, 'Не удалось получить предпросмотр')
+    return
+  }
+
+  const ok = await confirm({
+    title: 'Перевыпустить задания на сегодня?',
+    text: `Будет снято ${preview.affected} несданных заданий по ${preview.azsAffected} АЗС. `
+      + `Сданные (${preview.submittedKept}) останутся, уже сдавшие АЗС (${preview.skippedSubmittedAzs}) пропустим. `
+      + `Пересоздание возьмёт времена из настроек — убедитесь, что новое расписание сохранено.`,
+    confirmLabel: 'Перевыпустить',
+  })
+  if (!ok) return
+
+  reissuing.value = true
+  try {
+    const result = await apiStore.reissueTodayTasks({})
+    reissueMessage.value = `Снято ${result.cancelled}, пересоздано ${result.regenerated}, уведомлено ${result.notified}`
+      + (result.skippedSubmittedAzs ? `, пропущено сдавших ${result.skippedSubmittedAzs}` : '')
+    setTimeout(() => { reissueMessage.value = '' }, 6000)
+    await loadDispatchPlan()
+  } catch (error) {
+    reissueError.value = extractApiError(error, 'Ошибка при перевыпуске заданий')
+  } finally {
+    reissuing.value = false
+  }
+}
+
 const runTimeout = async () => {
   const ok = await confirm({
     title: 'Запустить проверку просрочек сейчас?',
@@ -1483,6 +1522,21 @@ onMounted(async () => {
               <span v-if="planGenerateMessage" class="text-sm text-green-700 font-medium">{{ planGenerateMessage }}</span>
               <span v-if="planGenerateError" class="text-sm text-red-600">{{ planGenerateError }}</span>
             </div>
+            <div class="flex items-center gap-3 mb-4 flex-wrap">
+              <button
+                class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                :disabled="reissuing || !hasSettingsAccess"
+                :title="!hasSettingsAccess ? 'Только администратор' : undefined"
+                @click="handleReissueToday"
+              >
+                {{ reissuing ? 'Перевыпуск…' : 'Перевыпустить задания на сегодня' }}
+              </button>
+              <span v-if="reissueMessage" class="text-sm text-green-700 font-medium">{{ reissueMessage }}</span>
+              <span v-if="reissueError" class="text-sm text-red-600">{{ reissueError }}</span>
+            </div>
+            <p v-if="hasSettingsAccess" class="text-xs text-gray-400 -mt-2 mb-3">
+              Снимет несданные задания на сегодня по всем АЗС, предупредит сотрудников и пересоздаст по текущему расписанию. Сданные не трогает.
+            </p>
             <div v-if="!dispatchPlanEnabled" class="text-sm text-gray-400 py-2">
               Случайный план рассылки не включён
             </div>

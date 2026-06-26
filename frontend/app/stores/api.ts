@@ -382,6 +382,27 @@ export const useApiStore = defineStore(
       return await $api('/api/reports/plan/generate', { method: 'POST', body: date ? { date } : {}, headers: { Authorization: `Bearer ${tokenJWT.value}` } })
     }
 
+    const reissueTodayTasks = async (opts: { date?: string; dryRun?: boolean } = {}): Promise<{
+      ok: boolean
+      planDate: string
+      dryRun: boolean
+      affected: number
+      azsAffected: number
+      submittedKept: number
+      skippedSubmittedAzs: number
+      willRegenerate?: number
+      cancelled?: number
+      notified?: number
+      notifyFailed?: number
+      regenerated?: number
+    }> => {
+      return await $api('/api/reports/today/reissue', {
+        method: 'POST',
+        body: { ...opts },
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
     const postInstall = async (data: JsonObject): Promise<JsonObject> => {
       return await $api('/api/install', {
         method: 'POST',
@@ -729,6 +750,7 @@ export const useApiStore = defineStore(
       resyncReport,
       getDispatchPlan,
       generateDispatchPlan,
+      reissueTodayTasks,
       getReportsRating,
       getReportsTrend,
       getDayPhotos,
