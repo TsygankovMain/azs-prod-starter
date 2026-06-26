@@ -404,6 +404,23 @@ export const useApiStore = defineStore(
       })
     }
 
+    const clearTodayTasks = async (date?: string): Promise<{
+      ok: boolean
+      planDate: string
+      affected: number
+      azsAffected: number
+      cancelledReports: number
+      cancelledSlots: number
+      notified: number
+      notifyFailed: number
+    }> => {
+      return await $api('/api/reports/today/clear', {
+        method: 'POST',
+        body: date ? { date } : {},
+        headers: { Authorization: `Bearer ${tokenJWT.value}` }
+      })
+    }
+
     const cancelDispatchSlot = async (id: number, date?: string): Promise<{ ok: boolean; cancelled: number }> => {
       return await $api('/api/reports/plan/slot/cancel', {
         method: 'POST',
@@ -760,6 +777,7 @@ export const useApiStore = defineStore(
       getDispatchPlan,
       generateDispatchPlan,
       reissueTodayTasks,
+      clearTodayTasks,
       cancelDispatchSlot,
       getReportsRating,
       getReportsTrend,

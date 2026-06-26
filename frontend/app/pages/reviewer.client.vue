@@ -723,6 +723,34 @@ const handleReissueToday = async () => {
   }
 }
 
+const clearing = ref(false)
+const clearMessage = ref('')
+const clearError = ref('')
+
+const handleClearToday = async () => {
+  clearMessage.value = ''
+  clearError.value = ''
+
+  const ok = await confirm({
+    title: 'Очистить задания на сегодня?',
+    text: 'Снимет все несданные задания на выбранную дату, остановит ещё не отправленные слоты и уведомит сотрудников об отмене. Пересоздания НЕ будет.',
+    confirmLabel: 'Очистить',
+  })
+  if (!ok) return
+
+  clearing.value = true
+  try {
+    const result = await apiStore.clearTodayTasks(planViewDate.value)
+    clearMessage.value = `Очищено: снято ${result.cancelledReports}, остановлено слотов ${result.cancelledSlots}, уведомлено ${result.notified}`
+    setTimeout(() => { clearMessage.value = '' }, 6000)
+    await loadDispatchPlan()
+  } catch (error) {
+    clearError.value = extractApiError(error, 'Ошибка при очистке заданий')
+  } finally {
+    clearing.value = false
+  }
+}
+
 const runTimeout = async () => {
   const ok = await confirm({
     title: 'Запустить проверку просрочек сейчас?',
@@ -1404,6 +1432,16 @@ onMounted(async () => {
                   </button>
                   <span v-if="reissueMessage" class="text-sm text-green-700 font-medium">{{ reissueMessage }}</span>
                   <span v-if="reissueError" class="text-sm text-red-600">{{ reissueError }}</span>
+                  <button
+                    class="px-4 py-2 rounded-lg border border-red-600 text-red-600 hover:bg-red-50 text-sm font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    :disabled="clearing || !hasSettingsAccess"
+                    :title="!hasSettingsAccess ? 'Только администратор' : undefined"
+                    @click="handleClearToday"
+                  >
+                    {{ clearing ? 'Очистка…' : 'Очистить задания на сегодня' }}
+                  </button>
+                  <span v-if="clearMessage" class="text-sm text-green-700 font-medium">{{ clearMessage }}</span>
+                  <span v-if="clearError" class="text-sm text-red-600">{{ clearError }}</span>
                 </div>
                 <p v-if="hasSettingsAccess" class="text-xs text-gray-400 -mt-2 mb-3">
                   Снимет несданные задания на сегодня по всем АЗС, предупредит сотрудников и пересоздаст по текущему расписанию. Сданные не трогает.
