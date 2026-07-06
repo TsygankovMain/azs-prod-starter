@@ -102,6 +102,80 @@ test('dispatch scheduler can build auto candidates from AZS crm rows with upperc
   assert.equal(calls[0].candidates[0].adminUserId, 11);
 });
 
+// C1b: AZS rows without a usable admin recipient are silently dropped by the
+// `.filter(item => item.azsId && item.adminUserId > 0)` step. This must now be
+// logged so ops can see how many/which AZS fell out.
+test('C1b: AZS candidates dropped for missing admin are logged via dispatch_skipped_no_admin', async () => {
+  const calls = [];
+  const warnLogs = [];
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: false, // legacy slot-dispatch path under test
+    dispatchService: {
+      async dispatchBatch(payload) {
+        calls.push(payload);
+        return {
+          summary: { total: payload.candidates.length, created: payload.candidates.length, duplicates: 0, failed: 0 },
+          items: []
+        };
+      }
+    },
+    getCandidates: async () => [],
+    settingsStore: {
+      async read() {
+        return {
+          azs: {
+            entityTypeId: 1114,
+            fields: {
+              admin: 'UF_ADMIN',
+              enabled: 'UF_ENABLED'
+            }
+          },
+          report: {
+            dispatchTimes: ['18:45']
+          },
+          timezone: 'Europe/Moscow'
+        };
+      }
+    },
+    bitrixClient: {
+      async listCrmItems() {
+        return [
+          { ID: 2, UF_ADMIN: 11, UF_ENABLED: 'Y' },
+          { ID: 3, UF_ADMIN: 0, UF_ENABLED: 'Y' }, // no admin → dropped
+          { ID: 4, UF_ENABLED: 'Y' } // admin field missing entirely → dropped
+        ];
+      }
+    },
+    getRuntimeContext: async () => ({
+      authId: 'test-access',
+      refreshToken: 'test-refresh',
+      domain: 'nfr-mainsoft.bitrix24.ru',
+      memberId: 'm1',
+      userId: 1
+    }),
+    logger: {
+      info() {},
+      warn(...args) { warnLogs.push(args); },
+      error() {}
+    },
+    nowFn: () => new Date('2026-04-30T15:45:00.000Z')
+  });
+
+  const result = await scheduler.runOnce();
+  // Only azs-2 has a usable admin — the other two are dropped.
+  assert.equal(result.summary.created, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].candidates.length, 1);
+  assert.equal(calls[0].candidates[0].azsId, '2');
+
+  const skipWarn = warnLogs.find((args) => args[0] === 'dispatch_skipped_no_admin');
+  assert.ok(skipWarn, 'dispatch_skipped_no_admin must be logged when AZS rows are dropped for missing admin');
+  const meta = skipWarn[1];
+  assert.equal(meta.count, 2, 'count must reflect both dropped AZS rows');
+  assert.deepEqual([...meta.azsIds].sort(), ['3', '4'], 'azsIds must list the dropped AZS ids');
+});
+
 test('flag OFF → planStore is never touched even if injected', async () => {
   const planStoreGuard = {
     async ensureSchema() { throw new Error('planStore.ensureSchema must not be called when flag OFF'); },
@@ -295,6 +369,131 @@ test('flag ON → runOnce executes due plans with correct candidate field mappin
   // Summary returned
   assert.equal(result.due, 2);
   assert.equal(result.executed, 2);
+  assert.equal(result.failed, 0);
+});
+
+// ---------------------------------------------------------------------------
+// B6: reminder idempotency — a reminder must NOT be (re-)sent when the report
+// for that AZS/date is already done/submitted ("сдал, но пришёл повторный запрос").
+// ---------------------------------------------------------------------------
+
+test('B6: reminder entry is skipped (no notify) when report already done', async () => {
+  const now = new Date('2026-06-03T09:05:00.000Z');
+
+  const reminderRow = {
+    id: 5,
+    entry_type: 'reminder',
+    window_index: 1,
+    azs_id: 'azs-1',
+    admin_user_id: 11,
+    plan_date: '2026-06-03',
+    base_time: '0900'
+  };
+
+  const notifyCalls = [];
+  const markDispatchedCalls = [];
+
+  const fakePlanStore = {
+    async listDue() { return [reminderRow]; },
+    async markDispatched(args) { markDispatchedCalls.push(args); },
+    async markFailed() { throw new Error('markFailed should not be called'); }
+  };
+
+  const fakeDispatchLogStore = {
+    async reserve() { return { reserved: true, id: 900 }; }
+  };
+
+  const fakeReportsStore = {
+    async getActiveReportForAzsOnDate({ azsId, planDate }) {
+      assert.equal(azsId, 'azs-1');
+      assert.equal(planDate, '2026-06-03');
+      return { status: 'done' };
+    }
+  };
+
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: true,
+    dispatchPlanStore: fakePlanStore,
+    dispatchLogStore: fakeDispatchLogStore,
+    reportsStore: fakeReportsStore,
+    dispatchService: {
+      async dispatchBatch() { throw new Error('dispatchBatch must not be called for a reminder entry'); }
+    },
+    notificationService: {
+      async notify(args) { notifyCalls.push(args); }
+    },
+    getCandidates: async () => [],
+    settingsStore: { async read() { return {}; } },
+    getRuntimeContext: async () => ({ authId: 'tok', domain: 'd', memberId: 'm', userId: 1 }),
+    nowFn: () => now
+  });
+
+  const result = await scheduler.runOnce();
+
+  assert.equal(notifyCalls.length, 0, 'reminder must NOT be sent when report is already done');
+  assert.equal(markDispatchedCalls.length, 1, 'reminder row must still be marked dispatched (handled)');
+  assert.equal(markDispatchedCalls[0].id, 5);
+  assert.equal(result.executed, 1, 'skipped-because-submitted reminder counts as executed/handled');
+  assert.equal(result.failed, 0);
+});
+
+test('B6 control: reminder entry IS sent when report is not yet submitted', async () => {
+  const now = new Date('2026-06-03T09:05:00.000Z');
+
+  const reminderRow = {
+    id: 6,
+    entry_type: 'reminder',
+    window_index: 1,
+    azs_id: 'azs-2',
+    admin_user_id: 22,
+    plan_date: '2026-06-03',
+    base_time: '0900'
+  };
+
+  const notifyCalls = [];
+  const markDispatchedCalls = [];
+
+  const fakePlanStore = {
+    async listDue() { return [reminderRow]; },
+    async markDispatched(args) { markDispatchedCalls.push(args); },
+    async markFailed() { throw new Error('markFailed should not be called'); }
+  };
+
+  const fakeDispatchLogStore = {
+    async reserve() { return { reserved: true, id: 901 }; }
+  };
+
+  const fakeReportsStore = {
+    async getActiveReportForAzsOnDate() { return { status: 'new' }; }
+  };
+
+  const scheduler = createDispatchScheduler({
+    enabled: false,
+    planModeEnabled: true,
+    dispatchPlanStore: fakePlanStore,
+    dispatchLogStore: fakeDispatchLogStore,
+    reportsStore: fakeReportsStore,
+    dispatchService: {
+      async dispatchBatch() { throw new Error('dispatchBatch must not be called for a reminder entry'); }
+    },
+    notificationService: {
+      async notify(args) { notifyCalls.push(args); }
+    },
+    getCandidates: async () => [],
+    settingsStore: { async read() { return {}; } },
+    getRuntimeContext: async () => ({ authId: 'tok', domain: 'd', memberId: 'm', userId: 1 }),
+    nowFn: () => now
+  });
+
+  const result = await scheduler.runOnce();
+
+  assert.equal(notifyCalls.length, 1, 'reminder must be sent when report is not yet submitted');
+  assert.equal(notifyCalls[0].userId, 22);
+  assert.equal(notifyCalls[0].azsId, 'azs-2');
+  assert.equal(markDispatchedCalls.length, 1);
+  assert.equal(markDispatchedCalls[0].id, 6);
+  assert.equal(result.executed, 1);
   assert.equal(result.failed, 0);
 });
 

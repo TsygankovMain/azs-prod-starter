@@ -225,8 +225,13 @@ const createPostgresStore = (pool) => ({
   },
 
   async setReportStatus({ reportId, status }) {
+    // B5/C3 defense-in-depth: only move out of a non-terminal status. Prevents a
+    // late/racing writer (e.g. timeoutWatcher) from clobbering a report the
+    // operator already completed (done) or that was already expired.
     await pool.query(
-      'UPDATE dispatch_log SET status = $1, updated_at = NOW() WHERE id = $2',
+      `UPDATE dispatch_log
+       SET status = $1, updated_at = NOW()
+       WHERE id = $2 AND status NOT IN ('done', 'expired')`,
       [status, reportId]
     );
   },
@@ -636,8 +641,13 @@ const createMysqlStore = (pool) => ({
   },
 
   async setReportStatus({ reportId, status }) {
+    // B5/C3 defense-in-depth: only move out of a non-terminal status. Prevents a
+    // late/racing writer (e.g. timeoutWatcher) from clobbering a report the
+    // operator already completed (done) or that was already expired.
     await pool.execute(
-      'UPDATE dispatch_log SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      `UPDATE dispatch_log
+       SET status = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND status NOT IN ('done', 'expired')`,
       [status, reportId]
     );
   },

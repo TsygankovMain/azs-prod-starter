@@ -267,7 +267,7 @@ export const createDispatchScheduler = ({
       select
     });
 
-    return rows
+    const candidates = rows
       .filter((item) => {
         if (!enabledField) {
           return true;
@@ -277,8 +277,19 @@ export const createDispatchScheduler = ({
       .map((item) => ({
         azsId: String(parsePositiveInt(item?.id ?? item?.ID) || item?.id || item?.ID || '').trim(),
         adminUserId: parseUserId(getFieldValue(item, adminField))
-      }))
-      .filter((item) => item.azsId && item.adminUserId > 0);
+      }));
+
+    // C1b: AZS rows with no usable admin recipient are dropped here — log them
+    // so ops can see how many/which AZS silently fell out of dispatch.
+    const skipped = candidates.filter((item) => !(item.azsId && item.adminUserId > 0));
+    if (skipped.length > 0) {
+      logger.warn('dispatch_skipped_no_admin', {
+        azsIds: skipped.map((item) => item.azsId),
+        count: skipped.length
+      });
+    }
+
+    return candidates.filter((item) => item.azsId && item.adminUserId > 0);
   };
 
   // ---------------------------------------------------------------------------

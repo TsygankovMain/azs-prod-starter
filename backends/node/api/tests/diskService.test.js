@@ -296,3 +296,43 @@ test('uploadPhoto retries once after DISK_OBJ_22000 race and succeeds', async ()
   assert.equal(diskApi.uploads.length, 2);
   assert.equal(diskApi.deletedFileIds.length, 1);
 });
+
+// C2b: uploadPhoto must not hang forever when Bitrix Disk stalls. uploadFile
+// below never resolves/rejects on its own (simulates a stuck disk.folder.uploadfile
+// call) — uploadPhoto is expected to reject with a bounded, retryable error
+// once the configured uploadTimeoutMs elapses, instead of hanging indefinitely.
+test('uploadPhoto rejects with a retryable timeout error when Disk upload hangs', async () => {
+  const diskApi = {
+    async findChildFolder() { return null; },
+    async createFolder(parentId, name) { return { id: 999 }; },
+    async findChildFile() { return null; },
+    async markFileDeleted() { return { id: 0 }; },
+    uploadFile() {
+      // Never resolves — simulates a hung disk.folder.uploadfile call.
+      return new Promise(() => {});
+    }
+  };
+
+  const start = Date.now();
+  await assert.rejects(
+    () => uploadPhoto(diskApi, {
+      rootFolderId: 10,
+      azsId: 4,
+      slotDate: '2026-05-28',
+      slotHHmm: '0930',
+      photoCode: '42',
+      requiredTitle: '42. Колонки',
+      originalName: 'upload.jpg',
+      mimeType: 'image/jpeg',
+      content: Buffer.from('mock-image'),
+      uploadTimeoutMs: 50
+    }),
+    (error) => {
+      assert.match(error.message, /gateway timeout/i);
+      assert.equal(error.statusCode, 504);
+      return true;
+    }
+  );
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 1000, `uploadPhoto should reject promptly on timeout, took ${elapsed}ms`);
+});
