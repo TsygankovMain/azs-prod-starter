@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { B24Frame } from '@bitrix24/b24jssdk'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import type { AppRole, AppCapabilities } from '~/types/access'
 
 type ReasonItem = {
   code: string
@@ -84,12 +85,6 @@ type SettingsTree = {
 }
 
 type JsonObject = Record<string, unknown>
-type AppRole = 'admin' | 'reviewer' | 'azs_admin'
-type AppCapabilities = {
-  settings: boolean
-  reviewer: boolean
-  reports: boolean
-}
 type ModuleKey = 'azs' | 'photoType' | 'report'
 type FieldMapKey =
   | 'admin'

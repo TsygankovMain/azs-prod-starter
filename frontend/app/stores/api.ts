@@ -1,5 +1,6 @@
 import type { B24Frame } from '@bitrix24/b24jssdk'
 import { withoutTrailingSlash } from 'ufo'
+import type { AppRole, AppCapabilities } from '~/types/access'
 
 type JsonObject = Record<string, unknown>
 
@@ -60,14 +61,6 @@ type ReasonItem = {
   count?: number
   share?: number
 }
-
-type AppCapabilities = {
-  settings: boolean
-  reviewer: boolean
-  reports: boolean
-}
-
-type AppRole = 'admin' | 'reviewer' | 'azs_admin'
 
 type AzsOption = {
   id: string
