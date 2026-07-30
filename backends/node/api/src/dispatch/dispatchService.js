@@ -292,11 +292,24 @@ export const createDispatchService = ({
           context
         });
       } catch (notifyError) {
+        const reason = notifyError?.message || String(notifyError);
         logger.warn('dispatchCandidate notification failed', {
           slotKey,
           azsId: candidate.azsId,
           reportId: reserve.id,
-          error: notifyError?.message || String(notifyError)
+          error: reason
+        });
+        // C1a: notify failure must not be a silent ok — record it visibly on the
+        // report (appendErrorText) and in logs (logger.error), even though the
+        // report itself is still considered created.
+        await dispatchLogStore.appendErrorText?.({
+          id: reserve.id,
+          errorText: `notify_failed: ${reason}`
+        });
+        logger.error('notification_failed', {
+          azsId: candidate.azsId,
+          userId: candidate.adminUserId,
+          reason
         });
       }
 

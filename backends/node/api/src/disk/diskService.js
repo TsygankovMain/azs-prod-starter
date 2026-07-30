@@ -143,11 +143,40 @@ const removeExistingFileByName = async (diskApi, { folderId, fileName }, context
   return true;
 };
 
-const uploadFileReplacingDuplicate = async (diskApi, { folderId, fileName, content }, context = {}) => {
+// C2b: hard ceiling on the actual disk.folder.uploadfile round-trip. The REST
+// client already bounds a single HTTP call (BITRIX_HTTP_TIMEOUT_MS, 30s
+// default) with retries on transient errors, but that retry loop has no
+// overall cap — a slow/stuck Disk endpoint can still stack up well past it.
+// This wraps the whole upload attempt (including the duplicate-name retry) so
+// callers always get a bounded, retryable failure instead of hanging.
+const DEFAULT_UPLOAD_TIMEOUT_MS = (() => {
+  const parsed = Number(process.env.DISK_UPLOAD_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
+})();
+
+const withUploadTimeout = (promise, timeoutMs) => {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return promise;
+  }
+
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`Disk upload gateway timeout after ${timeoutMs}ms`);
+      error.statusCode = 504;
+      error.code = 'disk_upload_timeout';
+      reject(error);
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+};
+
+const uploadFileReplacingDuplicate = async (diskApi, { folderId, fileName, content }, context = {}, timeoutMs = DEFAULT_UPLOAD_TIMEOUT_MS) => {
   await removeExistingFileByName(diskApi, { folderId, fileName }, context);
 
   try {
-    return await diskApi.uploadFile(folderId, { fileName, content }, context);
+    return await withUploadTimeout(diskApi.uploadFile(folderId, { fileName, content }, context), timeoutMs);
   } catch (error) {
     if (!isDuplicateFileNameError(error)) {
       throw error;
@@ -156,7 +185,7 @@ const uploadFileReplacingDuplicate = async (diskApi, { folderId, fileName, conte
     // Guard against race condition: a competing upload may create the same
     // file between our pre-check and upload call.
     await removeExistingFileByName(diskApi, { folderId, fileName }, context);
-    return diskApi.uploadFile(folderId, { fileName, content }, context);
+    return withUploadTimeout(diskApi.uploadFile(folderId, { fileName, content }, context), timeoutMs);
   }
 };
 
@@ -296,7 +325,8 @@ export const uploadPhoto = async (diskApi, {
   mimeType,
   capturedAt = new Date(),
   content,
-  folderNameTemplate = DEFAULT_FOLDER_TEMPLATE
+  folderNameTemplate = DEFAULT_FOLDER_TEMPLATE,
+  uploadTimeoutMs = DEFAULT_UPLOAD_TIMEOUT_MS
 }, context = {}) => {
   if (!diskApi || typeof diskApi.uploadFile !== 'function') {
     throw new Error('diskApi must provide uploadFile');
@@ -316,7 +346,7 @@ export const uploadPhoto = async (diskApi, {
     folderId: targetFolderId,
     fileName,
     content
-  }, context);
+  }, context, uploadTimeoutMs);
 
   return {
     folderId: targetFolderId,

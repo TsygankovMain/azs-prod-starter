@@ -1683,15 +1683,21 @@ export const createReportsRouter = ({
     } catch (error) {
       const statusCode = Number(error?.statusCode || 500);
       const retryable = isRetryableUploadError(error);
-      if (statusCode >= 500 || retryable) {
-        console.error('report_photo_upload_failed', {
-          reportId: Number(req.params?.id || 0) || null,
-          photoCode: normalizePhotoCode(req.body?.photoCode || ''),
-          slotKey: String(req.body?.slotKey || ''),
-          statusCode,
-          message: String(error?.message || error || '')
-        });
-      }
+      // C1c: log every upload failure, not just 5xx/retryable ones — 400/403/409
+      // rejections (bad photoCode, forbidden user, EXIF-too-old, duplicate races,
+      // etc.) were previously silent, making them undiagnosable from logs alone.
+      // 5xx/retryable failures stay at error level (ops-actionable); expected
+      // 4xx client errors log at warn so they don't page anyone.
+      const logMethod = (statusCode >= 500 || retryable) ? 'error' : 'warn';
+      console[logMethod]('report_photo_upload_failed', {
+        reportId: Number(req.params?.id || 0) || null,
+        photoCode: normalizePhotoCode(req.body?.photoCode || ''),
+        slotKey: String(req.body?.slotKey || ''),
+        statusCode,
+        retryable,
+        code: error?.code || undefined,
+        message: String(error?.message || error || '')
+      });
       return res.status(statusCode).json({
         error: error?.code || 'report_photo_upload_failed',
         errorCode: error?.errorCode || (retryable ? 'bitrix_retryable' : undefined),

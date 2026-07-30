@@ -472,9 +472,12 @@ test('dispatchCandidate: клавиатура содержит COMMAND-кноп�
   }
 });
 
-test('dispatch persists report item id even when notification fails', async () => {
+test('dispatch persists report item id even when notification fails, and records the failure visibly (C1a)', async () => {
   const store = createStoreFake();
+  const appendErrorTextCalls = [];
+  store.appendErrorText = async (args) => { appendErrorTextCalls.push(args); };
   const warnLogs = [];
+  const errorLogs = [];
 
   const service = createDispatchService({
     dispatchLogStore: store,
@@ -511,7 +514,9 @@ test('dispatch persists report item id even when notification fails', async () =
       warn(payload, meta) {
         warnLogs.push({ payload, meta });
       },
-      error() {}
+      error(payload, meta) {
+        errorLogs.push({ payload, meta });
+      }
     }
   });
 
@@ -527,5 +532,17 @@ test('dispatch persists report item id even when notification fails', async () =
   assert.equal(result.items[0].reportItemId, 9090);
   const state = [...store.states.values()][0];
   assert.equal(state.reportItemId, 9090);
-  assert.equal(warnLogs.length, 1);
+
+  // C1a: notify failure must no longer be a silent ok — it must be recorded
+  // visibly via appendErrorText AND logger.error (not just a warn).
+  assert.equal(appendErrorTextCalls.length, 1, 'appendErrorText must be called on notify failure');
+  assert.equal(appendErrorTextCalls[0].id, [...store.states.keys()][0]);
+  assert.match(appendErrorTextCalls[0].errorText, /notify_failed/i, 'errorText must mention notify_failed');
+  assert.match(appendErrorTextCalls[0].errorText, /notify failed/i, 'errorText must include the underlying reason');
+
+  assert.equal(errorLogs.length, 1, 'logger.error must be called on notify failure');
+  assert.equal(errorLogs[0].payload, 'notification_failed');
+  assert.equal(errorLogs[0].meta.azsId, 'azs-77');
+  assert.equal(errorLogs[0].meta.userId, 11);
+  assert.match(errorLogs[0].meta.reason, /notify failed/i);
 });

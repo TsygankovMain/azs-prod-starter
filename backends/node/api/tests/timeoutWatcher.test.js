@@ -449,6 +449,62 @@ test('timeoutWatcher: after CRM recovers, next tick expires report and sends not
   assert.equal(notifications.length, 1, 'tick 2: notification sent after successful CRM+DB update');
 });
 
+// B5/C3: race — report was picked up as overdue, but operator already submitted it
+// (status=done) by the time the watcher goes to mark it expired. Re-read via getById
+// must prevent the false "expired" mark and the false notification.
+test('B5/C3: race — getById shows done at mark time → watcher skips, no expired, no notify', async () => {
+  const setStatusCalls = [];
+  const notifications = [];
+  const crmUpdates = [];
+
+  const watcher = createTimeoutWatcher({
+    reportsStore: {
+      async listOverdueReports() {
+        return [
+          { id: 80, azsId: 'azs-8', adminUserId: 44, slotKey: '2026-04-28:0900', status: 'in_progress' }
+        ];
+      },
+      async getById(id) {
+        // Operator submitted between listOverdueReports() and the mark-expired step.
+        assert.equal(id, 80);
+        return { id: 80, azsId: 'azs-8', adminUserId: 44, slotKey: '2026-04-28:0900', status: 'done' };
+      },
+      async setReportStatus({ reportId, status }) {
+        setStatusCalls.push({ reportId, status });
+      }
+    },
+    bitrixClient: {
+      async updateReportItem(payload) {
+        crmUpdates.push(payload);
+      }
+    },
+    notificationService: {
+      async notifyReportExpired(payload) {
+        notifications.push(payload);
+      }
+    },
+    settingsStore: {
+      async read() {
+        return {
+          report: {
+            entityTypeId: 163,
+            stages: { expired: 'DT163_1:EXPIRED' }
+          }
+        };
+      }
+    },
+    reviewerUserId: 11
+  });
+
+  const summary = await watcher.runOnce();
+
+  assert.equal(summary.expired, 0, 'race: report must NOT be counted as expired');
+  assert.equal(summary.failed, 0, 'race: this is not a failure, just a skip');
+  assert.equal(setStatusCalls.length, 0, 'race: setReportStatus must NOT be called');
+  assert.equal(crmUpdates.length, 0, 'race: CRM stage must NOT be touched');
+  assert.equal(notifications.length, 0, 'race: reviewer must NOT be notified of a false expiry');
+});
+
 // NOTIF-BOT-ONLY: notify-фоллбэк удалён — при сбое бот-добора timeoutWatcher НЕ
 // пишет NOTIFY_FALLBACK_PREFIX-аннотацию (этого кода-пути больше нет). Доставка
 // только ботом: при сбое алерт уходит админам внутри notificationService.

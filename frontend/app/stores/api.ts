@@ -311,6 +311,15 @@ export const useApiStore = defineStore(
       })
     }
 
+    // C2a: photo upload has no client-side ceiling by default — if Bitrix Disk
+    // (or the network path to it) stalls, the browser fetch waits forever and
+    // the queue slot stays stuck in "uploading" (B8: reported as a 40-minute
+    // hang). AbortController bounds the request so a stall always surfaces as
+    // a normal, retryable error — the existing catch block in runUploadTask
+    // already flips the slot to 'error' and frees uploadWorker.activeCount via
+    // its `finally`, so no other UI change is needed for the slot to recover.
+    const UPLOAD_TIMEOUT_MS = 55_000
+
     const uploadReportPhoto = async ({
       reportId,
       photoCode,
@@ -324,13 +333,23 @@ export const useApiStore = defineStore(
       form.append('photo', file)
       form.append('photoCode', photoCode)
 
-      return await $api(`/api/reports/${reportId}/photo`, {
-        method: 'POST',
-        body: form,
-        headers: {
-          Authorization: `Bearer ${tokenJWT.value}`
-        }
-      })
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => {
+        controller.abort(new Error('Загрузка фото прервана: сервер не ответил вовремя. Попробуйте ещё раз.'))
+      }, UPLOAD_TIMEOUT_MS)
+
+      try {
+        return await $api(`/api/reports/${reportId}/photo`, {
+          method: 'POST',
+          body: form,
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${tokenJWT.value}`
+          }
+        })
+      } finally {
+        clearTimeout(timeoutId)
+      }
     }
 
     const submitReport = async (reportId: number): Promise<{ item: JsonObject }> => {

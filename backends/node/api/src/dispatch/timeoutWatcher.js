@@ -81,6 +81,18 @@ export const createTimeoutWatcher = ({
         continue;
       }
 
+      // B5/C3: re-read current status right before marking expired — the operator
+      // may have submitted the report between listOverdueReports() (selection) and
+      // this point (marking). Without this check a just-completed report still
+      // gets flagged expired + notified as a false overdue.
+      if (typeof reportsStore.getById === 'function') {
+        const fresh = await reportsStore.getById(report.id);
+        if (fresh && (fresh.status === 'done' || fresh.status === 'expired')) {
+          skipped += 1;
+          continue;
+        }
+      }
+
       try {
         await updateReportCrmItem({
           bitrixClient,
