@@ -9,6 +9,9 @@
  * reasonStore и databaseBrandStore.
  */
 export const createDiagStore = ({ pool, dbType = 'postgresql' }) => {
+  if (!pool) {
+    throw new Error('diagStore: pool is required');
+  }
   if (String(dbType).toLowerCase() !== 'postgresql') {
     throw new Error(`diagStore: only PostgreSQL is supported, got "${dbType}"`);
   }
