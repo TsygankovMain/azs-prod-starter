@@ -79,6 +79,36 @@ test('MAX_BUNDLE_BYTES зафиксирован', () => {
   assert.equal(MAX_BUNDLE_BYTES, 262144)
 })
 
+// --- Fix round (ревью, S3): app.route и errors[].source — тоже URL-образные
+// поля (route.fullPath / event.filename) и раньше проходили в бандл без
+// redactUrl. ---
+
+test('редактирует секрет в app.route', () => {
+  const input = baseInput()
+  input.app = { build: 'dev', route: '/admin/1?token=LEAKME', isDemo: false }
+  const bundle = buildBundle(input)
+  assert.ok(!bundle.app.route.includes('LEAKME'), bundle.app.route)
+  assert.ok(bundle.app.route.includes('/admin/1'), bundle.app.route)
+})
+
+test('редактирует секрет в errors[].source', () => {
+  const input = baseInput()
+  input.errors = [{
+    kind: 'onerror', message: 'boom', stack: undefined,
+    source: 'https://app.test/chunk.js?session=LEAKME', line: 1, col: 2,
+    at: '2026-07-30T09:00:00.000Z'
+  }]
+  const bundle = buildBundle(input)
+  assert.ok(!bundle.errors[0]!.source.includes('LEAKME'), bundle.errors[0]!.source)
+})
+
+test('app.route без секретов не искажается', () => {
+  const input = baseInput()
+  input.app = { build: 'dev', route: '/admin/1', isDemo: false }
+  const bundle = buildBundle(input)
+  assert.equal(bundle.app.route, '/admin/1')
+})
+
 test('скрывает секреты в текстах ошибок и загрузок', () => {
   const input = baseInput()
   input.errors = [{

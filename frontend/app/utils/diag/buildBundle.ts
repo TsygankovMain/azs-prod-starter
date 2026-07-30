@@ -21,6 +21,11 @@ export function buildBundle(input: BuildBundleInput): DiagBundle {
   const bundle: DiagBundle = {
     ...input,
     v: 1,
+    // Fix round (ревью, S3): app.route (route.fullPath) — тоже URL-образное
+    // поле и может нести query-секреты (?token=...), но раньше проходило в
+    // бандл как есть, без redactUrl. Симметрию с сервером (sanitizeBundle.js)
+    // проверяет diagRedactionParity.test.js.
+    app: { ...input.app, route: redactUrl(input.app.route) },
     net: (input.net ?? []).map((entry) => ({
       ...entry,
       url: redactUrl(entry.url),
@@ -29,7 +34,10 @@ export function buildBundle(input: BuildBundleInput): DiagBundle {
     errors: (input.errors ?? []).map((entry) => ({
       ...entry,
       message: redactText(entry.message),
-      stack: entry.stack === undefined ? undefined : redactText(entry.stack)
+      stack: entry.stack === undefined ? undefined : redactText(entry.stack),
+      // source (event.filename) — URL скрипта, где случилась ошибка; та же
+      // причина, что и для app.route выше.
+      source: redactUrl(entry.source)
     })),
     uploads: (input.uploads ?? []).map((entry) => ({ ...entry, message: redactText(entry.message) })),
     queue: {

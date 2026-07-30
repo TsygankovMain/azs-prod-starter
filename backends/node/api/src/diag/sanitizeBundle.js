@@ -138,7 +138,11 @@ export const sanitizeBundle = (raw) => {
       ? raw.errors.map((entry) => ({
         ...entry,
         message: redactText(entry?.message),
-        stack: entry?.stack === undefined ? undefined : redactText(entry.stack)
+        stack: entry?.stack === undefined ? undefined : redactText(entry.stack),
+        // Fix round (ревью, S3): source (event.filename) — URL-образное поле,
+        // раньше проходило нередактированным. Симметрия с клиентом
+        // (buildBundle.ts) проверяется diagRedactionParity.test.js.
+        source: redactUrl(entry?.source)
       }))
       : [],
     uploads: Array.isArray(raw.uploads)
@@ -151,7 +155,14 @@ export const sanitizeBundle = (raw) => {
           ? raw.queue.slots.map((slot) => ({ ...slot, error: redactText(slot?.error) }))
           : []
       }
-      : raw.queue
+      : raw.queue,
+    // Fix round (ревью, S3): app.route (route.fullPath) — URL-образное поле,
+    // раньше проходило нередактированным. raw.app не валидируется бандлом
+    // (в отличие от v/trigger), поэтому здесь та же защитная форма, что и
+    // у queue выше: не объект/отсутствует — оставляем как есть.
+    app: raw.app && typeof raw.app === 'object' && !Array.isArray(raw.app)
+      ? { ...raw.app, route: redactUrl(raw.app.route) }
+      : raw.app
   };
 
   const sizeBytes = Buffer.byteLength(JSON.stringify(bundle), 'utf8');

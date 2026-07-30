@@ -194,3 +194,33 @@ test('секрет в расширенных query-ключах не доезж�
     assert.ok(!JSON.stringify(sanitizeBundle(raw).bundle).includes('LEAKME'), q);
   }
 });
+
+// --- Fix round (ревью, S3): app.route и errors[].source — тоже URL-образные
+// поля (route.fullPath / event.filename) и раньше проходили в бандл без
+// redactUrl. ---
+
+test('редактирует секрет в app.route', () => {
+  const raw = validBundle();
+  raw.app = { build: 'dev', route: '/admin/1?token=LEAKME', isDemo: false };
+  const res = sanitizeBundle(raw);
+  assert.equal(res.ok, true);
+  assert.ok(!res.bundle.app.route.includes('LEAKME'), res.bundle.app.route);
+  assert.ok(res.bundle.app.route.includes('/admin/1'), res.bundle.app.route);
+});
+
+test('редактирует секрет в errors[].source', () => {
+  const raw = validBundle();
+  raw.errors = [{ kind: 'onerror', message: 'boom', source: 'https://app.test/chunk.js?session=LEAKME' }];
+  const res = sanitizeBundle(raw);
+  assert.equal(res.ok, true);
+  assert.ok(!res.bundle.errors[0].source.includes('LEAKME'), res.bundle.errors[0].source);
+});
+
+test('app отсутствует или не объект — санитизация не падает', () => {
+  for (const badApp of [undefined, null, 'x', ['a']]) {
+    const raw = validBundle();
+    raw.app = badApp;
+    const res = sanitizeBundle(raw);
+    assert.equal(res.ok, true, JSON.stringify(badApp));
+  }
+});
