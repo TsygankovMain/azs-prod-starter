@@ -78,7 +78,10 @@ const BEARER_RE = /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{4,})/gi
 export function redactText(text: string): string {
   const raw = String(text ?? '')
   if (!raw) return ''
+  // BEARER_RE идёт ПЕРВЫМ. Иначе KV_RE съедает слово `Bearer` как значение
+  // ключа `authorization` ("Authorization: Bearer <jwt>" -> "Authorization=***"),
+  // после чего сам токен остаётся в тексте, а BEARER_RE уже не находит схему.
   return raw
-    .replace(KV_RE, (_m, key: string) => `${key}=${REDACTED}`)
     .replace(BEARER_RE, (_m, scheme: string) => `${scheme} ${REDACTED}`)
+    .replace(KV_RE, (_m, key: string) => `${key}=${REDACTED}`)
 }

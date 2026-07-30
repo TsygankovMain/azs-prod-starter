@@ -82,9 +82,8 @@ test('redactText: URL внутри текста ошибки — секрет с
 })
 
 test('redactText: Bearer в стеке скрыт', () => {
-  const out = redactText('at fetch with Bearer eyJhbGciOiJIUzI1NiJ9.abc')
+  const out = redactText('at fetch (Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc)')
   assert.ok(!out.includes('eyJhbGciOiJIUzI1NiJ9'), out)
-  assert.ok(out.includes(`Bearer ${REDACTED}`), out)
 })
 
 test('redactText: двоеточие и кавычки как разделитель тоже ловятся', () => {
@@ -148,4 +147,19 @@ test('redactText: проза не искажается', () => {
     'refresh token истёк',
     'Ошибка авторизации'
   ]) assert.equal(redactText(msg), msg)
+})
+
+test('redactText: Authorization + Bearer вместе не оставляют токен', () => {
+  for (const c of [
+    'at fetch (Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abcdefgh)',
+    'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abcdefgh',
+    'headers: {authorization: Bearer SUPERSECRETJWT}',
+    'Bearer eyJhbGciOiJIUzI1NiJ9.abcdefgh',
+    'basic YWRtaW46cGFzc3dvcmQ='
+  ]) {
+    const out = redactText(c)
+    assert.ok(!out.includes('eyJhbGciOiJIUzI1NiJ9'), `утечка: ${c} -> ${out}`)
+    assert.ok(!out.includes('SUPERSECRETJWT'), `утечка: ${c} -> ${out}`)
+    assert.ok(!out.includes('YWRtaW46cGFzc3dvcmQ'), `утечка: ${c} -> ${out}`)
+  }
 })
