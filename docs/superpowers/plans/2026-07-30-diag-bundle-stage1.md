@@ -22,6 +22,8 @@
 - **Троттлинг отправки:** не чаще 1 раза в 60 000 мс на устройство.
 - **Ретеншен:** 30 дней.
 - **Русский язык** во всех строках UI и в сообщениях, видимых оператору.
+- **Стейджить только свои файлы, явными путями.** `git add -A`, `git add .`, `git commit -a` запрещены: в рабочем дереве есть незакоммиченные правки владельца (`docs/code-review-log.md`, `frontend/nuxt.config.ts`, `frontend/app/pages/reason/[reportId].client.vue`, `docs/superpowers/plans/2026-06-04-backlog-master.md`, `docs/superpowers/plans/2026-06-11-bug-backlog.md`). Массовый стейджинг подметёт их в чужой коммит.
+- **`frontend/nuxt.config.ts` не изменять ни в одной задаче** — он в работе у владельца. Поэтому `app.build` = `'unknown'`, `app.isDemo` = `false` (см. врезку в Task 7).
 
 ---
 
@@ -1259,24 +1261,12 @@ git commit -m "feat(DIAG): монтирование диаг-роутов, об�
 **Files:**
 - Create: `frontend/app/composables/diag/useDiagCollector.ts`
 - Create: `frontend/app/plugins/00.diag.client.ts`
-- Modify: `frontend/nuxt.config.ts:34-40` (добавить ключ `appBuild` в `runtimeConfig.public`)
 
 **Interfaces:**
 - Consumes: `createRingBuffer` (Task 1), типы из `utils/diag/types.ts` (Task 2).
-- Produces: `useDiagCollector()` → `{ diagSessionId, recordNet, recordError, recordUpload, recordB24, setQueueSnapshot, collectInput }`, где `collectInput(meta)` возвращает `Omit<BuildBundleInput, 'probe'>` (поле `probe` дозаполняет sender из Task 8). Заголовок `X-Diag-Session` уходит на все запросы к нашему origin. Ключ конфига `public.appBuild` доступен всем задачам.
+- Produces: `useDiagCollector()` → `{ diagSessionId, recordNet, recordError, recordUpload, recordB24, setQueueSnapshot, collectInput }`, где `collectInput(meta)` возвращает `Omit<BuildBundleInput, 'probe'>` (поле `probe` дозаполняет sender из Task 8). Заголовок `X-Diag-Session` уходит на все запросы к нашему origin.
 
-- [ ] **Step 0: Добавить ключ `appBuild` в рантайм-конфиг**
-
-В `frontend/nuxt.config.ts` блок `runtimeConfig.public` (сейчас содержит `appUrl`, `apiUrl`, `telemetryEnabled`, `demo`) дополнить:
-
-```ts
-      // Версия/метка сборки — попадает в диаг-бандл, чтобы по инциденту было
-      // видно, на какой сборке работает оператор. Переопределяется через
-      // NUXT_PUBLIC_APP_BUILD при деплое.
-      appBuild: '',
-```
-
-Ключа `appBuild` в конфиге нет — без этого шага `config.public.appBuild` будет `undefined` и в бандле окажется строка `'unknown'`.
+> **`frontend/nuxt.config.ts` не трогаем ни в одной задаче этого плана.** В рабочем дереве у него есть незакоммиченные правки владельца (демо-режим: исключение модуля `b24jssdk-nuxt` и ключ `public.demo`). Правка того же блока `runtimeConfig.public` привела бы к коммиту чужой недоделанной работы. Поэтому поле `app.build` в этапе 1 всегда `'unknown'`, а `app.isDemo` всегда `false`. Когда демо-правки будут закоммичены, добавление ключа `appBuild: ''` и чтение `public.demo` — правка на две строки; занесено в ledger как отложенный minor.
 
 - [ ] **Step 1: Реализовать коллектор**
 
@@ -1748,7 +1738,6 @@ const props = withDefaults(defineProps<{
 const { send } = useDiagSender()
 const toast = useAppToast()
 const route = useRoute()
-const config = useRuntimeConfig()
 const userStore = useUserStore()
 const busy = ref(false)
 
@@ -1757,11 +1746,9 @@ const onClick = async () => {
   busy.value = true
   try {
     const result = await send('button', {
-      app: {
-        build: String(config.public.appBuild || 'unknown'),
-        route: String(route.fullPath || ''),
-        isDemo: String(config.public.demo || '') === '1'
-      },
+      // build/isDemo — константы в этапе 1: nuxt.config.ts этот план не трогает
+      // (см. врезку в Task 7), ключей appBuild и demo в закоммиченном конфиге нет.
+      app: { build: 'unknown', route: String(route.fullPath || ''), isDemo: false },
       user: {
         // stores/user.ts держит id/login/isAdmin — полей userId и role там нет.
         userId: Number(userStore.id || 0),
@@ -1874,13 +1861,8 @@ void autoSendDiag()
 const autoSendDiag = async (): Promise<void> => {
   try {
     const { send } = useDiagSender()
-    const cfg = useRuntimeConfig()
     await send('auto_upload_error', {
-      app: {
-        build: String(cfg.public.appBuild || 'unknown'),
-        route: String(route.fullPath || ''),
-        isDemo: String(cfg.public.demo || '') === '1'
-      },
+      app: { build: 'unknown', route: String(route.fullPath || ''), isDemo: false },
       user: {
         userId: Number(report.value?.adminUserId || 0),
         azsId: String(report.value?.azsId || ''),
@@ -1986,10 +1968,14 @@ Expected: без ошибок.
 
 - [ ] **Step 6: Коммит**
 
+**Только явные пути.** `git add -A` и `git add .` запрещены во всех задачах этого плана: в рабочем дереве лежат незакоммиченные правки владельца (`docs/code-review-log.md`, `frontend/nuxt.config.ts`, `frontend/app/pages/reason/[reportId].client.vue`, два файла планов). Массовый стейджинг подметёт их в чужой коммит.
+
 ```bash
-git add -A
+git add docs/superpowers/specs/2026-07-30-diag-bundle-design.md
 git commit -m "chore(DIAG): удалить мёртвую телеметрию, зафиксировать результаты прогона на устройстве"
 ```
+
+Удаление файлов уже застейджено через `git rm` в Step 2.
 
 ---
 
