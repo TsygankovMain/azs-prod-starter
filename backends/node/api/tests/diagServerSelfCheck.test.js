@@ -151,6 +151,13 @@ test('authContextStore без getLastAdmin и без getLastAdminContext не р
 // но не чтение authContextStore. По умолчанию (AUTH_CONTEXT_STORE=composite
 // в server.js) это тоже поход в БД, поэтому без собственного таймаута зависший
 // authContextStore держал бы run() целиком, а не только oauth-пробу.
+//
+// disk.ok здесь ЗАКОНОМЕРНО false, а не true (в отличие от первой версии
+// этого теста, до fix round 2): с тех пор, как probeDisk строит контекст из
+// того же самого authContext, что читает probeOauth, зависший/провалившийся
+// oauth-контекст — это честное «нечем пробовать» (no_auth_context) для Диска
+// тоже, а не независимый успех на пустом {}. БД по-прежнему не зависит от
+// oauth-контекста и остаётся здоровой.
 test('зависший authContextStore не держит срез дольше своего таймаута', async () => {
   const check = createServerSelfCheck(makeDeps({
     authContextStore: { getLastAdmin: () => new Promise(() => {}) },
@@ -160,7 +167,100 @@ test('зависший authContextStore не держит срез дольше 
   const out = await check.run();
   assert.ok(Date.now() - startedAt < 2000, 'срез должен вернуться быстро');
   assert.equal(out.oauth.hasContext, false);
-  // Диск и БД в этом тесте здоровы — зависание одной пробы не должно портить другие.
-  assert.equal(out.disk.ok, true);
+  assert.equal(out.disk.ok, false);
+  assert.equal(out.disk.errorMessage, 'no_auth_context');
+  // БД не зависит от auth-контекста — зависание oauth-чтения не портит её.
   assert.equal(out.db.ok, true);
+});
+
+// --- Fix round 2 (боевой бандл АЗС 174, 2026-07-30): probeDisk звонил с
+// пустым {} контекстом, bitrixClient не мог разрешить домен портала и падал
+// на "Bitrix portal domain or BITRIX_REST_ENDPOINT is required" ещё до сети —
+// disk-проба никогда не могла сказать что-либо о самом Bitrix. Теперь
+// probeOauth и probeDisk читают один и тот же контекст один раз, и probeDisk
+// строит из него реальный аргумент для callMethod. -----------------------
+
+test('регрессия: с сохранённым контекстом callMethod получает реальный контекст портала, а не {}', async () => {
+  let receivedContext = null;
+  const check = createServerSelfCheck(makeDeps({
+    authContextStore: {
+      async getLastAdmin() {
+        return {
+          key: 'portal:1',
+          payload: JSON.stringify({
+            domain: 'b24-xc36ra.bitrix24.ru',
+            memberId: '9e76288b',
+            userId: 498,
+            authId: 'REALAUTHID',
+            refreshToken: 'REALREFRESHTOKEN'
+          }),
+          updated_at: new Date(FIXED_NOW - 7_000).toISOString()
+        };
+      }
+    },
+    bitrixClient: {
+      isConfigured: true,
+      async callMethod(method, params, context) {
+        receivedContext = context;
+        return { result: [] };
+      }
+    }
+  }));
+  const out = await check.run();
+  assert.equal(out.disk.ok, true);
+  // Это и есть страховка от регресса: если кто-то вернёт callMethod('disk.storage.getlist', {}, {})
+  // (пустой контекст), receivedContext.domain будет '' или undefined, а не доменом портала.
+  assert.ok(receivedContext, 'callMethod должен был получить контекст');
+  assert.equal(receivedContext.domain, 'b24-xc36ra.bitrix24.ru');
+  assert.equal(receivedContext.memberId, '9e76288b');
+  assert.equal(receivedContext.userId, 498);
+  assert.equal(receivedContext.authId, 'REALAUTHID');
+  assert.equal(receivedContext.refreshToken, 'REALREFRESHTOKEN');
+});
+
+test('нет сохранённого контекста: callMethod не вызывается, errorMessage = no_auth_context', async () => {
+  let callMethodCalls = 0;
+  const check = createServerSelfCheck(makeDeps({
+    authContextStore: { async getLastAdmin() { return null; } },
+    bitrixClient: {
+      isConfigured: true,
+      async callMethod() { callMethodCalls += 1; return { result: [] }; }
+    }
+  }));
+  const out = await check.run();
+  assert.equal(callMethodCalls, 0, 'callMethod не должен звониться без контекста');
+  assert.equal(out.disk.ok, false);
+  assert.equal(out.disk.errorCode, null);
+  assert.equal(out.disk.errorMessage, 'no_auth_context');
+  assert.equal(out.oauth.hasContext, false);
+});
+
+test('токен из payload, использованный для реального вызова Диска, не попадает в сериализованный результат', async () => {
+  const check = createServerSelfCheck(makeDeps({
+    authContextStore: {
+      async getLastAdmin() {
+        return {
+          key: 'portal:1',
+          payload: JSON.stringify({
+            domain: 'b24-xc36ra.bitrix24.ru',
+            memberId: '9e76288b',
+            userId: 498,
+            authId: 'DISKPROBEAUTHTOKEN',
+            refreshToken: 'DISKPROBEREFRESHTOKEN'
+          }),
+          updated_at: new Date(FIXED_NOW - 7_000).toISOString()
+        };
+      }
+    },
+    // Реалистичный успешный вызов — контекст с токенами доходит до
+    // callMethod (проверено предыдущим тестом), но в РЕЗУЛЬТАТ пробы
+    // (ok/ms/errorCode/errorMessage) он не копируется.
+    bitrixClient: { isConfigured: true, async callMethod() { return { result: [] }; } }
+  }));
+  const out = await check.run();
+  const serialized = JSON.stringify(out);
+  assert.ok(!serialized.includes('DISKPROBEAUTHTOKEN'), serialized);
+  assert.ok(!serialized.includes('DISKPROBEREFRESHTOKEN'), serialized);
+  assert.equal(out.oauth.hasAuthId, true);
+  assert.equal(out.oauth.hasRefreshToken, true);
 });

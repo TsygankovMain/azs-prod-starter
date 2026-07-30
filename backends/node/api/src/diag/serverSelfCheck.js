@@ -75,6 +75,26 @@ const readLastAdminRow = async (authContextStore) => {
 };
 
 /**
+ * Контекст для bitrixClient.callMethod, собранный из сохранённого payload.
+ * Поля — ровно те, что читает normalizeContext() в bitrixRestClient.js:
+ * domain нужен, чтобы разрешить rest-эндпоинт портала (без него, как и без
+ * BITRIX_REST_ENDPOINT/BITRIX_OAUTH_DOMAIN в этом приложении — они не заданы,
+ * clientConfigured: false в бандле это подтверждает — клиент бросает
+ * "Bitrix portal domain or BITRIX_REST_ENDPOINT is required" ещё до сети);
+ * authId авторизует сам запрос; memberId+domain+userId нужны ВМЕСТЕ, потому
+ * что onTokenRefreshed в server.js молча пропускает сохранение обновлённого
+ * токена, если хоть одно из них пусто — без них случайный рефреш токена
+ * прямо во время пробы был бы потерян.
+ */
+const buildDiskContext = (payload) => ({
+  memberId: payload.memberId || payload.member_id || '',
+  domain: payload.domain || '',
+  userId: Number(payload.userId ?? payload.user_id ?? 0) || 0,
+  authId: payload.authId || payload.auth_id || '',
+  refreshToken: payload.refreshToken || payload.refresh_token || ''
+});
+
+/**
  * serverSelfCheck — серверная половина диагностической картины.
  *
  * Клиент не видит состояние нашего OAuth-токена и ответ Диска Битрикса, а без
@@ -94,59 +114,96 @@ export const createServerSelfCheck = ({
   dbTimeoutMs = DB_TIMEOUT_MS,
   oauthTimeoutMs = OAUTH_TIMEOUT_MS
 }) => {
-  const probeOauth = async () => {
+  /**
+   * Читает и разбирает сохранённый auth-контекст РОВНО ОДИН РАЗ за run() —
+   * и probeOauth (форматирует для бандла), и probeDisk (строит из него
+   * реальный контекст для звонка в Bitrix) читают один и тот же результат.
+   *
+   * До этого фикса probeOauth читал стор приватно, а probeDisk и вовсе не
+   * читал — звонил с пустым {} контекстом, из-за чего bitrixClient не мог
+   * разрешить домен портала и падал на "Bitrix portal domain or
+   * BITRIX_REST_ENDPOINT is required" ещё до сетевого вызова: 1мс, errorCode
+   * null. Проба была слепой к главному сигналу, ради которого существует —
+   * реальному состоянию OAuth. Обнаружено первым же боевым бандлом (АЗС 174,
+   * 2026-07-30): oauth уже показывал живой токен (ageSec: 7), а disk молчал
+   * о самом Bitrix, потому что запрос из-за пустого контекста не уходил.
+   *
+   * Таймаут, шим getLastAdmin/getLastAdminContext и терпимость к битому JSON
+   * — как и раньше. Никогда не бросает: любой сбой (таймаут, исключение
+   * стора, битый или не-объектный JSON) превращается в null.
+   */
+  const loadAuthContext = async () => {
+    try {
+      const row = await withTimeout(() => readLastAdminRow(authContextStore), oauthTimeoutMs, 'oauth');
+      if (!row) return null;
+
+      let payload = {};
+      try {
+        const parsed = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+        // JSON.parse('null') / JSON.parse('42') — валидный JSON, но не объект.
+        // Без этой проверки payload.authId ниже бросил бы на null/примитиве,
+        // а probeOauth/probeDisk больше не обёрнуты в свой try/catch —
+        // безопасность объекта payload гарантируется здесь, один раз.
+        payload = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+      } catch {
+        payload = {};
+      }
+
+      return { row, payload };
+    } catch (error) {
+      logger.warn('diag_selfcheck_oauth_failed', { message: cleanError(error) });
+      return null;
+    }
+  };
+
+  // Чистый форматтер: никакого I/O, только преобразование уже прочитанного
+  // authContext в форму для бандла — факт и длина, не значения токенов.
+  const probeOauth = (authContext) => {
     const empty = {
       hasContext: false, domain: null, memberId: null, updatedAt: null, ageSec: null,
       hasAuthId: false, hasRefreshToken: false, authIdLength: 0, refreshTokenLength: 0,
       clientConfigured: Boolean(bitrixClient?.isConfigured)
     };
-    try {
-      // Как и Диск с БД ниже: чтение auth-контекста ограничено по времени —
-      // при composite/database-сторе это тоже поход в БД и может зависнуть.
-      const row = await withTimeout(() => readLastAdminRow(authContextStore), oauthTimeoutMs, 'oauth');
-      if (!row) return empty;
+    if (!authContext) return empty;
 
-      let payload = {};
-      try {
-        payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : (row.payload || {});
-      } catch {
-        payload = {};
-      }
+    const { row, payload } = authContext;
+    const updatedAt = row.updated_at ? new Date(row.updated_at) : null;
+    const ageSec = updatedAt && !Number.isNaN(updatedAt.getTime())
+      ? Math.round((now() - updatedAt.getTime()) / 1000)
+      : null;
 
-      const updatedAt = row.updated_at ? new Date(row.updated_at) : null;
-      const ageSec = updatedAt && !Number.isNaN(updatedAt.getTime())
-        ? Math.round((now() - updatedAt.getTime()) / 1000)
-        : null;
+    const authId = String(payload.authId || payload.auth_id || '');
+    const refreshToken = String(payload.refreshToken || payload.refresh_token || '');
 
-      const authId = String(payload.authId || payload.auth_id || '');
-      const refreshToken = String(payload.refreshToken || payload.refresh_token || '');
-
-      return {
-        hasContext: true,
-        domain: payload.domain ? String(payload.domain) : null,
-        memberId: payload.memberId || payload.member_id ? String(payload.memberId || payload.member_id) : null,
-        updatedAt: updatedAt && !Number.isNaN(updatedAt.getTime()) ? updatedAt.toISOString() : null,
-        ageSec,
-        // Только факт и длина: сами значения — секреты.
-        hasAuthId: authId.length > 0,
-        hasRefreshToken: refreshToken.length > 0,
-        authIdLength: authId.length,
-        refreshTokenLength: refreshToken.length,
-        clientConfigured: Boolean(bitrixClient?.isConfigured)
-      };
-    } catch (error) {
-      logger.warn('diag_selfcheck_oauth_failed', { message: cleanError(error) });
-      return empty;
-    }
+    return {
+      hasContext: true,
+      domain: payload.domain ? String(payload.domain) : null,
+      memberId: payload.memberId || payload.member_id ? String(payload.memberId || payload.member_id) : null,
+      updatedAt: updatedAt && !Number.isNaN(updatedAt.getTime()) ? updatedAt.toISOString() : null,
+      ageSec,
+      // Только факт и длина: сами значения — секреты.
+      hasAuthId: authId.length > 0,
+      hasRefreshToken: refreshToken.length > 0,
+      authIdLength: authId.length,
+      refreshTokenLength: refreshToken.length,
+      clientConfigured: Boolean(bitrixClient?.isConfigured)
+    };
   };
 
-  const probeDisk = async () => {
+  const probeDisk = async (authContext) => {
     const startedAt = now();
     try {
       if (!bitrixClient?.callMethod) {
         return { ok: false, ms: 0, errorCode: null, errorMessage: 'bitrix_client_unavailable' };
       }
-      await withTimeout(() => bitrixClient.callMethod('disk.storage.getlist', {}, {}), diskTimeoutMs, 'disk');
+      if (!authContext) {
+        // Нечем пробовать. Это не «Bitrix отверг нас» (wrong_client и т.п.),
+        // а «у нас вообще нет сохранённого контекста» — честный отдельный
+        // код, а не тот же "domain ... is required", что и при пустом {}.
+        return { ok: false, ms: 0, errorCode: null, errorMessage: 'no_auth_context' };
+      }
+      const context = buildDiskContext(authContext.payload);
+      await withTimeout(() => bitrixClient.callMethod('disk.storage.getlist', {}, context), diskTimeoutMs, 'disk');
       return { ok: true, ms: now() - startedAt, errorCode: null, errorMessage: null };
     } catch (error) {
       const errorMessage = cleanError(error);
@@ -167,7 +224,11 @@ export const createServerSelfCheck = ({
 
   return {
     async run() {
-      const [oauth, disk, db] = await Promise.all([probeOauth(), probeDisk(), probeDb()]);
+      // Контекст читаем один раз и делимся им между пробами — см.
+      // loadAuthContext выше за то, почему это важно.
+      const authContext = await loadAuthContext();
+      const [disk, db] = await Promise.all([probeDisk(authContext), probeDb()]);
+      const oauth = probeOauth(authContext);
       return {
         checkedAt: new Date(now()).toISOString(),
         app: {
