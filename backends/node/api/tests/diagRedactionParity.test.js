@@ -21,6 +21,8 @@ const CORPUS = [
   'headers: {authorization: Bearer LEAKMEJWT}',
   'Bearer eyJhbGciOiJIUzI1NiJ9.LEAKME',
   'basic YWRtaW46LEAKME',
+  // короткие схемы: ловят расхождение в минимальной длине BEARER_RE
+  'Bearer LEAK', 'Basic LEAK', 'Bearer LEAKME12',
   // частичная маскировка
   'token=abc123,LEAKME', 'token=abc123;LEAKME',
   // реальные поля установки приложения
