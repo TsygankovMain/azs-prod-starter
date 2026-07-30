@@ -234,7 +234,19 @@ const dbSettingsStore = createDatabaseSettingsStore({ pool, dbType });
 const reasonStore = createReasonStore({ pool, dbType });
 const photoRemarkStore = createPhotoRemarkStore({ pool, dbType });
 const brandStore = createDatabaseBrandStore({ pool, dbType });
-const diagStore = createDiagStore({ pool, dbType });
+// Диагностика — вспомогательная функция и не имеет права мешать приложению
+// стартовать. diagStore поддерживает только PostgreSQL; на любой другой СУБД
+// диагностика отключается, а приложение поднимается как обычно.
+let diagStore = null;
+try {
+  diagStore = createDiagStore({ pool, dbType });
+} catch (error) {
+  console.error(JSON.stringify({
+    event: 'diag_disabled',
+    reason: error.message,
+    dbType
+  }));
+}
 const authContextStoreType = String(process.env.AUTH_CONTEXT_STORE || 'composite').trim().toLowerCase();
 const authContextStore = (() => {
   if (authContextStoreType === 'database') {
@@ -655,12 +667,17 @@ app.use('/api/users', verifyToken, attachAccessContext, createUsersRouter({
 // мидлварью внутри одного монтирования на '/api/diag': req.path здесь уже
 // относительный (совпадение с '/ping'/'/echo'), Express обрезает префикс
 // до вызова мидлварей этого use().
-const diagRouter = createDiagRouter({ store: diagStore });
-const DIAG_NO_ACCESS_CONTEXT_PATHS = new Set(['/ping', '/echo']);
-app.use('/api/diag', verifyToken, (req, res, next) => {
-  if (DIAG_NO_ACCESS_CONTEXT_PATHS.has(req.path)) return next();
-  return attachAccessContext(req, res, next);
-}, diagRouter);
+//
+// diagStore === null (СУБД не PostgreSQL) — весь мониторинг просто не
+// монтируется, без него роутер не может ни во что писать.
+if (diagStore) {
+  const diagRouter = createDiagRouter({ store: diagStore });
+  const DIAG_NO_ACCESS_CONTEXT_PATHS = new Set(['/ping', '/echo']);
+  app.use('/api/diag', verifyToken, (req, res, next) => {
+    if (DIAG_NO_ACCESS_CONTEXT_PATHS.has(req.path)) return next();
+    return attachAccessContext(req, res, next);
+  }, diagRouter);
+}
 
 // ---------------------------------------------------------------------------
 // BUG-019: Bot event handler — receives ONIMBOTMESSAGEADD from Bitrix24.
@@ -1064,9 +1081,11 @@ brandStore.ensureSchema()
   .then(() => console.log('brand schema is ready'))
   .catch((error) => console.error('Failed to prepare brand schema', error));
 
-diagStore.ensureSchema()
-  .then(() => console.log('diag_report schema is ready'))
-  .catch((error) => console.error('Failed to prepare diag_report schema', error));
+if (diagStore) {
+  diagStore.ensureSchema()
+    .then(() => console.log('diag_report schema is ready'))
+    .catch((error) => console.error('Failed to prepare diag_report schema', error));
+}
 
 if (typeof authContextStore.ensureSchema === 'function') {
   authContextStore.ensureSchema()
@@ -1162,7 +1181,8 @@ const tokenRefreshScheduler = createTokenRefreshScheduler({
 tokenRefreshScheduler.start();
 
 // Ежесуточная чистка диаг-бандлов старше ретеншена (30 дней по умолчанию).
-if (String(process.env.SCHEDULER_ENABLED || 'true') !== 'false') {
+// diagStore === null (СУБД не PostgreSQL) — чистить нечего, стора нет.
+if (diagStore && String(process.env.SCHEDULER_ENABLED || 'true') !== 'false') {
   cron.schedule('30 3 * * *', async () => {
     try {
       const removed = await diagStore.deleteOlderThan(Number(process.env.DIAG_RETENTION_DAYS || 30));
