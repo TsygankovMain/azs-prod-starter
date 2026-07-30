@@ -21,7 +21,7 @@ export function buildBundle(input: BuildBundleInput): DiagBundle {
   const bundle: DiagBundle = {
     ...input,
     v: 1,
-    net: input.net.map((entry) => ({
+    net: (input.net ?? []).map((entry) => ({
       ...entry,
       url: redactUrl(entry.url),
       headers: redactHeaders(entry.headers)

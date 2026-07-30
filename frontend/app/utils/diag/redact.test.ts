@@ -163,3 +163,24 @@ test('redactText: Authorization + Bearer вместе не оставляют т
     assert.ok(!out.includes('YWRtaW46cGFzc3dvcmQ'), `утечка: ${c} -> ${out}`)
   }
 })
+
+test('redactText: REFRESH_ID и составные *_token не утекают', () => {
+  const cases = [
+    'postInstall failed: {AUTH_ID: SECRETACCESS, REFRESH_ID: SECRETREFRESH}',
+    'REFRESH_ID=LEAKME', 'refresh_id: LEAKME',
+    'private_token=LEAKME', 'bot_token=LEAKME',
+    'Cookie: connect.sid=LEAKME', 'session=LEAKME'
+  ]
+  for (const c of cases) {
+    const out = redactText(c)
+    assert.ok(!out.includes('LEAKME'), `утечка: ${c} -> ${out}`)
+    assert.ok(!out.includes('SECRETREFRESH'), `утечка: ${c} -> ${out}`)
+  }
+})
+
+test('redactText: расширение словаря не сломало полезный контекст', () => {
+  const out = redactText('POST /api/reports?token=SECRET&azsId=548 failed 502')
+  assert.ok(!out.includes('SECRET'), out)
+  assert.ok(out.includes('azsId=548') && out.includes('502'), out)
+  assert.equal(redactText('refresh token истёк'), 'refresh token истёк')
+})

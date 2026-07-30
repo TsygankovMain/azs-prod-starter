@@ -54,9 +54,10 @@ export function redactUrl(rawUrl: string): string {
 // Порядок важен: длинные варианты идут раньше коротких, иначе `token`
 // съест префикс у `access_token`.
 const SECRET_TEXT_KEYS = [
-  'access[_-]?token', 'refresh[_-]?token', 'id[_-]?token', 'token',
+  'access[_-]?token', 'refresh[_-]?token', 'refresh[_-]?id', 'id[_-]?token',
+  '[a-z]{2,}[_-]token', 'token',
   'auth[_-]?id', 'authorization', 'auth',
-  'session[_-]?id', 'sess[_-]?id', 'sessid',
+  'session[_-]?id', 'sess[_-]?id', 'sessid', 'session', 'cookie',
   'api[_-]?key', 'client[_-]?secret', 'secret',
   'password', 'passwd', 'pwd'
 ].join('|')
