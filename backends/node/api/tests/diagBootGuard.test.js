@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
 import { createDiagStore } from '../src/diag/diagStore.js';
+// Fix round (ревью, S2): раньше этот файл писал свою копию 503-фолбэка —
+// удаление или порча настоящего в server.js оставляла тест зелёным. Теперь
+// импортируется тот же код, что использует server.js.
+import { createDiagUnavailableHandler } from '../src/diag/diagMiddleware.js';
 
 test('createDiagStore отвергает не-PostgreSQL', () => {
   assert.throws(() => createDiagStore({ pool: { query() {} }, dbType: 'mysql' }), /only PostgreSQL/);
@@ -45,12 +49,11 @@ const startBareApp = () => {
 const startGuardedApp = () => {
   const app = express();
   const diagStore = null;
-  // Тот же фрагмент, что добавлен в server.js: монтируется ПОСЛЕ условного
-  // реального монтирования и срабатывает только когда diagStore === null.
+  // Тот же код, что и в server.js (createDiagUnavailableHandler,
+  // src/diag/diagMiddleware.js): монтируется ПОСЛЕ условного реального
+  // монтирования и срабатывает только когда diagStore === null.
   if (!diagStore) {
-    app.use('/api/diag', (_req, res) => {
-      res.status(503).json({ error: 'diag_unavailable' });
-    });
+    app.use('/api/diag', createDiagUnavailableHandler());
   }
   return app.listen(0);
 };

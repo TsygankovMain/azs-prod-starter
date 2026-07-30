@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
 import createDiagRouter from '../src/diag/diagRoutes.js';
+// Fix round (ревью, S2): раньше этот файл писал свою копию мидлвари обхода
+// парсера — удаление или порча настоящей в server.js оставляла тест зелёным.
+// Теперь импортируется тот же код, что использует server.js.
+import { createJsonParserBypass } from '../src/diag/diagMiddleware.js';
 
 const silentLogger = { info() {}, warn() {}, error() {} };
 
@@ -12,12 +16,7 @@ const silentLogger = { info() {}, warn() {}, error() {} };
  */
 const buildApp = () => {
   const app = express();
-  const globalJsonParser = express.json();
-  const DIAG_OWN_PARSER_PATHS = new Set(['/api/diag/report', '/api/diag/echo']);
-  app.use((req, res, next) => {
-    if (DIAG_OWN_PARSER_PATHS.has(req.path)) return next();
-    return globalJsonParser(req, res, next);
-  });
+  app.use(createJsonParserBypass());
   app.use(express.urlencoded({ extended: true }));
   app.use((req, _res, next) => { req.user = { user_id: 498 }; next(); });
   const store = {
@@ -99,12 +98,7 @@ test('echo получает сырые байты, а не разобранны�
 
 test('остальные маршруты по-прежнему разбираются глобальным парсером', async () => {
   const app = express();
-  const globalJsonParser = express.json();
-  const DIAG_OWN_PARSER_PATHS = new Set(['/api/diag/report', '/api/diag/echo']);
-  app.use((req, res, next) => {
-    if (DIAG_OWN_PARSER_PATHS.has(req.path)) return next();
-    return globalJsonParser(req, res, next);
-  });
+  app.use(createJsonParserBypass());
   app.post('/api/other', (req, res) => res.json({ got: req.body?.a ?? null }));
   const server = app.listen(0);
   try {
