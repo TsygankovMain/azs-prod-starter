@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   redactText as serverRedactText,
   redactUrl as serverRedactUrl,
-  redactHeaders as serverRedactHeaders
+  redactHeaders as serverRedactHeaders,
+  sanitizeBundle as serverSanitizeBundle,
+  MAX_BUNDLE_BYTES as SERVER_MAX_BUNDLE_BYTES
 } from '../src/diag/sanitizeBundle.js';
 
 // Real client imports from frontend
@@ -12,6 +14,7 @@ import {
   redactUrl as clientRedactUrl,
   redactHeaders as clientRedactHeaders
 } from '../../../../frontend/app/utils/diag/redact.ts';
+import { buildBundle as clientBuildBundle, MAX_BUNDLE_BYTES as CLIENT_MAX_BUNDLE_BYTES } from '../../../../frontend/app/utils/diag/buildBundle.ts';
 
 const URL_CORPUS = [
   '/x?refresh_id=LEAKME', '/x?session=LEAKME', '/x?private_token=LEAKME',
@@ -157,4 +160,89 @@ test('слои одинаково обрабатывают враждебный 
       `redactHeaders разошёлся на ${describeHostile(input)}`
     );
   }
+});
+
+// --- Fix round (ревью, S4) ---------------------------------------------------
+//
+// Всё выше сравнивает только низкоуровневые redactText/redactUrl/redactHeaders.
+// Этого недостаточно: если завтра кто-то заведёт седьмое редактируемое поле
+// (например, в buildBundle.ts) и забудет прогнать его через redact* — или
+// прогонит только на одном слое, — приведённые выше тесты этого не заметят,
+// потому что сами вызывают redact* напрямую, в обход buildBundle/sanitizeBundle.
+// Ниже — два теста, которые гоняют ПОЛНЫЙ пайплайн обоих слоёв.
+
+test('MAX_BUNDLE_BYTES одинаков на клиенте и сервере', () => {
+  assert.equal(CLIENT_MAX_BUNDLE_BYTES, SERVER_MAX_BUNDLE_BYTES);
+  assert.equal(CLIENT_MAX_BUNDLE_BYTES, 262_144);
+});
+
+const SECRET = 'LEAKME-PARITY';
+
+/**
+ * Секрет посажен в КАЖДОЕ поле, которое сегодня проходит через redact* хотя
+ * бы на одном слое: net.url/net.headers, errors.message/errors.stack/
+ * errors.source, uploads.message, queue.slots.error, app.route. Полное
+ * покрытие — форма самого этого списка одновременно и есть проверка: если
+ * добавить восьмое поле только в buildBundle.ts или только в
+ * sanitizeBundle.js, тест ниже либо перестанет ловить утечку на одном из
+ * слоёв (assert по слою), либо (при добавлении сюда) сразу покажет расхождение.
+ */
+const buildLeakyRawBundle = () => ({
+  v: 1,
+  diagSessionId: 'sess-parity',
+  sentAt: '2026-07-30T09:00:00.000Z',
+  trigger: 'button',
+  app: { build: 'dev', route: `/admin/1?token=${SECRET}`, isDemo: false },
+  user: { userId: 498, azsId: '548', reportId: 12345, role: 'azs_admin' },
+  device: {
+    userAgent: 'UA', deviceMemory: 4, hardwareConcurrency: 8,
+    screen: { w: 390, h: 844, dpr: 3 }, language: 'ru', platform: 'Android'
+  },
+  network: { onLine: true, effectiveType: '3g', downlink: 0.4, rtt: 1200, saveData: false },
+  probe: { echoBytes: 1000, echoMs: 100, echoKbps: 80, pingMsMedian: 50, pingLoss: 0 },
+  startup: { navigationMs: 100, ttfbMs: 50, domContentLoadedMs: 200, resourceCount: 5 },
+  queue: {
+    activeCount: 0, maxConcurrency: 2, workerSessionId: 1,
+    slots: [{
+      key: 'p1', confirmed: true, uploadState: 'error', uploaded: false,
+      fileSize: 1, fileType: 'image/jpeg', error: `auth=${SECRET}`
+    }]
+  },
+  uploads: [{
+    photoCode: 'p1', fileSize: 1, fileType: 'image/jpeg', exifTakenAt: null,
+    startedAt: '2026-07-30T09:00:00.000Z', durationMs: 1, outcome: 'error',
+    httpStatus: 502, errorCode: 'X', retryable: true, attempt: 1,
+    message: `sessid=${SECRET}`
+  }],
+  net: [{
+    url: `/api/reports?token=${SECRET}`, method: 'GET', status: 200,
+    startedAt: '2026-07-30T09:00:00.000Z', durationMs: 10, reqBytes: 0, resBytes: 0,
+    headers: { Authorization: `Bearer ${SECRET}`, 'x-ok': 'keep' }
+  }],
+  errors: [{
+    kind: 'onerror', message: `token=${SECRET}`, stack: `Error: token=${SECRET}\n  at x`,
+    source: `https://app.test/app.js?session=${SECRET}`, line: 1, col: 2,
+    at: '2026-07-30T09:00:00.000Z'
+  }],
+  b24: [],
+  dropped: { net: 0, errors: 0, uploads: 0 }
+});
+
+test('полный бандл: секрет во всех редактируемых полях не проходит НИ через один слой', () => {
+  const clientBundle = clientBuildBundle(buildLeakyRawBundle());
+  const serverResult = serverSanitizeBundle(buildLeakyRawBundle());
+
+  assert.equal(serverResult.ok, true, `sanitizeBundle отклонил валидный бандл: ${serverResult.error}`);
+
+  const clientJson = JSON.stringify(clientBundle);
+  const serverJson = JSON.stringify(serverResult.bundle);
+
+  assert.ok(!clientJson.includes(SECRET), `клиентский слой (buildBundle.ts) пропустил секрет:\n${clientJson}`);
+  assert.ok(!serverJson.includes(SECRET), `серверный слой (sanitizeBundle.js) пропустил секрет:\n${serverJson}`);
+
+  // Нередактируемые, но диагностически полезные поля должны пережить оба слоя
+  // не тронутыми — иначе тест выше можно было бы "починить", просто выкинув
+  // все поля целиком.
+  assert.ok(clientJson.includes('/admin/1'), clientJson);
+  assert.ok(serverJson.includes('/admin/1'), serverJson);
 });
