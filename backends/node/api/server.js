@@ -51,6 +51,9 @@ import { resolveBotSettingsContext } from './src/notifications/botSettingsContex
 import createBrandRouter from './src/brands/brandRoutes.js';
 import { createDatabaseBrandStore } from './src/brands/databaseBrandStore.js';
 import { createUsersRouter } from './src/users/usersRoutes.js';
+import cron from 'node-cron';
+import createDiagRouter from './src/diag/diagRoutes.js';
+import { createDiagStore } from './src/diag/diagStore.js';
 
 try {
   validateRequiredEnv();
@@ -68,7 +71,15 @@ process.on('uncaughtException', (error) => {
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Диаг-эндпоинты приносят свои парсеры: бандл до 512 КБ и echo-проба до 1 МБ
+// не проходят под дефолтный 100-килобайтный лимит express.json(). Для всех
+// остальных маршрутов поведение не меняется.
+const globalJsonParser = express.json();
+const DIAG_OWN_PARSER_PATHS = new Set(['/api/diag/report', '/api/diag/echo']);
+app.use((req, res, next) => {
+  if (DIAG_OWN_PARSER_PATHS.has(req.path)) return next();
+  return globalJsonParser(req, res, next);
+});
 // Bitrix24 bot webhook events arrive as application/x-www-form-urlencoded with
 // PHP-nested keys (data[message][text]=...). extended:true (qs) parses them into
 // nested objects so /api/bot/event can read data.message.text etc.
@@ -223,6 +234,7 @@ const dbSettingsStore = createDatabaseSettingsStore({ pool, dbType });
 const reasonStore = createReasonStore({ pool, dbType });
 const photoRemarkStore = createPhotoRemarkStore({ pool, dbType });
 const brandStore = createDatabaseBrandStore({ pool, dbType });
+const diagStore = createDiagStore({ pool, dbType });
 const authContextStoreType = String(process.env.AUTH_CONTEXT_STORE || 'composite').trim().toLowerCase();
 const authContextStore = (() => {
   if (authContextStoreType === 'database') {
@@ -630,6 +642,26 @@ app.use('/api/users', verifyToken, attachAccessContext, createUsersRouter({
   getAdminContext
 }));
 
+// ping/echo — только verifyToken: attachAccessContext читает настройки из БД на
+// каждом запросе (server.js:439), и тогда замер RTT мерил бы нашу БД, а не сеть.
+//
+// Нельзя смонтировать общий diagRouter отдельно на '/api/diag/ping' и
+// '/api/diag/echo' до общего '/api/diag': Express обрезает совпавший префикс
+// маршрута use(), и роутер получает остаток '/'. Ни один маршрут внутри
+// diagRouter не совпадает с '/', поэтому запрос проваливается дальше по
+// стеку и всё равно попадает под '/api/diag' с attachAccessContext —
+// проверено эмпирически (verifyToken вызывался дважды, attachAccessContext
+// один раз для /ping и /echo). Поэтому исключение сделано условной
+// мидлварью внутри одного монтирования на '/api/diag': req.path здесь уже
+// относительный (совпадение с '/ping'/'/echo'), Express обрезает префикс
+// до вызова мидлварей этого use().
+const diagRouter = createDiagRouter({ store: diagStore });
+const DIAG_NO_ACCESS_CONTEXT_PATHS = new Set(['/ping', '/echo']);
+app.use('/api/diag', verifyToken, (req, res, next) => {
+  if (DIAG_NO_ACCESS_CONTEXT_PATHS.has(req.path)) return next();
+  return attachAccessContext(req, res, next);
+}, diagRouter);
+
 // ---------------------------------------------------------------------------
 // BUG-019: Bot event handler — receives ONIMBOTMESSAGEADD from Bitrix24.
 // Bitrix posts event data to the handler URL that was registered on install.
@@ -1032,6 +1064,10 @@ brandStore.ensureSchema()
   .then(() => console.log('brand schema is ready'))
   .catch((error) => console.error('Failed to prepare brand schema', error));
 
+diagStore.ensureSchema()
+  .then(() => console.log('diag_report schema is ready'))
+  .catch((error) => console.error('Failed to prepare diag_report schema', error));
+
 if (typeof authContextStore.ensureSchema === 'function') {
   authContextStore.ensureSchema()
     .then(() => console.log('auth_context schema is ready'))
@@ -1124,6 +1160,18 @@ const tokenRefreshScheduler = createTokenRefreshScheduler({
 });
 
 tokenRefreshScheduler.start();
+
+// Ежесуточная чистка диаг-бандлов старше ретеншена (30 дней по умолчанию).
+if (String(process.env.SCHEDULER_ENABLED || 'true') !== 'false') {
+  cron.schedule('30 3 * * *', async () => {
+    try {
+      const removed = await diagStore.deleteOlderThan(Number(process.env.DIAG_RETENTION_DAYS || 30));
+      console.log(JSON.stringify({ event: 'diag_retention_cleanup', removed }));
+    } catch (error) {
+      console.error(JSON.stringify({ event: 'diag_retention_failed', message: error.message }));
+    }
+  });
+}
 
 // Startup seed: if composite mode and DB is empty, migrate file → DB once.
 // This ensures a server that was previously file-only doesn't lose its admin
