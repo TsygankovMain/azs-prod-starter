@@ -17,14 +17,33 @@ export function redactUrl(rawUrl: string): string {
   try {
     const url = new URL(raw, 'http://local.invalid')
     let touched = false
+
     for (const key of Array.from(url.searchParams.keys())) {
       if (SECRET_QUERY_KEYS.has(key.toLowerCase())) {
         url.searchParams.set(key, REDACTED)
         touched = true
       }
     }
+
+    // Секреты живут и во фрагменте: OAuth-редиректы кладут access_token после
+    // '#'. URL не разбирает hash как query-строку, поэтому разбираем вручную.
+    if (url.hash.length > 1) {
+      const hashParams = new URLSearchParams(url.hash.slice(1))
+      let hashTouched = false
+      for (const key of Array.from(hashParams.keys())) {
+        if (SECRET_QUERY_KEYS.has(key.toLowerCase())) {
+          hashParams.set(key, REDACTED)
+          hashTouched = true
+        }
+      }
+      if (hashTouched) {
+        url.hash = hashParams.toString()
+        touched = true
+      }
+    }
+
     if (!touched) return raw
-    return /^[a-z]+:\/\//i.test(raw) ? url.toString() : `${url.pathname}${url.search}`
+    return /^[a-z]+:\/\//i.test(raw) ? url.toString() : `${url.pathname}${url.search}${url.hash}`
   } catch {
     return raw
   }
