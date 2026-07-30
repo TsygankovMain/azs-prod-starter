@@ -12,9 +12,21 @@ const makeStore = () => ({
   async list() { return [{ id: 1, code: 'A7F3QQ' }]; }
 });
 
+// Fix round (ревью, BLOCKING 2): req.accessContext раньше нигде не
+// проставлялся в этом тестовом стенде — прод-мидлварь attachAccessContext
+// сюда не подключена. По умолчанию выдаём admin-доступ (полные
+// capabilities), чтобы существующие тесты ниже (которые проверяют не
+// авторизацию, а поведение самих роутов) не различали поведение до и после
+// гейта. Тесты самого гейта переопределяют accessContext через overrides.
+const ADMIN_ACCESS_CONTEXT = { role: 'admin', capabilities: { settings: true, reviewer: true, reports: true }, access: {} };
+
 const startServer = (store, overrides = {}) => {
   const app = express();
-  app.use((req, _res, next) => { req.user = { user_id: 498 }; next(); });
+  app.use((req, _res, next) => {
+    req.user = { user_id: 498 };
+    req.accessContext = 'accessContext' in overrides ? overrides.accessContext : ADMIN_ACCESS_CONTEXT;
+    next();
+  });
   app.use('/api/diag', createDiagRouter({
     store,
     randomBytes: overrides.randomBytes || (() => Buffer.from([0, 1, 2, 3, 4, 5])),
@@ -349,5 +361,76 @@ test('POST /report: коллизии кода исчерпаны за 3 попы
     assert.equal(insertCalls, 3);
     assert.equal(res.json.error, 'diag_report_failed');
     assert.equal(res.json.message, undefined);
+  } finally { server.close(); }
+});
+
+// --- Fix round (ревью, BLOCKING 2) ------------------------------------------
+//
+// GET /reports и GET /reports/:code не проверяли ничего, кроме валидного
+// JWT: обычный оператор станции мог перечислить диагностики всех станций и
+// прочитать любой бандл целиком (device, тексты ошибок, сетевой лог,
+// серверный срез — домен портала, member id, наличие OAuth-токена). Гейт
+// добавлен внутри самого роутера (см. diagRoutes.js), а не на уровне
+// server.js:683, потому что там же монтируется и POST /report, который
+// обязан остаться доступен обычному оператору без capabilities.settings.
+
+const OPERATOR_ACCESS_CONTEXT = { role: 'azs_admin', capabilities: { settings: false, reviewer: false, reports: true }, access: {} };
+
+test('GET /reports: оператор без capabilities.settings получает 403, не список', async () => {
+  const store = makeStore();
+  const server = startServer(store, { accessContext: OPERATOR_ACCESS_CONTEXT });
+  try {
+    const res = await call(server, '/api/diag/reports');
+    assert.equal(res.status, 403);
+    assert.equal(res.json.error, 'forbidden');
+  } finally { server.close(); }
+});
+
+test('GET /reports/:code: оператор без capabilities.settings получает 403, не бандл', async () => {
+  const server = startServer(makeStore(), { accessContext: OPERATOR_ACCESS_CONTEXT });
+  try {
+    const res = await call(server, '/api/diag/reports/A7F3QQ');
+    assert.equal(res.status, 403);
+    assert.equal(res.json.error, 'forbidden');
+  } finally { server.close(); }
+});
+
+test('GET /reports: пользователь с capabilities.settings получает 200', async () => {
+  const server = startServer(makeStore(), { accessContext: ADMIN_ACCESS_CONTEXT });
+  try {
+    const res = await call(server, '/api/diag/reports');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.json.items, [{ id: 1, code: 'A7F3QQ' }]);
+  } finally { server.close(); }
+});
+
+test('GET /reports/:code: пользователь с capabilities.settings получает 200', async () => {
+  const server = startServer(makeStore(), { accessContext: ADMIN_ACCESS_CONTEXT });
+  try {
+    const res = await call(server, '/api/diag/reports/A7F3QQ');
+    assert.equal(res.status, 200);
+    assert.equal(res.json.item.code, 'A7F3QQ');
+  } finally { server.close(); }
+});
+
+test('GET /reports: отсутствующий accessContext (attachAccessContext не сработал) — тоже 403, не крах', async () => {
+  const server = startServer(makeStore(), { accessContext: null });
+  try {
+    const res = await call(server, '/api/diag/reports');
+    assert.equal(res.status, 403);
+  } finally { server.close(); }
+});
+
+test('POST /report: гейт read-роутов не задевает запись — оператор без capabilities.settings всё ещё может сдать бандл', async () => {
+  const store = makeStore();
+  const server = startServer(store, { accessContext: OPERATOR_ACCESS_CONTEXT });
+  try {
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBundle())
+    });
+    assert.equal(res.status, 200);
+    assert.equal(store.inserted.length, 1);
   } finally { server.close(); }
 });

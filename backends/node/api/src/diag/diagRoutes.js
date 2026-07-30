@@ -99,7 +99,26 @@ export const createDiagRouter = ({ store, randomBytes = nodeRandomBytes, logger 
     return res.json({ diagId: row?.id ?? null, code });
   });
 
+  // Fix round (ревью, BLOCKING 2): чтение бандлов (device, тексты ошибок,
+  // сетевой лог, серверный срез — домен портала, member id, наличие OAuth-
+  // токена) раньше не требовало ничего, кроме валидного JWT — любой
+  // авторизованный оператор станции мог прочитать чужие диагностики. Гейт —
+  // тот же паттерн, что и в server.js:534 (capabilities.settings), только
+  // не на уровне монтирования (там сидит и POST /report, который обязан
+  // остаться доступен обычному оператору), а на уровне самих read-роутов.
+  const requireSettingsCapability = (req, res) => {
+    if (!req.accessContext?.capabilities?.settings) {
+      res.status(403).json({
+        error: 'forbidden',
+        message: 'Admin access required'
+      });
+      return false;
+    }
+    return true;
+  };
+
   router.get('/reports', async (req, res) => {
+    if (!requireSettingsCapability(req, res)) return;
     try {
       const items = await store.list({
         azsId: String(req.query.azsId || ''),
@@ -115,6 +134,7 @@ export const createDiagRouter = ({ store, randomBytes = nodeRandomBytes, logger 
   });
 
   router.get('/reports/:code', async (req, res) => {
+    if (!requireSettingsCapability(req, res)) return;
     try {
       const row = await store.getByCode(req.params.code);
       if (!row) return res.status(404).json({ error: 'diag_report_not_found' });
