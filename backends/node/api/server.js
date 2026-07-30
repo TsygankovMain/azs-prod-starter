@@ -54,6 +54,7 @@ import { createUsersRouter } from './src/users/usersRoutes.js';
 import cron from 'node-cron';
 import createDiagRouter from './src/diag/diagRoutes.js';
 import { createDiagStore } from './src/diag/diagStore.js';
+import { createServerSelfCheck } from './src/diag/serverSelfCheck.js';
 
 try {
   validateRequiredEnv();
@@ -670,13 +671,27 @@ app.use('/api/users', verifyToken, attachAccessContext, createUsersRouter({
 //
 // diagStore === null (СУБД не PostgreSQL) — весь мониторинг просто не
 // монтируется, без него роутер не может ни во что писать.
+// Серверный срез (Task 11): состояние OAuth-контекста, живая проба Диска,
+// пинг БД. Конструктор не делает I/O сам по себе, поэтому создаём его
+// безусловно — таймеры и сетевые вызовы запускаются только внутри run(),
+// а run() вызывается лишь из-под /api/diag/report, который смонтирован
+// ниже только когда diagStore не null.
+const diagSelfCheck = createServerSelfCheck({ authContextStore, bitrixClient, pool });
 if (diagStore) {
-  const diagRouter = createDiagRouter({ store: diagStore });
+  const diagRouter = createDiagRouter({ store: diagStore, serverSelfCheck: diagSelfCheck });
   const DIAG_NO_ACCESS_CONTEXT_PATHS = new Set(['/ping', '/echo']);
   app.use('/api/diag', verifyToken, (req, res, next) => {
     if (DIAG_NO_ACCESS_CONTEXT_PATHS.has(req.path)) return next();
     return attachAccessContext(req, res, next);
   }, diagRouter);
+}
+// Диагностика отключена (например, неподдерживаемая СУБД). Отвечаем в том же
+// JSON-контракте, что и остальное приложение: голый HTML-404 от Express
+// фронтенд разбирает как SyntaxError и показывает оператору не отказ, а сбой.
+if (!diagStore) {
+  app.use('/api/diag', (_req, res) => {
+    res.status(503).json({ error: 'diag_unavailable' });
+  });
 }
 
 // ---------------------------------------------------------------------------
