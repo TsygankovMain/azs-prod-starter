@@ -26,15 +26,15 @@ export function buildBundle(input: BuildBundleInput): DiagBundle {
       url: redactUrl(entry.url),
       headers: redactHeaders(entry.headers)
     })),
-    errors: input.errors.map((entry) => ({
+    errors: (input.errors ?? []).map((entry) => ({
       ...entry,
       message: redactText(entry.message),
       stack: entry.stack === undefined ? undefined : redactText(entry.stack)
     })),
-    uploads: input.uploads.map((entry) => ({ ...entry, message: redactText(entry.message) })),
+    uploads: (input.uploads ?? []).map((entry) => ({ ...entry, message: redactText(entry.message) })),
     queue: {
       ...input.queue,
-      slots: input.queue.slots.map((slot) => ({ ...slot, error: redactText(slot.error) }))
+      slots: (input.queue?.slots ?? []).map((slot) => ({ ...slot, error: redactText(slot.error) }))
     },
     dropped: { ...input.dropped }
   }
@@ -44,10 +44,10 @@ export function buildBundle(input: BuildBundleInput): DiagBundle {
   // это самая дефицитная часть бандла. Функция возвращает false, когда сбрасывать
   // больше нечего, — цикл гарантированно завершается.
   const shedOldest = (): boolean => {
-    if (bundle.net.length > 0) { bundle.net.shift(); bundle.dropped.net += 1; return true }
-    if (bundle.b24.length > 0) { bundle.b24 = bundle.b24.slice(1); return true }
-    if (bundle.uploads.length > 0) { bundle.uploads = bundle.uploads.slice(1); bundle.dropped.uploads += 1; return true }
-    if (bundle.errors.length > 0) { bundle.errors = bundle.errors.slice(1); bundle.dropped.errors += 1; return true }
+    if ((bundle.net?.length ?? 0) > 0) { bundle.net.shift(); bundle.dropped.net += 1; return true }
+    if ((bundle.b24?.length ?? 0) > 0) { bundle.b24 = bundle.b24.slice(1); return true }
+    if ((bundle.uploads?.length ?? 0) > 0) { bundle.uploads = bundle.uploads.slice(1); bundle.dropped.uploads += 1; return true }
+    if ((bundle.errors?.length ?? 0) > 0) { bundle.errors = bundle.errors.slice(1); bundle.dropped.errors += 1; return true }
     return false
   }
   while (byteLength(bundle) > MAX_BUNDLE_BYTES && shedOldest()) { /* усекаем, пока не поместится */ }

@@ -37,7 +37,7 @@ export function redactUrl(rawUrl: string): string {
         }
       }
       if (hashTouched) {
-        url.hash = hashParams.toString()
+        url.hash = `#${hashParams.toString()}`
         touched = true
       }
     }
@@ -49,9 +49,24 @@ export function redactUrl(rawUrl: string): string {
   }
 }
 
-const SECRET_TEXT_KEYS = 'token|access_token|refresh_token|auth|sessid|api_key|apikey'
-const KV_RE = new RegExp(`\\b(${SECRET_TEXT_KEYS})"?\\s*[=:]\\s*"?([^&\\s"'<>)\\]},;]+)"?`, 'gi')
-const BEARER_RE = /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{8,})/gi
+// Словарь выровнен по backends/node/api/utils/maskSecret.js (SENSITIVE_KEYS)
+// и расширен формами, которые реально встречаются в текстах ошибок.
+// Порядок важен: длинные варианты идут раньше коротких, иначе `token`
+// съест префикс у `access_token`.
+const SECRET_TEXT_KEYS = [
+  'access[_-]?token', 'refresh[_-]?token', 'id[_-]?token', 'token',
+  'auth[_-]?id', 'authorization', 'auth',
+  'session[_-]?id', 'sess[_-]?id', 'sessid',
+  'api[_-]?key', 'client[_-]?secret', 'secret',
+  'password', 'passwd', 'pwd'
+].join('|')
+
+// Значение обрываем только на пробеле, кавычке, & и закрывающих скобках.
+// Запятая и точка с запятой НЕ терминаторы: секрет с запятой иначе маскируется
+// частично и пригодный огрызок уезжает в бандл. Лишняя маскировка в прозе
+// безопаснее утечки.
+const KV_RE = new RegExp(`\\b(${SECRET_TEXT_KEYS})"?\\s*[=:]\\s*"?([^&\\s"'<>)\\]}]+)`, 'gi')
+const BEARER_RE = /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{4,})/gi
 
 /**
  * Чистит секреты в свободном тексте — сообщениях об ошибках и стеках.

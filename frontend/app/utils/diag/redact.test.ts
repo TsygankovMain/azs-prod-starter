@@ -82,7 +82,7 @@ test('redactText: URL внутри текста ошибки — секрет с
 })
 
 test('redactText: Bearer в стеке скрыт', () => {
-  const out = redactText('at fetch (Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc)')
+  const out = redactText('at fetch with Bearer eyJhbGciOiJIUzI1NiJ9.abc')
   assert.ok(!out.includes('eyJhbGciOiJIUzI1NiJ9'), out)
   assert.ok(out.includes(`Bearer ${REDACTED}`), out)
 })
@@ -112,4 +112,40 @@ test('redactText: слово token в прозе не ломает текст', 
 
 test('redactText: пустой вход', () => {
   assert.equal(redactText(''), '')
+})
+
+test('redactText: закрыты утечки, найденные ре-ревью', () => {
+  const cases = [
+    'client_secret=LEAK', 'client-secret=LEAK', 'password=LEAK', 'passwd=LEAK',
+    'auth_id=LEAK', 'authid=LEAK', 'api-key=LEAK', 'x-api-key: LEAK',
+    'apikey=LEAK', 'api_key=LEAK', 'refresh-token=LEAK', 'refreshtoken=LEAK',
+    'access-token=LEAK', 'session-id=LEAK', 'sessid=LEAK', 'secret=LEAK',
+    'pwd=LEAK', 'id_token=LEAK', 'authorization=LEAK'
+  ]
+  for (const c of cases) {
+    assert.ok(!redactText(c).includes('LEAK'), `утечка: ${c} -> ${redactText(c)}`)
+  }
+})
+
+test('redactText: значение с запятой маскируется целиком', () => {
+  const out = redactText('token=abc123,def456')
+  assert.ok(!out.includes('abc123'), out)
+  assert.ok(!out.includes('def456'), out)
+})
+
+test('redactText: несколько секретов в одной строке', () => {
+  const out = redactText('token=AAA sessid=BBB client_secret=CCC')
+  for (const s of ['AAA', 'BBB', 'CCC']) assert.ok(!out.includes(s), out)
+})
+
+test('redactText: короткий Bearer тоже ловится', () => {
+  assert.ok(!redactText('Bearer abcd').includes('abcd'))
+})
+
+test('redactText: проза не искажается', () => {
+  for (const msg of [
+    'Не удалось загрузить фото: сеть недоступна (azsId=548, попытка 2)',
+    'refresh token истёк',
+    'Ошибка авторизации'
+  ]) assert.equal(redactText(msg), msg)
 })
