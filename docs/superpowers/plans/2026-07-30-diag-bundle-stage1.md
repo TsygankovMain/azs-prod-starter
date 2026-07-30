@@ -746,6 +746,29 @@ test('повторно скрывает секреты, даже если кли
   assert.ok(!JSON.stringify(res.bundle).includes('token=abc'));
 });
 
+test('чистит секреты в свободном тексте ошибок, загрузок и очереди', () => {
+  const raw = validBundle();
+  raw.errors = [{ kind: 'onerror', message: 'POST /api/x?token=LEAK failed', stack: 'Error: sessid=LEAK\n  at f' }];
+  raw.uploads = [{ photoCode: 'p1', message: 'auth=LEAK' }];
+  raw.queue = { activeCount: 0, maxConcurrency: 2, workerSessionId: 1, slots: [{ key: 'p1', error: 'Bearer eyJhbGciOiJIUzI1NiJ9.abc' }] };
+  const res = sanitizeBundle(raw);
+  assert.equal(res.ok, true);
+  const serialized = JSON.stringify(res.bundle);
+  assert.ok(!serialized.includes('LEAK'), serialized);
+  assert.ok(!serialized.includes('eyJhbGciOiJIUzI1NiJ9'), serialized);
+});
+
+test('отсутствующие массивы не роняют санитизацию', () => {
+  const raw = validBundle();
+  delete raw.errors;
+  delete raw.uploads;
+  delete raw.queue;
+  const res = sanitizeBundle(raw);
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.bundle.errors, []);
+  assert.deepEqual(res.bundle.uploads, []);
+});
+
 test('отклоняет бандл больше потолка', () => {
   const big = validBundle();
   big.errors = Array.from({ length: 5000 }, () => ({ kind: 'onerror', message: 'x'.repeat(200) }));
@@ -792,6 +815,25 @@ const SECRET_HEADERS = new Set(['authorization', 'cookie', 'set-cookie', 'x-api-
 const SECRET_QUERY_KEYS = new Set(['token', 'access_token', 'auth', 'sessid']);
 const ALLOWED_TRIGGERS = new Set(['button', 'auto_upload_error']);
 const REDACTED = '***';
+
+const SECRET_TEXT_KEYS = 'token|access_token|refresh_token|auth|sessid|api_key|apikey';
+const KV_RE = new RegExp(`\\b(${SECRET_TEXT_KEYS})"?\\s*[=:]\\s*"?([^&\\s"'<>)\\]},;]+)"?`, 'gi');
+const BEARER_RE = /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{8,})/gi;
+
+/**
+ * Чистит секреты в свободном тексте — сообщениях об ошибках и стеках.
+ *
+ * Текст ошибки почти всегда содержит URL упавшего запроса, а stack дублирует
+ * message. Разбирать это как URL нельзя: строка произвольная. Поэтому ищем
+ * пары «ключ=значение» и схемы авторизации.
+ */
+const redactText = (text) => {
+  const raw = String(text ?? '');
+  if (!raw) return '';
+  return raw
+    .replace(KV_RE, (_m, key) => `${key}=${REDACTED}`)
+    .replace(BEARER_RE, (_m, scheme) => `${scheme} ${REDACTED}`);
+};
 
 export const MAX_BUNDLE_BYTES = 262_144;
 export const DIAG_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -843,7 +885,27 @@ export const sanitizeBundle = (raw) => {
         url: redactUrl(entry?.url),
         headers: redactHeaders(entry?.headers)
       }))
-      : []
+      : [],
+    // Свободный текст чистим и здесь: клиент это уже делает, но бандл приходит
+    // из браузера и может быть собран устаревшей сборкой фронта либо подделан.
+    errors: Array.isArray(raw.errors)
+      ? raw.errors.map((entry) => ({
+        ...entry,
+        message: redactText(entry?.message),
+        stack: entry?.stack === undefined ? undefined : redactText(entry.stack)
+      }))
+      : [],
+    uploads: Array.isArray(raw.uploads)
+      ? raw.uploads.map((entry) => ({ ...entry, message: redactText(entry?.message) }))
+      : [],
+    queue: raw.queue && typeof raw.queue === 'object'
+      ? {
+        ...raw.queue,
+        slots: Array.isArray(raw.queue.slots)
+          ? raw.queue.slots.map((slot) => ({ ...slot, error: redactText(slot?.error) }))
+          : []
+      }
+      : raw.queue
   };
 
   const sizeBytes = Buffer.byteLength(JSON.stringify(bundle), 'utf8');
