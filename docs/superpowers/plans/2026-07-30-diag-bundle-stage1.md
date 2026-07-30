@@ -529,6 +529,29 @@ test('insert передаёт бандл как параметр, а не скл
   assert.equal(call.params[7], JSON.stringify({ v: 1, note: "it's fine" }));
 });
 
+test('insert кладёт серверный срез отдельной колонкой', async () => {
+  const pool = makePgPool([{ id: 1, code: 'A7F3QQ' }]);
+  const store = createDiagStore({ pool, dbType: 'postgresql' });
+  await store.insert({
+    code: 'A7F3QQ', diagSessionId: 's', userId: 1, azsId: '548', reportId: 1,
+    trigger: 'button', sizeBytes: 10, bundle: { v: 1 },
+    serverSlice: { oauth: { hasContext: true }, disk: { ok: false } }
+  });
+  const call = pool._calls.at(-1);
+  assert.match(call.sql, /server_slice/);
+  assert.equal(call.params[8], JSON.stringify({ oauth: { hasContext: true }, disk: { ok: false } }));
+});
+
+test('insert без серверного среза кладёт NULL', async () => {
+  const pool = makePgPool([{ id: 1, code: 'B' }]);
+  const store = createDiagStore({ pool, dbType: 'postgresql' });
+  await store.insert({
+    code: 'B', diagSessionId: 's', userId: 1, azsId: '548', reportId: 1,
+    trigger: 'button', sizeBytes: 10, bundle: { v: 1 }
+  });
+  assert.equal(pool._calls.at(-1).params[8], null);
+});
+
 test('getByCode возвращает null, когда ничего не найдено', async () => {
   const store = createDiagStore({ pool: makePgPool([]), dbType: 'postgresql' });
   assert.equal(await store.getByCode('NOPE00'), null);
@@ -597,6 +620,11 @@ export const createDiagStore = ({ pool, dbType = 'postgresql' }) => {
           trigger TEXT NOT NULL,
           size_bytes INT NOT NULL,
           bundle JSONB NOT NULL,
+          -- Серверная половина картины: состояние OAuth-токена, живая проба
+          -- Диска с таймингом, пинг БД. Отдельной колонкой, а не внутри bundle:
+          -- она не приходит от клиента, не подлежит проверке доверия и не должна
+          -- влиять на потолок размера бандла.
+          server_slice JSONB NULL,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `);
@@ -614,11 +642,11 @@ export const createDiagStore = ({ pool, dbType = 'postgresql' }) => {
       `);
     },
 
-    async insert({ code, diagSessionId, userId, azsId, reportId, trigger, sizeBytes, bundle }) {
+    async insert({ code, diagSessionId, userId, azsId, reportId, trigger, sizeBytes, bundle, serverSlice = null }) {
       const result = await pool.query(
         `INSERT INTO diag_report
-           (code, diag_session_id, user_id, azs_id, report_id, trigger, size_bytes, bundle)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           (code, diag_session_id, user_id, azs_id, report_id, trigger, size_bytes, bundle, server_slice)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id, code, created_at`,
         [
           code,
@@ -628,7 +656,8 @@ export const createDiagStore = ({ pool, dbType = 'postgresql' }) => {
           Number.isFinite(Number(reportId)) ? Number(reportId) : null,
           trigger,
           Number(sizeBytes) || 0,
-          JSON.stringify(bundle)
+          JSON.stringify(bundle),
+          serverSlice === null ? null : JSON.stringify(serverSlice)
         ]
       );
       return result.rows[0] ?? null;
@@ -636,7 +665,7 @@ export const createDiagStore = ({ pool, dbType = 'postgresql' }) => {
 
     async getByCode(code) {
       const result = await pool.query(
-        'SELECT id, code, diag_session_id, user_id, azs_id, report_id, trigger, size_bytes, bundle, created_at FROM diag_report WHERE code = $1 LIMIT 1',
+        'SELECT id, code, diag_session_id, user_id, azs_id, report_id, trigger, size_bytes, bundle, server_slice, created_at FROM diag_report WHERE code = $1 LIMIT 1',
         [String(code || '')]
       );
       return result.rows[0] ?? null;
@@ -861,7 +890,7 @@ const BEARER_RE = /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{4,})/gi;
  * message. Разбирать это как URL нельзя: строка произвольная. Поэтому ищем
  * пары «ключ=значение» и схемы авторизации.
  */
-const redactText = (text) => {
+export const redactText = (text) => {
   const raw = String(text ?? '');
   if (!raw) return '';
   return raw
@@ -1152,7 +1181,7 @@ export const DIAG_ECHO_LIMIT = '1mb';
  * сеть оператора, а не нашу БД. Поэтому они не обращаются к стору и должны
  * монтироваться без attachAccessContext (см. Task 6).
  */
-export const createDiagRouter = ({ store, randomBytes = nodeRandomBytes, logger = console }) => {
+export const createDiagRouter = ({ store, randomBytes = nodeRandomBytes, logger = console, serverSelfCheck = null }) => {
   const router = express.Router();
 
   router.get('/ping', (_req, res) => {
@@ -1175,6 +1204,18 @@ export const createDiagRouter = ({ store, randomBytes = nodeRandomBytes, logger 
     const { bundle, sizeBytes } = result;
     const code = generateDiagCode(randomBytes(6));
 
+    // Серверный срез — best-effort и никогда не роняет приём бандла: клиентская
+    // половина ценна сама по себе, терять её из-за зависшего Диска нельзя.
+    // Реализация — Task 11; до неё serverSelfCheck === null.
+    let serverSlice = null;
+    if (serverSelfCheck) {
+      try {
+        serverSlice = await serverSelfCheck.run();
+      } catch (error) {
+        logger.warn('diag_server_slice_failed', { code, message: error.message });
+      }
+    }
+
     try {
       const row = await store.insert({
         code,
@@ -1184,7 +1225,8 @@ export const createDiagRouter = ({ store, randomBytes = nodeRandomBytes, logger 
         reportId: bundle.user?.reportId || null,
         trigger: bundle.trigger,
         sizeBytes,
-        bundle
+        bundle,
+        serverSlice
       });
       logger.info('diag_report_stored', {
         code, sizeBytes, trigger: bundle.trigger, azsId: bundle.user?.azsId || null
@@ -2091,6 +2133,334 @@ git commit -m "chore(DIAG): удалить мёртвую телеметрию, 
 
 ---
 
+### Task 11: Серверный срез — состояние OAuth, живая проба Диска, пинг БД
+
+**Files:**
+- Create: `backends/node/api/src/diag/serverSelfCheck.js`
+- Create: `backends/node/api/tests/diagServerSelfCheck.test.js`
+- Modify: `backends/node/api/server.js` (создать срез и передать в роутер)
+
+**Interfaces:**
+- Consumes: `redactText` из `./sanitizeBundle.js` (Task 4); `authContextStore`, `bitrixClient`, `pool`, `dbType` из `server.js`; шов `serverSelfCheck` в `createDiagRouter` (Task 5).
+- Produces: `createServerSelfCheck({ authContextStore, bitrixClient, pool, logger, now })` → `{ run(): Promise<object> }`.
+
+**Зачем это в этапе 1.** Без серверной половины бандл говорит «загрузка упала, канал у оператора был в порядке», но не говорит, что именно сломалось у нас. Главный подозреваемый — OAuth (`wrong_client`, план ремедиации §0), и живая проба Диска показывает это прямо: при сломанном токене она вернёт код ошибки, который попадёт в бандл. Это превращает вердикт из «что-то у нас» в «вот что у нас».
+
+**Три требования, которые нельзя нарушать.** Срез не имеет права бросать исключение — приём бандла важнее. Каждая проба ограничена по времени, иначе зависший Диск задержит запрос оператора. И в срез не попадают значения токенов — только факт наличия и длина.
+
+- [ ] **Step 1: Написать падающий тест**
+
+`backends/node/api/tests/diagServerSelfCheck.test.js`:
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createServerSelfCheck } from '../src/diag/serverSelfCheck.js';
+
+const silentLogger = { info() {}, warn() {}, error() {} };
+const FIXED_NOW = 1_784_000_000_000;
+
+const makeDeps = (over = {}) => ({
+  authContextStore: {
+    async getLastAdmin() {
+      return {
+        key: 'portal:1',
+        payload: JSON.stringify({ domain: 'x.bitrix24.ru', memberId: 'm1', authId: 'SECRETAUTH', refreshToken: 'SECRETREFRESH' }),
+        updated_at: new Date(FIXED_NOW - 60_000).toISOString()
+      };
+    }
+  },
+  bitrixClient: { isConfigured: true, async callMethod() { return { result: [] }; } },
+  pool: { async query() { return { rows: [{ ok: 1 }] }; } },
+  logger: silentLogger,
+  now: () => FIXED_NOW,
+  ...over
+});
+
+test('здоровый случай: все пробы ок', async () => {
+  const check = createServerSelfCheck(makeDeps());
+  const out = await check.run();
+  assert.equal(out.oauth.hasContext, true);
+  assert.equal(out.oauth.domain, 'x.bitrix24.ru');
+  assert.equal(out.oauth.ageSec, 60);
+  assert.equal(out.disk.ok, true);
+  assert.equal(typeof out.disk.ms, 'number');
+  assert.equal(out.db.ok, true);
+  assert.equal(typeof out.checkedAt, 'string');
+});
+
+test('значения токенов в срез не попадают', async () => {
+  const check = createServerSelfCheck(makeDeps());
+  const serialized = JSON.stringify(await check.run());
+  assert.ok(!serialized.includes('SECRETAUTH'), serialized);
+  assert.ok(!serialized.includes('SECRETREFRESH'), serialized);
+  assert.equal((await check.run()).oauth.hasAuthId, true);
+});
+
+test('wrong_client из Диска попадает в срез кодом', async () => {
+  const check = createServerSelfCheck(makeDeps({
+    bitrixClient: {
+      isConfigured: true,
+      async callMethod() { throw new Error('Bitrix error: wrong_client — invalid client secret'); }
+    }
+  }));
+  const out = await check.run();
+  assert.equal(out.disk.ok, false);
+  assert.equal(out.disk.errorCode, 'wrong_client');
+});
+
+test('секрет в тексте ошибки Диска чистится', async () => {
+  const check = createServerSelfCheck(makeDeps({
+    bitrixClient: {
+      isConfigured: true,
+      async callMethod() { throw new Error('failed: client_secret=LEAKVALUE'); }
+    }
+  }));
+  const out = await check.run();
+  assert.ok(!JSON.stringify(out).includes('LEAKVALUE'), JSON.stringify(out));
+});
+
+test('зависший Диск не держит срез дольше таймаута', async () => {
+  const check = createServerSelfCheck(makeDeps({
+    bitrixClient: { isConfigured: true, callMethod: () => new Promise(() => {}) },
+    diskTimeoutMs: 40
+  }));
+  const startedAt = Date.now();
+  const out = await check.run();
+  assert.ok(Date.now() - startedAt < 2000, 'срез должен вернуться быстро');
+  assert.equal(out.disk.ok, false);
+  assert.match(String(out.disk.errorMessage), /timeout/);
+});
+
+test('падение хранилища контекста не роняет срез', async () => {
+  const check = createServerSelfCheck(makeDeps({
+    authContextStore: { async getLastAdmin() { throw new Error('db down'); } }
+  }));
+  const out = await check.run();
+  assert.equal(out.oauth.hasContext, false);
+  assert.equal(out.db.ok, true);
+});
+
+test('битый payload не роняет срез', async () => {
+  const check = createServerSelfCheck(makeDeps({
+    authContextStore: { async getLastAdmin() { return { payload: 'не json', updated_at: null }; } }
+  }));
+  const out = await check.run();
+  assert.equal(out.oauth.hasContext, true);
+  assert.equal(out.oauth.domain, null);
+});
+
+test('run никогда не бросает, даже если сломано всё', async () => {
+  const check = createServerSelfCheck({
+    authContextStore: null, bitrixClient: null, pool: null, logger: silentLogger, now: () => FIXED_NOW
+  });
+  const out = await check.run();
+  assert.equal(out.oauth.hasContext, false);
+  assert.equal(out.disk.ok, false);
+  assert.equal(out.db.ok, false);
+});
+```
+
+- [ ] **Step 2: Прогнать — должно падать**
+
+Run: `cd backends/node/api && node --test tests/diagServerSelfCheck.test.js`
+Expected: FAIL — `Cannot find module '../src/diag/serverSelfCheck.js'`.
+
+- [ ] **Step 3: Реализовать `serverSelfCheck.js`**
+
+```js
+import { redactText } from './sanitizeBundle.js';
+
+const DISK_TIMEOUT_MS = 5_000;
+const DB_TIMEOUT_MS = 2_000;
+const MAX_ERROR_CHARS = 300;
+
+// Коды, по которым сразу понятно, что сломалось на нашей стороне интеграции.
+const KNOWN_ERROR_CODES = [
+  'wrong_client', 'invalid_grant', 'invalid_token', 'expired_token',
+  'NO_AUTH_FOUND', 'ACCESS_DENIED', 'insufficient_scope', 'QUERY_LIMIT_EXCEEDED'
+];
+
+const extractErrorCode = (message) => {
+  const text = String(message || '');
+  for (const code of KNOWN_ERROR_CODES) {
+    if (new RegExp(`\\b${code}\\b`, 'i').test(text)) return code;
+  }
+  return null;
+};
+
+const cleanError = (error) => {
+  const raw = String(error?.message || error || '');
+  return redactText(raw).slice(0, MAX_ERROR_CHARS);
+};
+
+/**
+ * Ограничивает пробу по времени. Зависший Диск не должен задерживать запрос
+ * оператора: таймер unref'ится, чтобы не держать процесс живым.
+ */
+const withTimeout = async (factory, ms, label) => {
+  let timer = null;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(factory),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label}_timeout`)), ms);
+        if (typeof timer.unref === 'function') timer.unref();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+/**
+ * serverSelfCheck — серверная половина диагностической картины.
+ *
+ * Клиент не видит состояние нашего OAuth-токена и ответ Диска Битрикса, а без
+ * них нельзя отличить «сломался наш код» от «сломалась интеграция». Живая проба
+ * Диска при сломанном токене вернёт wrong_client — это и есть искомый сигнал.
+ *
+ * Контракт: run() никогда не бросает, каждая проба ограничена по времени,
+ * значения токенов в результат не попадают — только факт наличия и длина.
+ */
+export const createServerSelfCheck = ({
+  authContextStore,
+  bitrixClient,
+  pool,
+  logger = console,
+  now = () => Date.now(),
+  diskTimeoutMs = DISK_TIMEOUT_MS,
+  dbTimeoutMs = DB_TIMEOUT_MS
+}) => {
+  const probeOauth = async () => {
+    const empty = {
+      hasContext: false, domain: null, memberId: null, updatedAt: null, ageSec: null,
+      hasAuthId: false, hasRefreshToken: false, authIdLength: 0, refreshTokenLength: 0,
+      clientConfigured: Boolean(bitrixClient?.isConfigured)
+    };
+    try {
+      const row = await authContextStore?.getLastAdmin?.();
+      if (!row) return empty;
+
+      let payload = {};
+      try {
+        payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : (row.payload || {});
+      } catch {
+        payload = {};
+      }
+
+      const updatedAt = row.updated_at ? new Date(row.updated_at) : null;
+      const ageSec = updatedAt && !Number.isNaN(updatedAt.getTime())
+        ? Math.round((now() - updatedAt.getTime()) / 1000)
+        : null;
+
+      const authId = String(payload.authId || payload.auth_id || '');
+      const refreshToken = String(payload.refreshToken || payload.refresh_token || '');
+
+      return {
+        hasContext: true,
+        domain: payload.domain ? String(payload.domain) : null,
+        memberId: payload.memberId || payload.member_id ? String(payload.memberId || payload.member_id) : null,
+        updatedAt: updatedAt && !Number.isNaN(updatedAt.getTime()) ? updatedAt.toISOString() : null,
+        ageSec,
+        // Только факт и длина: сами значения — секреты.
+        hasAuthId: authId.length > 0,
+        hasRefreshToken: refreshToken.length > 0,
+        authIdLength: authId.length,
+        refreshTokenLength: refreshToken.length,
+        clientConfigured: Boolean(bitrixClient?.isConfigured)
+      };
+    } catch (error) {
+      logger.warn('diag_selfcheck_oauth_failed', { message: cleanError(error) });
+      return empty;
+    }
+  };
+
+  const probeDisk = async () => {
+    const startedAt = now();
+    try {
+      if (!bitrixClient?.callMethod) {
+        return { ok: false, ms: 0, errorCode: null, errorMessage: 'bitrix_client_unavailable' };
+      }
+      await withTimeout(() => bitrixClient.callMethod('disk.storage.getlist', {}, {}), diskTimeoutMs, 'disk');
+      return { ok: true, ms: now() - startedAt, errorCode: null, errorMessage: null };
+    } catch (error) {
+      const errorMessage = cleanError(error);
+      return { ok: false, ms: now() - startedAt, errorCode: extractErrorCode(errorMessage), errorMessage };
+    }
+  };
+
+  const probeDb = async () => {
+    const startedAt = now();
+    try {
+      if (!pool?.query) return { ok: false, ms: 0, errorMessage: 'pool_unavailable' };
+      await withTimeout(() => pool.query('SELECT 1'), dbTimeoutMs, 'db');
+      return { ok: true, ms: now() - startedAt, errorMessage: null };
+    } catch (error) {
+      return { ok: false, ms: now() - startedAt, errorMessage: cleanError(error) };
+    }
+  };
+
+  return {
+    async run() {
+      const [oauth, disk, db] = await Promise.all([probeOauth(), probeDisk(), probeDb()]);
+      return {
+        checkedAt: new Date(now()).toISOString(),
+        app: {
+          botMode: String(process.env.BITRIX_BOT_MODE || ''),
+          nodeEnv: String(process.env.NODE_ENV || ''),
+          schedulerEnabled: String(process.env.SCHEDULER_ENABLED || 'true') !== 'false'
+        },
+        oauth,
+        disk,
+        db
+      };
+    }
+  };
+};
+
+export default createServerSelfCheck;
+```
+
+- [ ] **Step 4: Прогнать тесты — должны пройти**
+
+Run: `cd backends/node/api && node --test tests/diagServerSelfCheck.test.js`
+Expected: PASS, 8 тестов.
+
+- [ ] **Step 5: Подключить в `server.js`**
+
+Импорт рядом с прочими диаг-импортами:
+
+```js
+import { createServerSelfCheck } from './src/diag/serverSelfCheck.js';
+```
+
+Создание — рядом с `diagStore`:
+
+```js
+const diagSelfCheck = createServerSelfCheck({ authContextStore, bitrixClient, pool });
+```
+
+И передать в роутер, заменив строку создания `diagRouter` из Task 6:
+
+```js
+const diagRouter = createDiagRouter({ store: diagStore, serverSelfCheck: diagSelfCheck });
+```
+
+- [ ] **Step 6: Прогнать весь бэкендный набор**
+
+Run: `cd backends/node/api && node --test tests/`
+Expected: PASS, регрессий нет.
+
+- [ ] **Step 7: Коммит**
+
+```bash
+git add backends/node/api/src/diag/serverSelfCheck.js backends/node/api/tests/diagServerSelfCheck.test.js backends/node/api/server.js
+git commit -m "feat(DIAG): серверный срез — состояние OAuth, живая проба Диска, пинг БД"
+```
+
+---
+
 ## Порядок и зависимости
 
 ```
@@ -2102,3 +2472,5 @@ Task 3 (стор) ──► Task 4 (санитизация) ──► Task 5 (р
 ```
 
 Бэкенд (Task 3–6) и фронтовые утилиты (Task 1–2) независимы и могут идти параллельно. Task 7 зависит только от Task 1–2. Task 8 требует и Task 7, и работающего Task 6 (для проб). Task 9 — последний код, Task 10 — чистка и приёмка.
+
+**Task 11 (серверный срез)** идёт после Task 6: он использует `redactText` из Task 4 и шов `serverSelfCheck`, заложенный в Task 5. Колонка `server_slice` создаётся сразу в Task 3, поэтому миграция не нужна. До реализации Task 11 роутер работает с `serverSelfCheck === null` и просто пишет `NULL` в колонку — то есть Tasks 3–6 остаются самодостаточными и деплоятся без Task 11.
