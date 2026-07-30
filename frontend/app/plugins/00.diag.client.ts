@@ -13,6 +13,13 @@
  * Любой сбой рекордера гасится: диагностика не имеет права ломать сдачу отчёта.
  */
 import { isOwnOriginRequestUrl, resolveRequestMethod, resolveRequestUrl } from '~/utils/diag/netCapture'
+// Fix round (ревью, BLOCKING 1): composables/diag/ — вложенная папка,
+// Nuxt авто-импортирует только верхний уровень app/composables/. Без явного
+// import это падало ReferenceError на первом клиентском тике, а поскольку
+// error.vue сам рендерит DiagButton (→ useDiagSender → useDiagCollector),
+// экран ошибки падал вместе с приложением.
+import { useDiagCollector } from '~/composables/diag/useDiagCollector'
+import { useDiagSender } from '~/composables/diag/useDiagSender'
 
 export default defineNuxtPlugin(() => {
   if (typeof window === 'undefined') return
@@ -26,7 +33,23 @@ export default defineNuxtPlugin(() => {
   if (w.__diagRecorderInstalled) return
   w.__diagRecorderInstalled = true
 
-  const { diagSessionId, recordNet, recordError } = useDiagCollector()
+  // Fix round (ревью, BLOCKING 4): useDiagCollector() теперь сам по себе не
+  // бросает (см. useDiagCollector.ts), но этот плагин — самая ранняя точка
+  // загрузки клиента, и throw здесь на первом тике роняет весь плагин
+  // (вместе с ним — обёртку fetch и подписки на window-ошибки ниже), а из-за
+  // того, что error.vue сам рендерит DiagButton, падает и экран ошибки.
+  // Вторая, независимая линия защиты: сбой сборщика не должен стоить
+  // приложению обёртки fetch.
+  let diagSessionId = ''
+  let recordNet: ReturnType<typeof useDiagCollector>['recordNet'] = () => {}
+  let recordError: ReturnType<typeof useDiagCollector>['recordError'] = () => {}
+  try {
+    const collector = useDiagCollector()
+    diagSessionId = collector.diagSessionId
+    recordNet = collector.recordNet
+    recordError = collector.recordError
+  } catch { /* см. комментарий выше — плагин обязан подняться без диагностики */ }
+
   const originalFetch = globalThis.fetch.bind(globalThis)
   const appOrigin = window.location.origin
 
@@ -98,4 +121,32 @@ export default defineNuxtPlugin(() => {
       })
     } catch { /* игнорируем */ }
   })
+
+  // Fix round (ревью, BLOCKING 3): flushPending() дожимает бандлы, которые
+  // не отправились раньше (сбой сети/5xx — см. useDiagSender.ts) и осели в
+  // localStorage. Функция существовала, но её никто не вызывал — очередь
+  // ретрая только росла, а операторский тост в DiagButton.vue обещал, что
+  // сохранённая диагностика «уйдёт, когда появится связь», хотя её отправку
+  // никто не запускал.
+  //
+  // Запускаем один раз на буте, ПОСЛЕ установки рекордера (строки выше) и
+  // вне критического пути первой отрисовки: requestIdleCallback, если
+  // браузер его поддерживает, иначе — setTimeout(0). Двойная защита от
+  // влияния на боевой процесс — try/catch снаружи планирования и .catch()
+  // на самом промисе, — потому что сдача фотоотчёта не имеет права зависеть
+  // от диагностики ни на миллисекунду.
+  const runFlushPending = (): void => {
+    try {
+      useDiagSender().flushPending().catch(() => { /* flushPending уже не бросает — это перестраховка */ })
+    } catch { /* см. комментарий выше */ }
+  }
+
+  try {
+    const ric = (window as Window & { requestIdleCallback?: (callback: () => void) => number }).requestIdleCallback
+    if (typeof ric === 'function') {
+      ric(() => runFlushPending())
+    } else {
+      setTimeout(runFlushPending, 0)
+    }
+  } catch { /* и requestIdleCallback, и setTimeout недоступны — тихая деградация */ }
 })

@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import type { B24Frame } from '@bitrix24/b24jssdk'
 import { buildQueueSnapshot, buildUploadErrorEntry, buildUploadSuccessEntry, extractUploadHttpStatus } from '~/utils/diag/uploadDiag'
+// Fix round (ревью, BLOCKING 1): composables/diag/ — вложенная папка,
+// Nuxt авто-импортирует только верхний уровень app/composables/.
+import { useDiagCollector } from '~/composables/diag/useDiagCollector'
+import { useDiagSender } from '~/composables/diag/useDiagSender'
 
 type ReportRow = {
   id: number
@@ -357,7 +361,18 @@ const scrollToFirstProblemSlot = async () => {
 const runUploadTask = async (task: UploadTask) => {
   const sessionId = uploadWorker.sessionId
   const slot = photoSlots.find((item) => item.key === task.slotKey)
-  const diag = useDiagCollector()
+  // Fix round (ревью, BLOCKING 4): useDiagCollector() трогает
+  // window.sessionStorage/crypto (см. useDiagCollector.ts) — throw здесь
+  // пропускал finally ниже, activeCount не уменьшался, и очередь загрузки
+  // фото останавливалась навсегда (при maxConcurrency=2 хватало двух таких
+  // throw). useDiagCollector.ts сам по себе теперь defensive и не бросает,
+  // но эта точка — вторая, независимая линия защиты: диагностика не имеет
+  // права остановить загрузку фото. diag остаётся null при сбое, поэтому
+  // обращения к нему ниже — через ?..
+  let diag: ReturnType<typeof useDiagCollector> | null = null
+  try {
+    diag = useDiagCollector()
+  } catch { /* см. комментарий выше */ }
   const uploadStartedAtMs = performance.now()
   const uploadStartedAt = new Date().toISOString()
   if (!slot) {
@@ -406,7 +421,7 @@ const runUploadTask = async (task: UploadTask) => {
       : ''
     slot.fileName = backendFileName || task.file.name
     registerUploadSuccess()
-    diag.recordUpload(buildUploadSuccessEntry(
+    diag?.recordUpload(buildUploadSuccessEntry(
       { photoCode: slot.key, fileSize: task.file.size, fileType: task.file.type, startedAt: uploadStartedAt, startedAtMs: uploadStartedAtMs, attempt: task.id },
       performance.now()
     ))
@@ -444,7 +459,7 @@ const runUploadTask = async (task: UploadTask) => {
     }
     saveError.value = slot.error
     saveErrorDetail.value = errorDetail(error)
-    diag.recordUpload(buildUploadErrorEntry(
+    diag?.recordUpload(buildUploadErrorEntry(
       { photoCode: slot.key, fileSize: task.file.size, fileType: task.file.type, startedAt: uploadStartedAt, startedAtMs: uploadStartedAtMs, attempt: task.id },
       performance.now(),
       {
@@ -454,7 +469,7 @@ const runUploadTask = async (task: UploadTask) => {
         message: String(responseData?.message || responseData?.error || humanText)
       }
     ))
-    diag.setQueueSnapshot(buildQueueSnapshot(
+    diag?.setQueueSnapshot(buildQueueSnapshot(
       uploadWorker,
       photoSlots.map((s) => ({ key: s.key, confirmed: s.confirmed, uploadState: s.uploadState, uploaded: s.uploaded, file: s.file, error: s.error }))
     ))

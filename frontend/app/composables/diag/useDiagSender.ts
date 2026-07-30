@@ -9,6 +9,7 @@
  * Правило на весь файл: диагностика не имеет права сорвать сдачу отчёта.
  * Каждый путь — try/catch, отправка fire-and-forget.
  */
+import { useDiagCollector } from './useDiagCollector'
 import { buildBundle } from '~/utils/diag/buildBundle'
 import { shouldSend, trimPendingQueue, MAX_PENDING } from '~/utils/diag/sendPolicy'
 import {
@@ -148,7 +149,16 @@ export const useDiagSender = () => {
     writePending(nextPendingQueue(queue, outcomes))
   }
 
-  const send = async (trigger: DiagTrigger, meta: SendMeta): Promise<{ ok: boolean; code: string | null }> => {
+  /**
+   * queued в ответе — fix round (ревью, BLOCKING 3): DiagButton.vue раньше
+   * не мог отличить «бандл лёг в очередь ретрая и правда уйдёт сам» от
+   * «троттлинг — попытки вообще не было» или «4xx — бэкенд отклонил
+   * окончательно, в очередь не ставили» (see комментарий про shouldRetrySend
+   * ниже). Все три ветки одинаково возвращали { ok: false, code: null },
+   * и кнопка врала оператору, что диагностика «уйдёт, когда появится связь»,
+   * даже когда сохранять было нечего или нечего ждать.
+   */
+  const send = async (trigger: DiagTrigger, meta: SendMeta): Promise<{ ok: boolean; code: string | null; queued: boolean }> => {
     try {
       // Троттлинг проверяется до пробы (probe ниже ждёт до PROBE_TIMEOUT_MS+3*PING_TIMEOUT_MS
       // при мёртвом канале) — иначе заброшенный из-за троттлинга вызов всё равно
@@ -156,7 +166,7 @@ export const useDiagSender = () => {
       // тут же выбрасывается.
       const lastRaw = window.localStorage.getItem(LAST_SENT_KEY)
       const lastSentAtMs = lastRaw === null ? null : Number(lastRaw)
-      if (!shouldSend(lastSentAtMs, Date.now())) return { ok: false, code: null }
+      if (!shouldSend(lastSentAtMs, Date.now())) return { ok: false, code: null, queued: false }
       window.localStorage.setItem(LAST_SENT_KEY, String(Date.now()))
 
       const probeResult = await probe(trigger)
@@ -164,7 +174,7 @@ export const useDiagSender = () => {
 
       try {
         const code = await post(bundle)
-        return { ok: true, code }
+        return { ok: true, code, queued: false }
       } catch (error) {
         // Fix round 1: 4xx от бэкенда — «этот бандл не примут никогда»
         // (битая версия, неизвестный триггер, превышен потолок), в очередь
@@ -175,15 +185,15 @@ export const useDiagSender = () => {
         const status = extractHttpStatus(error)
         if (shouldRetrySend(status)) {
           writePending([...readPending(), bundle])
-        } else {
-          console.warn('[diag] бэкенд отклонил бандл окончательно, в очередь ретрая не ставим', {
-            status, serverErrorCode: extractServerErrorCode(error)
-          })
+          return { ok: false, code: null, queued: true }
         }
-        return { ok: false, code: null }
+        console.warn('[diag] бэкенд отклонил бандл окончательно, в очередь ретрая не ставим', {
+          status, serverErrorCode: extractServerErrorCode(error)
+        })
+        return { ok: false, code: null, queued: false }
       }
     } catch {
-      return { ok: false, code: null }
+      return { ok: false, code: null, queued: false }
     }
   }
 

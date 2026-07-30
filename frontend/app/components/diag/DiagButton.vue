@@ -11,6 +11,12 @@
  * role приходит пропсом, а не из useUserStore(): стор хранит только
  * id/login/isAdmin, роль резолвится постранично.
  */
+// Fix round (ревью, BLOCKING 1): composables/diag/ — первая вложенная папка
+// в app/composables/ в этом проекте, Nuxt авто-импортирует только верхний
+// уровень. Без явного import useDiagSender() был ReferenceError на первом же
+// клике.
+import { useDiagSender } from '~/composables/diag/useDiagSender'
+
 const props = withDefaults(defineProps<{
   azsId?: string
   reportId?: number | null
@@ -42,8 +48,16 @@ const onClick = async () => {
     })
     if (result.ok && result.code) {
       toast.success(`Диагностика отправлена. Код: ${result.code}. Назовите его поддержке.`)
-    } else {
+    } else if (result.queued) {
+      // Только этот случай реально означает «сохранена и уйдёт сама»: бандл
+      // лёг в очередь ретрая (сеть/5xx), и flushPending() на следующем
+      // запуске приложения её дожмёт (fix round, BLOCKING 3).
       toast.info('Диагностика сохранена на устройстве и уйдёт, когда появится связь.')
+    } else {
+      // Троттлинг (недавно уже отправляли) или отказ сервера — бандл никуда
+      // не сохранён и сам не уйдёт. Раньше текст был одинаков для всех
+      // случаев и врал оператору именно здесь.
+      toast.info('Не удалось отправить диагностику. Попробуйте ещё раз через минуту.')
     }
   } finally {
     busy.value = false

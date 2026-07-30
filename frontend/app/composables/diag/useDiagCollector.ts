@@ -11,6 +11,7 @@
  * (проба канала) дозаполняет отправитель бандла в отдельной задаче.
  */
 import { createRingBuffer } from '~/utils/diag/ringBuffer'
+import { resolveSessionId } from '~/utils/diag/sessionId'
 import type {
   B24Entry, BuildBundleInput, DiagTrigger, ErrorEntry, NetEntry, QueueSnapshot, UploadEntry
 } from '~/utils/diag/types'
@@ -27,13 +28,48 @@ const b24Buf = createRingBuffer<B24Entry>(CAPS.b24)
 let queueSnapshot: QueueSnapshot = { activeCount: 0, maxConcurrency: 0, workerSessionId: 0, slots: [] }
 let sessionId = ''
 
+// Fix round (ревью, BLOCKING 4): раньше здесь были прямые непроверенные
+// вызовы window.sessionStorage.* и crypto.randomUUID() — оба могут бросить
+// (заблокированное хранилище в iframe Битрикс24 — тот же случай, что и
+// PhotoFeedView.vue:24-40; crypto.randomUUID недоступен вне secure context).
+// Throw отсюда доставал до admin/[reportId].client.vue и останавливал
+// очередь загрузки фото навсегда. Ниже — три отдельно перехваченных шага,
+// ни один не бросает; выбор/генерация самого id вынесены в чистый и
+// тестируемый resolveSessionId (utils/diag/sessionId.ts).
+
+const readStoredSessionId = (): string | null => {
+  try {
+    return window.sessionStorage.getItem(SESSION_KEY)
+  } catch {
+    return null
+  }
+}
+
+const persistSessionId = (id: string): void => {
+  try {
+    window.sessionStorage.setItem(SESSION_KEY, id)
+  } catch {
+    // заблокированное хранилище — id остаётся жить только в памяти вкладки
+  }
+}
+
+const readRandomUUID = (): (() => string) | undefined => {
+  try {
+    return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID.bind(crypto)
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
 const getOrCreateSessionId = (): string => {
   if (sessionId) return sessionId
   if (typeof window === 'undefined') return 'ssr'
-  const stored = window.sessionStorage.getItem(SESSION_KEY)
+  const stored = readStoredSessionId()
   if (stored) { sessionId = stored; return sessionId }
-  sessionId = crypto.randomUUID()
-  window.sessionStorage.setItem(SESSION_KEY, sessionId)
+  sessionId = resolveSessionId(readRandomUUID())
+  persistSessionId(sessionId)
   return sessionId
 }
 
