@@ -946,19 +946,18 @@ watch(hasUploadErrors, (hasErr) => {
         <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer hover:text-gray-600 select-none">Подробности</summary>
         <p class="mt-1 font-mono break-all">{{ saveErrorDetail }}</p>
       </details>
-      <DiagButton
-        :azs-id="String(report?.azsId || '')"
-        :report-id="Number(route.params.reportId) || null"
-        role="azs_admin"
-        variant="block"
-      />
     </div>
+    <!--
+      Кнопка диагностики видна всегда, а не только при сбое: оператор должен
+      находить её заранее, а не искать в момент, когда уже всё встало.
+      Оформление зависит от ситуации — заливкой при ошибке, контуром в норме,
+      чтобы не спорить с главным действием «Сдать».
+    -->
     <DiagButton
-      v-if="!saveError && hasUploadErrors"
       :azs-id="String(report?.azsId || '')"
       :report-id="Number(route.params.reportId) || null"
       role="azs_admin"
-      variant="block"
+      :variant="(saveError || hasUploadErrors) ? 'block' : 'inline'"
     />
     <!-- Ошибки загрузки фото с перечнем слотов и кнопкой «Повторить» (LOGIC-F2) -->
     <div v-if="hasUploadErrors" class="space-y-2">
