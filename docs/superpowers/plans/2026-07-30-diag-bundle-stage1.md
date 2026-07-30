@@ -1581,7 +1581,21 @@ import type { BuildBundleInput, DiagBundle, DiagTrigger } from '~/utils/diag/typ
 
 const LAST_SENT_KEY = 'diag_last_sent_at'
 const PENDING_KEY = 'diag_pending'
-const ECHO_BYTES = 307_200
+/**
+ * Размер пробы зависит от триггера.
+ *
+ * Автоотправка срабатывает в момент реального сбоя, когда канал уже занят
+ * ретраями загрузки. 300 КБ на канале 40 кбит/с — это ещё ~60 с отдачи, то есть
+ * диагностика ухудшала бы аварию, которую измеряет. 32 КБ дают ~5 с и всё так же
+ * изолируют канал от Диска Битрикса.
+ *
+ * Кнопку жмут осознанно, обычно когда работа уже встала, — там полная проба
+ * даёт более точный замер и мешать нечему.
+ */
+const ECHO_BYTES_BY_TRIGGER: Record<DiagTrigger, number> = {
+  button: 307_200,
+  auto_upload_error: 32_768
+}
 const PROBE_TIMEOUT_MS = 30_000
 const PING_TIMEOUT_MS = 10_000
 const PING_ATTEMPTS = 3
@@ -1614,14 +1628,16 @@ export const useDiagSender = () => {
   }
 
   /** Замер канала, изолированный от Диска Битрикса: echo принимает байты и сразу отвечает. */
-  const probe = async (): Promise<BuildBundleInput['probe']> => {
+  const probe = async (trigger: DiagTrigger): Promise<BuildBundleInput['probe']> => {
     const result: BuildBundleInput['probe'] = {
       echoBytes: null, echoMs: null, echoKbps: null, pingMsMedian: null, pingLoss: null
     }
 
+    const echoBytes = ECHO_BYTES_BY_TRIGGER[trigger]
+
     try {
-      const payload = new Uint8Array(ECHO_BYTES)
-      crypto.getRandomValues(payload.subarray(0, Math.min(65_536, ECHO_BYTES)))
+      const payload = new Uint8Array(echoBytes)
+      crypto.getRandomValues(payload.subarray(0, Math.min(65_536, echoBytes)))
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
       const startedAt = performance.now()
@@ -1633,9 +1649,9 @@ export const useDiagSender = () => {
           headers: { 'Content-Type': 'application/octet-stream', ...authHeaders() }
         })
         const elapsedMs = Math.max(1, Math.round(performance.now() - startedAt))
-        result.echoBytes = ECHO_BYTES
+        result.echoBytes = echoBytes
         result.echoMs = elapsedMs
-        result.echoKbps = Math.round((ECHO_BYTES * 8) / elapsedMs)
+        result.echoKbps = Math.round((echoBytes * 8) / elapsedMs)
       } finally { clearTimeout(timer) }
     } catch { /* канал мёртв — поля остаются null, это тоже сигнал */ }
 
@@ -1685,7 +1701,7 @@ export const useDiagSender = () => {
       if (!shouldSend(lastSentAtMs, Date.now())) return { ok: false, code: null }
       window.localStorage.setItem(LAST_SENT_KEY, String(Date.now()))
 
-      const probeResult = await probe()
+      const probeResult = await probe(trigger)
       const bundle = buildBundle({ ...collector.collectInput({ trigger, ...meta }), probe: probeResult })
 
       try {
