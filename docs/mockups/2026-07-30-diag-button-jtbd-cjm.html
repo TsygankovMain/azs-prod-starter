@@ -1,0 +1,589 @@
+<title>Кнопка диагностики — JTBD, CJM и мокап</title>
+
+<style>
+  :root {
+    --color-background-primary: #ffffff;
+    --color-background-secondary: #f4f3ee;
+    --color-background-tertiary: #faf9f5;
+    --color-background-info: #e6f1fb;
+    --color-background-signal: #fdf3e3;
+    --color-text-primary: #1a1a18;
+    --color-text-secondary: #6b6a64;
+    --color-text-tertiary: #9b9a92;
+    --color-text-info: #185fa5;
+    --color-text-signal: #8f5300;
+    --color-text-good: #1f7a46;
+    --color-text-bad: #b4231f;
+    --color-accent-signal: #e8a33d;
+    --color-border-tertiary: rgba(0, 0, 0, .10);
+    --color-border-secondary: rgba(0, 0, 0, .20);
+    --color-border-info: #378add;
+    --color-device: #2a2925;
+    --border-radius-sm: 6px;
+    --border-radius-md: 8px;
+    --border-radius-lg: 12px;
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --measure: 68ch;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, .05), 0 8px 24px -16px rgba(0, 0, 0, .18);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --color-background-primary: #201f24;
+      --color-background-secondary: #191820;
+      --color-background-tertiary: #17161c;
+      --color-background-info: #16283a;
+      --color-background-signal: #2b2116;
+      --color-text-primary: #f2f0ea;
+      --color-text-secondary: #a8a5a0;
+      --color-text-tertiary: #78756f;
+      --color-text-info: #7db6ea;
+      --color-text-signal: #e5a95a;
+      --color-text-good: #5fc189;
+      --color-text-bad: #f08a86;
+      --color-accent-signal: #e8a33d;
+      --color-border-tertiary: rgba(255, 255, 255, .12);
+      --color-border-secondary: rgba(255, 255, 255, .24);
+      --color-border-info: #4b90d8;
+      --color-device: #423f4d;
+      --shadow-card: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -16px rgba(0, 0, 0, .7);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --color-background-primary: #201f24;
+    --color-background-secondary: #191820;
+    --color-background-tertiary: #17161c;
+    --color-background-info: #16283a;
+    --color-background-signal: #2b2116;
+    --color-text-primary: #f2f0ea;
+    --color-text-secondary: #a8a5a0;
+    --color-text-tertiary: #78756f;
+    --color-text-info: #7db6ea;
+    --color-text-signal: #e5a95a;
+    --color-text-good: #5fc189;
+    --color-text-bad: #f08a86;
+    --color-accent-signal: #e8a33d;
+    --color-border-tertiary: rgba(255, 255, 255, .12);
+    --color-border-secondary: rgba(255, 255, 255, .24);
+    --color-border-info: #4b90d8;
+    --color-device: #423f4d;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -16px rgba(0, 0, 0, .7);
+  }
+
+  :root[data-theme="light"] {
+    --color-background-primary: #ffffff;
+    --color-background-secondary: #f4f3ee;
+    --color-background-tertiary: #faf9f5;
+    --color-background-info: #e6f1fb;
+    --color-background-signal: #fdf3e3;
+    --color-text-primary: #1a1a18;
+    --color-text-secondary: #6b6a64;
+    --color-text-tertiary: #9b9a92;
+    --color-text-info: #185fa5;
+    --color-text-signal: #8f5300;
+    --color-text-good: #1f7a46;
+    --color-text-bad: #b4231f;
+    --color-accent-signal: #e8a33d;
+    --color-border-tertiary: rgba(0, 0, 0, .10);
+    --color-border-secondary: rgba(0, 0, 0, .20);
+    --color-border-info: #378add;
+    --color-device: #2a2925;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, .05), 0 8px 24px -16px rgba(0, 0, 0, .18);
+  }
+
+  body {
+    background: var(--color-background-tertiary);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page { display: flex; flex-direction: column; gap: 64px; padding: 48px 24px 96px; }
+  .wrap { width: 100%; max-width: var(--measure); margin: 0 auto; }
+  .wide { width: 100%; max-width: 1180px; margin: 0 auto; }
+
+  h1, h2, h3, h4 { text-wrap: balance; line-height: 1.2; letter-spacing: -.015em; }
+  h1 { font-size: clamp(1.9rem, 1.4rem + 2.2vw, 2.9rem); font-weight: 760; }
+  h2 { font-size: clamp(1.35rem, 1.15rem + .8vw, 1.7rem); font-weight: 700; }
+  h3 { font-size: 1.08rem; font-weight: 680; letter-spacing: -.005em; }
+  h4 { font-size: .95rem; font-weight: 660; }
+  p { max-width: var(--measure); }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: .72rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--color-text-tertiary);
+  }
+  .lede { font-size: 1.1rem; color: var(--color-text-secondary); }
+  .muted { color: var(--color-text-secondary); }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .sect { display: flex; flex-direction: column; gap: 20px; }
+  .stack { display: flex; flex-direction: column; gap: 14px; }
+  .rule { border: 0; border-top: 1px solid var(--color-border-tertiary); }
+
+  header.head { display: flex; flex-direction: column; gap: 16px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+  .meta div { font-family: var(--font-mono); font-size: .78rem; color: var(--color-text-secondary); }
+  .meta b { color: var(--color-text-primary); font-weight: 600; }
+
+  .card {
+    background: var(--color-background-primary);
+    border: 1px solid var(--color-border-tertiary);
+    border-radius: var(--border-radius-lg);
+    padding: 20px;
+    box-shadow: var(--shadow-card);
+  }
+
+  .note {
+    background: var(--color-background-signal);
+    border: 1px solid var(--color-border-tertiary);
+    border-left: 3px solid var(--color-accent-signal);
+    border-radius: var(--border-radius-md);
+    padding: 14px 16px;
+  }
+  .note p { margin: 0; }
+  .note .eyebrow { color: var(--color-text-signal); }
+
+  /* ---------- Прогресс ---------- */
+  .bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--color-background-secondary); border: 1px solid var(--color-border-tertiary); }
+  .bar span { display: block; }
+  .bar .done { background: var(--color-text-good); }
+  .bar .todo { background: transparent; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+  .stat { background: var(--color-background-primary); border: 1px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
+  .stat .n { font-family: var(--font-mono); font-size: 1.5rem; font-weight: 640; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .stat .k { font-size: .76rem; color: var(--color-text-secondary); line-height: 1.35; }
+
+  .tasks { display: flex; flex-direction: column; gap: 6px; }
+  .task { display: grid; grid-template-columns: 2.6rem 1fr auto; gap: 12px; align-items: baseline; padding: 9px 12px; border-radius: var(--border-radius-sm); background: var(--color-background-primary); border: 1px solid var(--color-border-tertiary); }
+  .task .id { font-family: var(--font-mono); font-size: .78rem; color: var(--color-text-tertiary); }
+  .task .nm { font-size: .9rem; }
+  .task.is-done { background: var(--color-background-secondary); }
+  .task.is-done .nm { color: var(--color-text-secondary); }
+  .pill { font-family: var(--font-mono); font-size: .68rem; letter-spacing: .05em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .pill.good { color: var(--color-text-good); }
+  .pill.wait { color: var(--color-text-tertiary); }
+  .pill.sig { color: var(--color-text-signal); }
+
+  /* ---------- JTBD ---------- */
+  .jobs { display: grid; gap: 14px; }
+  .job { background: var(--color-background-primary); border: 1px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+  .job .who { display: flex; align-items: center; gap: 8px; }
+  .job .who .eyebrow { color: var(--color-text-info); }
+  .story { font-size: 1rem; line-height: 1.55; margin: 0; }
+  .story b { font-weight: 660; }
+  .story .when { color: var(--color-text-secondary); }
+  .job dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: .86rem; }
+  .job dt { font-family: var(--font-mono); font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-tertiary); padding-top: .25em; }
+  .job dd { margin: 0; color: var(--color-text-secondary); }
+
+  /* ---------- Мокап ---------- */
+  .screens { display: flex; gap: 28px; overflow-x: auto; padding: 4px 4px 18px; scrollbar-width: thin; }
+  .screen { flex: 0 0 auto; width: 300px; display: flex; flex-direction: column; gap: 10px; }
+  .screen > figcaption { font-size: .82rem; color: var(--color-text-secondary); }
+  .screen > figcaption b { color: var(--color-text-primary); font-weight: 640; display: block; font-size: .88rem; }
+  .device { background: var(--color-device); border-radius: 26px; padding: 8px; box-shadow: var(--shadow-card); }
+  /* Экран телефона — приподнятая поверхность, иначе в тёмной теме он сливается
+     с фоном страницы, а рамка перестаёт читаться. */
+  .glass { background: var(--color-background-primary); border-radius: 20px; overflow: hidden; display: flex; flex-direction: column; min-height: 460px; }
+  .statusbar { display: flex; justify-content: space-between; align-items: center; padding: 7px 14px 5px; font-family: var(--font-mono); font-size: .64rem; color: var(--color-text-secondary); }
+  .appbar { padding: 8px 14px 12px; border-bottom: 1px solid var(--color-border-tertiary); }
+  .appbar .t { font-size: .92rem; font-weight: 660; }
+  .appbar .s { font-size: .72rem; color: var(--color-text-secondary); }
+  .body { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+
+  .slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .slot { aspect-ratio: 3 / 4; border-radius: var(--border-radius-sm); border: 1px solid var(--color-border-secondary); background: var(--color-background-tertiary); display: flex; align-items: flex-end; justify-content: center; padding-bottom: 4px; font-family: var(--font-mono); font-size: .56rem; color: var(--color-text-tertiary); }
+  .slot.ok { background: color-mix(in srgb, var(--color-text-good) 14%, var(--color-background-primary)); border-color: color-mix(in srgb, var(--color-text-good) 40%, transparent); color: var(--color-text-good); }
+  .slot.err { background: color-mix(in srgb, var(--color-text-bad) 12%, var(--color-background-primary)); border-color: color-mix(in srgb, var(--color-text-bad) 45%, transparent); color: var(--color-text-bad); }
+  .slot.load { background: color-mix(in srgb, var(--color-accent-signal) 16%, var(--color-background-primary)); border-color: color-mix(in srgb, var(--color-accent-signal) 45%, transparent); color: var(--color-text-signal); }
+
+  .alert { border-radius: var(--border-radius-md); padding: 10px 12px; font-size: .76rem; line-height: 1.45; border: 1px solid; }
+  .alert.bad { background: color-mix(in srgb, var(--color-text-bad) 9%, var(--color-background-primary)); border-color: color-mix(in srgb, var(--color-text-bad) 35%, transparent); color: var(--color-text-bad); }
+  .alert .h { font-weight: 660; }
+  .alert .d { color: var(--color-text-secondary); }
+
+  .btn { display: block; width: 100%; text-align: center; padding: 11px 14px; border-radius: var(--border-radius-md); font-size: .84rem; font-weight: 640; font-family: inherit; border: 1px solid transparent; }
+  .btn.primary { background: var(--color-text-info); color: #fff; }
+  .btn.diag { background: var(--color-background-signal); color: var(--color-text-signal); border-color: var(--color-accent-signal); }
+  .btn.ghost { background: transparent; color: var(--color-text-secondary); border-color: var(--color-border-secondary); }
+  .btn .sub { display: block; font-weight: 400; font-size: .7rem; opacity: .85; margin-top: 1px; }
+
+  .toast { margin-top: auto; background: var(--color-device); color: #f2f0ea; border-radius: var(--border-radius-md); padding: 11px 13px; font-size: .76rem; line-height: 1.45; display: flex; flex-direction: column; gap: 3px; }
+  .toast .code { font-family: var(--font-mono); font-size: .95rem; letter-spacing: .08em; color: var(--color-accent-signal); }
+  .toast.good { border-left: 3px solid var(--color-text-good); }
+
+  .spinner { display: flex; align-items: center; gap: 8px; font-size: .78rem; color: var(--color-text-secondary); }
+  .spinner i { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--color-border-secondary); border-top-color: var(--color-accent-signal); display: block; animation: spin 900ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner i { animation: none; } }
+  .probe { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; font-family: var(--font-mono); font-size: .68rem; color: var(--color-text-secondary); }
+  .probe b { color: var(--color-text-primary); font-weight: 600; }
+
+  /* ---------- CJM ---------- */
+  .cjmwrap { overflow-x: auto; padding-bottom: 14px; scrollbar-width: thin; }
+  table.cjm { border-collapse: collapse; min-width: 1020px; width: 100%; font-size: .82rem; }
+  table.cjm th, table.cjm td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--color-border-tertiary); }
+  table.cjm thead th { position: sticky; top: 0; background: var(--color-background-tertiary); border-bottom: 1px solid var(--color-border-secondary); }
+  table.cjm thead th .st { font-family: var(--font-mono); font-size: .66rem; color: var(--color-text-tertiary); display: block; letter-spacing: .06em; }
+  table.cjm thead th .nm { font-size: .86rem; font-weight: 660; }
+  table.cjm th.lane { width: 8.6rem; font-family: var(--font-mono); font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-tertiary); font-weight: 400; background: var(--color-background-tertiary); position: sticky; left: 0; }
+  table.cjm tr.pain td { color: var(--color-text-bad); }
+  table.cjm tr.gain td { color: var(--color-text-good); }
+  table.cjm td.now { background: color-mix(in srgb, var(--color-text-bad) 5%, transparent); }
+
+  .curve { display: flex; flex-direction: column; gap: 6px; }
+  .curve svg { width: 100%; height: auto; display: block; min-width: 1020px; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: .78rem; color: var(--color-text-secondary); }
+  .legend i { display: inline-block; width: 18px; height: 0; border-top-width: 2px; border-top-style: solid; vertical-align: middle; margin-right: 6px; }
+
+  ul.tight, ol.tight { display: flex; flex-direction: column; gap: 7px; padding-left: 1.25em; max-width: var(--measure); }
+  ul.tight li, ol.tight li { padding-left: .15em; }
+
+  a { color: var(--color-text-info); }
+  :focus-visible { outline: 2px solid var(--color-accent-signal); outline-offset: 2px; border-radius: 3px; }
+</style>
+
+<div class="page">
+
+  <header class="head wrap">
+    <div class="eyebrow">Этап 1 · диагностический бандл</div>
+    <h1>Кнопка «Что-то не работает»</h1>
+    <p class="lede">Одно действие оператора превращает неопровергаемое «приложение не работает» в документированный замер с цифрами. Ниже — что уже собрано, зачем это людям и как выглядит путь от сбоя до ответа.</p>
+    <div class="meta">
+      <div>30.07.2026</div>
+      <div>ветка <b>feat/diag-bundle-stage1</b></div>
+      <div>база <b>a92181e</b></div>
+      <div><b>2 из 11</b> задач готово</div>
+    </div>
+  </header>
+
+  <hr class="rule wrap">
+
+  <!-- ========== ПРОГРЕСС ========== -->
+  <section class="sect wrap">
+    <div class="eyebrow">Где мы сейчас</div>
+    <h2>Готов фундамент: сборка бандла и защита от утечек</h2>
+
+    <div class="bar" role="img" aria-label="Готово 2 задачи из 11">
+      <span class="done" style="flex: 2"></span>
+      <span class="todo" style="flex: 9"></span>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><span class="n">41</span><span class="k">теста проходит</span></div>
+      <div class="stat"><span class="n">11</span><span class="k">коммитов</span></div>
+      <div class="stat"><span class="n">4</span><span class="k">раунда правок по Task&nbsp;2</span></div>
+      <div class="stat"><span class="n">27</span><span class="k">закрытых форм утечки секретов</span></div>
+      <div class="stat"><span class="n">0</span><span class="k">файлов владельца задето</span></div>
+    </div>
+
+    <div class="tasks">
+      <div class="task is-done"><span class="id">01</span><span class="nm">Кольцевой буфер и редакция секретов</span><span class="pill good">готово</span></div>
+      <div class="task is-done"><span class="id">02</span><span class="nm">Сборка бандла с обрезкой до 256&nbsp;КБ</span><span class="pill good">готово</span></div>
+      <div class="task"><span class="id">03</span><span class="nm">Хранилище бандлов, схема и ретеншен</span><span class="pill wait">в очереди</span></div>
+      <div class="task"><span class="id">04</span><span class="nm">Серверная санитизация и код диагностики</span><span class="pill wait">в очереди</span></div>
+      <div class="task"><span class="id">05</span><span class="nm">Роуты приёма, ping и проба канала</span><span class="pill wait">в очереди</span></div>
+      <div class="task"><span class="id">06</span><span class="nm">Подключение в server.js, крон-чистка</span><span class="pill wait">в очереди</span></div>
+      <div class="task"><span class="id">11</span><span class="nm">Серверный срез: OAuth, проба Диска, БД</span><span class="pill sig">добавлено по ходу</span></div>
+      <div class="task"><span class="id">07</span><span class="nm">Рекордер с холодного старта</span><span class="pill wait">в очереди</span></div>
+      <div class="task"><span class="id">08</span><span class="nm">Отправка: пробы, троттлинг, ретрай</span><span class="pill wait">в очереди</span></div>
+      <div class="task"><span class="id">09</span><span class="nm">Кнопка, автоотправка, экран ошибки</span><span class="pill wait">в очереди</span></div>
+      <div class="task"><span class="id">10</span><span class="nm">Чистка телеметрии, прогон на устройстве</span><span class="pill wait">в очереди</span></div>
+    </div>
+
+    <div class="note">
+      <div class="eyebrow">Что стоило четырёх раундов</div>
+      <p>Ревью дважды нашло утечки в моём же коде редакции. Сначала чистился только сетевой лог, а секреты свободно шли через тексты ошибок. Потом мой собственный фикс сломал маскировку <span class="mono">Authorization: Bearer</span> — самой частой формы секрета в стеке. Последним поймали <span class="mono">REFRESH_ID</span>: это поле приложение реально отправляет, и в нём лежит настоящий refresh-токен.</p>
+    </div>
+  </section>
+
+  <hr class="rule wrap">
+
+  <!-- ========== JTBD ========== -->
+  <section class="sect wrap">
+    <div class="eyebrow">JTBD</div>
+    <h2>Какую работу нанимают выполнить</h2>
+    <p class="muted">У кнопки три разных заказчика, и работа у них разная. Оператор хочет перестать быть виноватым, руководитель — понимать причину несдач, команда — закрывать баги, а не гадать.</p>
+
+    <div class="jobs">
+
+      <article class="job">
+        <div class="who"><span class="eyebrow">Оператор АЗС</span></div>
+        <p class="story"><span class="when">Когда</span> я снял фото, а оно не уходит, и за мной стоит очередь, <b>я хочу одним нажатием доказать, что делаю всё правильно</b>, <span class="when">чтобы</span> не оправдываться и не терять смену на переписку.</p>
+        <dl>
+          <dt>Сейчас</dt><dd>Пишет в чат «не загружается», ждёт, повторяет попытки, чувствует себя виноватым.</dd>
+          <dt>Успех</dt><dd>Через 15 секунд видит замер и код. Разговор переходит с «ты не сдал» на «канал 40 кбит/с».</dd>
+          <dt>Тревога</dt><dd>«Меня обвинят, что я сломал». Поэтому текст — замер, а не вина.</dd>
+        </dl>
+      </article>
+
+      <article class="job">
+        <div class="who"><span class="eyebrow">Руководитель</span></div>
+        <p class="story"><span class="when">Когда</span> отчёт показывает 21 уведомление и 0 сдач, <b>я хочу знать, где сбой техники, а где работы</b>, <span class="when">чтобы</span> спрашивать с тех, с кого действительно нужно.</p>
+        <dl>
+          <dt>Сейчас</dt><dd>Статистика не отличает наш сбой от несделанной работы. Спрашивают с АЗС.</dd>
+          <dt>Успех</dt><dd>По каждой несдаче есть либо замер канала, либо код нашей ошибки — либо честное «разбираемся».</dd>
+          <dt>Тревога</dt><dd>«Разработчики прикроют себя цифрами». Поэтому сырые данные остаются проверяемыми.</dd>
+        </dl>
+      </article>
+
+      <article class="job">
+        <div class="who"><span class="eyebrow">Наша команда</span></div>
+        <p class="story"><span class="when">Когда</span> приходит жалоба без деталей, <b>я хочу восстановить инцидент по одному коду</b>, <span class="when">чтобы</span> починить причину, а не перебирать гипотезы.</p>
+        <dl>
+          <dt>Сейчас</dt><dd>Вручную выгружаем 20&nbsp;тысяч строк, где одно событие размазано на девять и не грепается. За месяц не получили ни одного текста ошибки.</dd>
+          <dt>Успех</dt><dd>Код диагностики поднимает устройство, сеть, очередь загрузок, текст ошибки и состояние нашей интеграции.</dd>
+          <dt>Тревога</dt><dd>«Соберём данные, но не те». Поэтому пороги вердикта встанут на реальных замерах, а не на догадках.</dd>
+        </dl>
+      </article>
+
+    </div>
+  </section>
+
+  <hr class="rule wrap">
+
+  <!-- ========== МОКАП ========== -->
+  <section class="sect wide">
+    <div class="eyebrow">Мокап</div>
+    <h2>Четыре экрана оператора</h2>
+    <p class="muted">Кнопка живёт там, где человек застрял: на экране отчёта рядом с ошибкой и на экране, где приложение вообще не загрузилось. Подпись — действие, а не название инструмента: оператору «собрать лог» не говорит ничего.</p>
+
+    <div class="screens">
+
+      <!-- 1 -->
+      <figure class="screen">
+        <div class="device"><div class="glass">
+          <div class="statusbar"><span>9:31</span><span>2G ▲ 18%</span></div>
+          <div class="appbar"><div class="t">Фотоотчёт АЗС</div><div class="s">АЗС 548 · до 10:00</div></div>
+          <div class="body">
+            <div class="slots">
+              <div class="slot ok">1 ✓</div><div class="slot ok">2 ✓</div><div class="slot load">3 ↑</div>
+              <div class="slot err">4 !</div><div class="slot">5</div><div class="slot">6</div>
+            </div>
+            <div class="alert bad">
+              <div class="h">Не удалось загрузить фото</div>
+              <div class="d">Повторим автоматически. Попытка 3 из 5.</div>
+            </div>
+            <button class="btn diag" type="button">Что-то не работает<span class="sub">Проверим связь и передадим нам</span></button>
+            <button class="btn ghost" type="button">Повторить загрузку</button>
+          </div>
+        </div></div>
+        <figcaption><b>Экран отчёта</b> Кнопка появляется рядом с ошибкой — там, где оператор её и увидит.</figcaption>
+      </figure>
+
+      <!-- 2 -->
+      <figure class="screen">
+        <div class="device"><div class="glass">
+          <div class="statusbar"><span>9:32</span><span>2G ▲ 18%</span></div>
+          <div class="appbar"><div class="t">Проверяем связь</div><div class="s">Обычно 10–15 секунд</div></div>
+          <div class="body">
+            <div class="spinner"><i></i><span>Замеряем канал АЗС…</span></div>
+            <div class="card" style="padding: 12px 14px;">
+              <div class="probe">
+                <span>отклик сервера</span><b>180 мс</b>
+                <span>потери пакетов</span><b>0 %</b>
+                <span>отдача канала</span><b>40 кбит/с</b>
+                <span>размер фото</span><b>3,1 МБ</b>
+              </div>
+            </div>
+            <p class="muted" style="font-size: .76rem; margin: 0;">Отчёт можно не закрывать — загрузка продолжается.</p>
+          </div>
+        </div></div>
+        <figcaption><b>Замер</b> Проба отделяет канал оператора от нашего сервера и Диска Битрикса.</figcaption>
+      </figure>
+
+      <!-- 3 -->
+      <figure class="screen">
+        <div class="device"><div class="glass">
+          <div class="statusbar"><span>9:32</span><span>2G ▲ 18%</span></div>
+          <div class="appbar"><div class="t">Фотоотчёт АЗС</div><div class="s">АЗС 548 · до 10:00</div></div>
+          <div class="body">
+            <div class="slots">
+              <div class="slot ok">1 ✓</div><div class="slot ok">2 ✓</div><div class="slot load">3 ↑</div>
+              <div class="slot err">4 !</div><div class="slot">5</div><div class="slot">6</div>
+            </div>
+            <div class="toast good">
+              <span>Замер: канал отдаёт 40 кбит/с. Одно фото 3,1 МБ грузится около 10 минут.</span>
+              <span>Диагностика отправлена. Назовите код поддержке:</span>
+              <span class="code">A7F3QQ</span>
+            </div>
+          </div>
+        </div></div>
+        <figcaption><b>Ответ</b> Замер, а не обвинение. Половина обращений закрывается здесь, до чата.</figcaption>
+      </figure>
+
+      <!-- 4 -->
+      <figure class="screen">
+        <div class="device"><div class="glass">
+          <div class="statusbar"><span>9:34</span><span>2G ▲ 17%</span></div>
+          <div class="appbar"><div class="t">Ошибка</div><div class="s">Приложение не загрузилось</div></div>
+          <div class="body">
+            <div class="alert bad">
+              <div class="h">Не удалось загрузить приложение</div>
+              <div class="d">Проверьте соединение и попробуйте ещё раз.</div>
+            </div>
+            <button class="btn primary" type="button">Обновить</button>
+            <button class="btn diag" type="button">Что-то не работает<span class="sub">Передать нам, что произошло</span></button>
+            <p class="muted" style="font-size: .72rem; margin: 0;">Подробности › Код: 500</p>
+          </div>
+        </div></div>
+        <figcaption><b>Экран ошибки</b> Наша главная слепая зона: месяц жалоб «пишет ошибку» и ни одного текста.</figcaption>
+      </figure>
+
+    </div>
+
+    <div class="note wrap" style="margin: 0 auto;">
+      <div class="eyebrow">Что здесь не показано</div>
+      <p>Автоотправка при сбое загрузки идёт вообще без экрана — она срабатывает сама, потому что покрытие не должно зависеть от того, вспомнил ли оператор нажать кнопку на смене. Карточка от бота в выделенный чат — этап 2.</p>
+    </div>
+  </section>
+
+  <hr class="rule wrap">
+
+  <!-- ========== CJM ========== -->
+  <section class="sect wide">
+    <div class="eyebrow">CJM</div>
+    <h2>Путь от сбоя до ответа</h2>
+    <p class="muted">Семь стадий утренней смены. Красным подсвечено то, что происходит сегодня и чего мы не видим; зелёным — что меняет кнопка. Стадии пронумерованы, потому что это действительно последовательность во времени.</p>
+
+    <div class="cjmwrap curve">
+      <svg viewBox="0 0 1020 150" role="img" aria-label="Кривая состояния оператора: сегодня падает к отчаянию, с кнопкой восстанавливается после замера">
+        <g stroke="var(--color-border-tertiary)" stroke-width="1">
+          <line x1="0" y1="30" x2="1020" y2="30" /><line x1="0" y1="75" x2="1020" y2="75" /><line x1="0" y1="120" x2="1020" y2="120" />
+        </g>
+        <g font-family="ui-monospace, monospace" font-size="9" fill="var(--color-text-tertiary)">
+          <text x="4" y="26">спокоен</text><text x="4" y="71">напряжён</text><text x="4" y="116">отчаяние</text>
+        </g>
+        <polyline fill="none" stroke="var(--color-text-bad)" stroke-width="2.5" stroke-dasharray="5 4"
+          points="75,34 220,68 365,96 510,118 655,124 800,120 945,112" />
+        <polyline fill="none" stroke="var(--color-text-good)" stroke-width="2.5"
+          points="75,34 220,68 365,90 510,62 655,42 800,36 945,30" />
+        <g fill="var(--color-text-good)">
+          <circle cx="510" cy="62" r="4" /><circle cx="945" cy="30" r="4" />
+        </g>
+        <g fill="var(--color-text-bad)">
+          <circle cx="655" cy="124" r="4" />
+        </g>
+      </svg>
+      <div class="legend">
+        <span><i style="border-color: var(--color-text-bad); border-top-style: dashed;"></i>сегодня</span>
+        <span><i style="border-color: var(--color-text-good);"></i>с кнопкой</span>
+      </div>
+    </div>
+
+    <div class="cjmwrap">
+      <table class="cjm">
+        <thead>
+          <tr>
+            <th class="lane">стадия</th>
+            <th><span class="st">01 · 9:00</span><span class="nm">Съёмка</span></th>
+            <th><span class="st">02 · 9:28</span><span class="nm">Первый сбой</span></th>
+            <th><span class="st">03 · 9:31</span><span class="nm">Замешательство</span></th>
+            <th><span class="st">04 · 9:32</span><span class="nm">Действие</span></th>
+            <th><span class="st">05 · 9:32</span><span class="nm">Ожидание</span></th>
+            <th><span class="st">06 · 9:33</span><span class="nm">Ответ</span></th>
+            <th><span class="st">07 · вечер</span><span class="nm">Итог</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th class="lane">что делает</th>
+            <td>Снимает шесть кадров по регламенту</td>
+            <td>Видит «не удалось загрузить» на четвёртом</td>
+            <td>Жмёт «повторить», выключает и включает связь</td>
+            <td>Нажимает «Что-то не работает»</td>
+            <td>Ждёт, продолжает работать с кассой</td>
+            <td>Читает замер, запоминает код</td>
+            <td>Смена закрыта, вопрос снят</td>
+          </tr>
+          <tr>
+            <th class="lane">точка контакта</th>
+            <td>Камера в приложении</td>
+            <td>Плашка ошибки в отчёте</td>
+            <td>Кнопка «повторить», чат с поддержкой</td>
+            <td>Кнопка на экране отчёта</td>
+            <td>Полоса «проверяем связь»</td>
+            <td>Тост с замером и кодом</td>
+            <td>Отчёт руководителю</td>
+          </tr>
+          <tr>
+            <th class="lane">что думает</th>
+            <td>«Успеваю до десяти»</td>
+            <td>«Опять зависло»</td>
+            <td>«Скажут, что я не сдал»</td>
+            <td>«Хоть кто-то увидит, что я не виноват»</td>
+            <td>«Только бы не пришлось делать заново»</td>
+            <td>«Дело в связи, а не во мне»</td>
+            <td>«В следующий раз знаю, что нажать»</td>
+          </tr>
+          <tr class="pain">
+            <th class="lane">боль сегодня</th>
+            <td class="now">Фото весит 3&nbsp;МБ, канал этого не выдержит</td>
+            <td class="now">Причина не названа: сеть, телефон или приложение</td>
+            <td class="now">Повторы душат тот же канал</td>
+            <td class="now">Действия нет — только написать в чат</td>
+            <td class="now">Ответ придёт через сутки, если придёт</td>
+            <td class="now">Ответ — гипотеза, доказательств нет</td>
+            <td class="now">Статистика: 0 сдач. Спрашивают с АЗС</td>
+          </tr>
+          <tr class="gain">
+            <th class="lane">что даёт кнопка</th>
+            <td>Размер и время каждой попытки пишутся в буфер</td>
+            <td>Код ошибки, статус и текст сохраняются вместо исчезновения</td>
+            <td>Автоотправка срабатывает сама, без участия оператора</td>
+            <td>Одно нажатие вместо переписки</td>
+            <td>Проба 32&nbsp;КБ вместо 300, чтобы не душить сбойный канал</td>
+            <td>Замер с цифрами и код для разговора</td>
+            <td>По каждой несдаче есть замер либо код нашей ошибки</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note wrap" style="margin: 0 auto;">
+      <div class="eyebrow">Где кривая обманчива</div>
+      <p>Зелёная линия поднимается на стадии 04 только потому, что замер честен. Если вердикт ошибётся и скажет «плохой интернет» там, где виноваты мы, доверие упадёт ниже красной линии — и вернуть его будет дороже, чем сам сбой. Поэтому сначала проверяется наша сторона, и лишь потом канал.</p>
+    </div>
+  </section>
+
+  <hr class="rule wrap">
+
+  <!-- ========== ОСТАЛОСЬ ========== -->
+  <section class="sect wrap">
+    <div class="eyebrow">Что дальше</div>
+    <h2>Осталось девять задач и один прогон руками</h2>
+
+    <div class="stack">
+      <h3>Ближайшие</h3>
+      <ul class="tight">
+        <li><b>Бэкенд приёма</b> — хранилище, санитизация, роуты, подключение. Четыре задачи, обе половины покрыты тестами на фейковых пулах.</li>
+        <li><b>Серверный срез</b> — состояние OAuth, живая проба Диска, пинг БД. Именно он превратит «что-то у нас» в «вот что у нас»: при сломанном токене проба вернёт <span class="mono">wrong_client</span> прямо в бандл.</li>
+        <li><b>Фронтенд сбора</b> — рекордер с холодного старта, отправка с троттлингом и ретраем, кнопка и автоотправка.</li>
+      </ul>
+    </div>
+
+    <div class="stack">
+      <h3>Открытые вопросы</h3>
+      <ul class="tight">
+        <li><b>Прогон на реальном Android</b> — семь сценариев в мобильном Битрикс24. Устройства у меня нет, это за вами.</li>
+        <li><b>ID выделенного чата</b> для карточки от бота. Нужен к этапу 2, этап 1 от него не зависит.</li>
+        <li><b>Доля iOS</b> среди операторов. Там нет Network Information API, и замер держится только на пробе.</li>
+        <li><b>Демо-режим в работе</b> — <span class="mono">nuxt.config.ts</span> не тронут ни одной задачей, поэтому версия сборки в бандле пока <span class="mono">unknown</span>. Две строки, когда закоммитите.</li>
+      </ul>
+    </div>
+
+    <div class="note">
+      <div class="eyebrow">Чего этап 1 не сделает</div>
+      <p>Он покажет «загрузка упала, канал у оператора был в порядке» — этого достаточно, чтобы снять с АЗС обвинения по статистике. Но полная картина причины появится только с этапом 2, где серверные события склеиваются с клиентскими по сквозному идентификатору сессии. И никакая диагностика не заменит починку OAuth — она остаётся первым приоритетом.</p>
+    </div>
+  </section>
+
+</div>
