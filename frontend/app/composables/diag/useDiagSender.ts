@@ -18,9 +18,14 @@ import {
   pingLossPercent,
   buildAuthHeaders,
   resolveApiBase,
-  parsePendingJson
+  parsePendingJson,
+  shouldRetrySend,
+  extractHttpStatus,
+  extractServerErrorCode,
+  nextPendingQueue
 } from '~/utils/diag/sendHelpers'
 import type { BuildBundleInput, DiagBundle, DiagTrigger } from '~/utils/diag/types'
+import type { SendAttemptOutcome } from '~/utils/diag/sendHelpers'
 
 const LAST_SENT_KEY = 'diag_last_sent_at'
 const PENDING_KEY = 'diag_pending'
@@ -111,24 +116,36 @@ export const useDiagSender = () => {
    * в момент send()). Троттлинг здесь не применяется: это не новая проба канала,
    * а попытка досдать то, что уже было измерено и лежит на устройстве.
    *
-   * Примечание: post() бросает на любой не-2xx ответ (ofetch), поэтому 400
-   * от бэкенда (например, бандл не проходит sanitizeBundle) неотличим здесь
-   * от временной сетевой ошибки — оба пути одинаково кладут бандл обратно в
-   * remaining и он останется в очереди до следующего flushPending(). Если
-   * бэкенд стабильно отвечает 400 на конкретный бандл, тот будет пытаться
-   * уйти на каждом вызове flushPending(), пока его не вытеснят более новые
-   * неудачные попытки (см. trimPendingQueue — предел MAX_PENDING=3, вытесняется
-   * самое старое). Различать «навсегда сломан» и «попробовать ещё раз» здесь
-   * не реализовано — см. отчёт по задаче.
+   * Fix round 1: раньше любой отказ post() (сетевой сбой, 5xx, 4xx) одинаково
+   * возвращал бандл в очередь — бандл, который сервер бракует 400-м навсегда
+   * (битая версия, неизвестный триггер, превышен потолок), ретраился бы на
+   * каждом flushPending() бесконечно, до 256 КБ за попытку на том самом
+   * канале, который эта проба должна беречь. Теперь судьба каждого бандла
+   * решается через shouldRetrySend(extractHttpStatus(error)): 4xx — дроп из
+   * очереди с логом (см. console.warn ниже), сетевой сбой/5xx — остаётся для
+   * следующей попытки. nextPendingQueue() пересчитывает итоговую очередь по
+   * этому правилу; финальную обрезку до MAX_PENDING по-прежнему делает
+   * writePending()/trimPendingQueue().
    */
   const flushPending = async (): Promise<void> => {
     const queue = readPending()
     if (queue.length === 0) return
-    const remaining: DiagBundle[] = []
+    const outcomes: SendAttemptOutcome[] = []
     for (const bundle of queue) {
-      try { await post(bundle) } catch { remaining.push(bundle) }
+      try {
+        await post(bundle)
+        outcomes.push('ok')
+      } catch (error) {
+        const status = extractHttpStatus(error)
+        if (!shouldRetrySend(status)) {
+          console.warn('[diag] бандл из очереди ретрая отклонён окончательно, дропаем', {
+            status, serverErrorCode: extractServerErrorCode(error)
+          })
+        }
+        outcomes.push(status)
+      }
     }
-    writePending(remaining)
+    writePending(nextPendingQueue(queue, outcomes))
   }
 
   const send = async (trigger: DiagTrigger, meta: SendMeta): Promise<{ ok: boolean; code: string | null }> => {
@@ -148,8 +165,21 @@ export const useDiagSender = () => {
       try {
         const code = await post(bundle)
         return { ok: true, code }
-      } catch {
-        writePending([...readPending(), bundle])
+      } catch (error) {
+        // Fix round 1: 4xx от бэкенда — «этот бандл не примут никогда»
+        // (битая версия, неизвестный триггер, превышен потолок), в очередь
+        // ретрая его класть нет смысла — он занял бы один из 3 слотов и
+        // тратил бы канал на каждом будущем flushPending() без всякого шанса
+        // на успех. Сетевой сбой/таймаут/5xx — единственные случаи, когда
+        // повтор может помочь, только они и попадают в очередь.
+        const status = extractHttpStatus(error)
+        if (shouldRetrySend(status)) {
+          writePending([...readPending(), bundle])
+        } else {
+          console.warn('[diag] бэкенд отклонил бандл окончательно, в очередь ретрая не ставим', {
+            status, serverErrorCode: extractServerErrorCode(error)
+          })
+        }
         return { ok: false, code: null }
       }
     } catch {

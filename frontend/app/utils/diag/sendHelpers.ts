@@ -89,3 +89,77 @@ export function parsePendingJson(raw: string | null): unknown[] {
     return Array.isArray(parsed) ? parsed : []
   } catch { return [] }
 }
+
+// ── Fix round 1: не ретраить то, что сервер не примет никогда ─────────────
+
+/**
+ * Стоит ли повторять отправку.
+ *
+ * 4xx — сервер сказал «такое не приму никогда» (битая версия, неизвестный
+ * триггер, превышен потолок). Повтор на каждом открытии приложения стоил бы
+ * оператору до 256 КБ на канале, который мы и пытаемся беречь. Сетевой сбой и
+ * 5xx повторять стоит: связь или наш бэкенд могут восстановиться.
+ */
+export function shouldRetrySend(status: number | null): boolean {
+  if (status === null) return true
+  if (status >= 400 && status < 500) return false
+  return true
+}
+
+/**
+ * Достаёт HTTP-статус из ошибки $fetch. У сетевого сбоя/таймаута нет ни
+ * statusCode, ни response.status, ни status — тогда результат null, и
+ * shouldRetrySend(null) трактует это как «стоит повторить» (как и для любой
+ * ошибки без разбора — так вело себя всё до этого исправления).
+ *
+ * Три поля вместо одного: в этом репозитории уже есть работающий код,
+ * читающий статус из точно такой же ошибки $fetch/ofetch — getFetchStatus
+ * в stores/api.ts — и он берёт response?.status ?? status, без statusCode.
+ * statusCode — это h3/Nuxt-соглашение (useError()/showError()), не факт,
+ * что установлено ofetch-й версией, которая реально стоит в проекте (это
+ * нельзя проверить без node_modules). Если довериться только statusCode и
+ * ошибиться, вся эта проверка молча превратится в no-op — extractHttpStatus
+ * всегда будет отдавать null, и shouldRetrySend всегда будет говорить
+ * «повторить», как до фикса. Поэтому здесь совмещены оба источника:
+ * первым — statusCode (на случай, если он есть), вторым — response.status
+ * (подтверждённое поле из getFetchStatus), третьим — голый status.
+ */
+export function extractHttpStatus(error: unknown): number | null {
+  const e = error as { statusCode?: unknown; status?: unknown; response?: { status?: unknown } }
+  return Number(e?.statusCode ?? e?.response?.status ?? e?.status) || null
+}
+
+/**
+ * Достаёт код ошибки из тела ответа бэкенда — только для читаемого лога при
+ * отказе от повтора (см. diagRoutes.js: POST /report на 400 всегда отвечает
+ * { error: '...' }). errorCode проверяется первым по аналогии с
+ * FetchErrorData из useErrorText.ts, хотя сам /report сегодня отдаёт только
+ * error. Ни на shouldRetrySend, ни на судьбу бандла в очереди не влияет.
+ */
+export function extractServerErrorCode(error: unknown): string | null {
+  const e = error as { data?: { errorCode?: unknown; error?: unknown } }
+  const code = e?.data?.errorCode ?? e?.data?.error
+  return typeof code === 'string' && code.length > 0 ? code : null
+}
+
+/** Итог одной попытки отправки бандла из очереди ретрая: 'ok' — ушёл и
+ *  больше не нужен; число — сервер ответил этим статусом; null — сетевая
+ *  ошибка/таймаут без ответа. */
+export type SendAttemptOutcome = 'ok' | number | null
+
+/**
+ * Пересчитывает очередь ретрая по итогам одного прохода flushPending().
+ * outcomes[i] относится к queue[i]. Бандл уходит из очереди, если он успешно
+ * отправлен ('ok') или если shouldRetrySend решил, что сервер его никогда не
+ * примет; иначе остаётся для следующей попытки. Обрезка до MAX_PENDING —
+ * по-прежнему отдельная забота trimPendingQueue, вызываемой из writePending
+ * на каждую запись, — здесь она не дублируется.
+ */
+export function nextPendingQueue<T>(queue: T[], outcomes: SendAttemptOutcome[]): T[] {
+  return queue.filter((_, index) => {
+    const outcome = outcomes[index]
+    if (outcome === 'ok') return false
+    const status = typeof outcome === 'number' ? outcome : null
+    return shouldRetrySend(status)
+  })
+}

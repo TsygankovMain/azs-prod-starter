@@ -8,7 +8,11 @@ import {
   pingLossPercent,
   buildAuthHeaders,
   resolveApiBase,
-  parsePendingJson
+  parsePendingJson,
+  shouldRetrySend,
+  extractHttpStatus,
+  extractServerErrorCode,
+  nextPendingQueue
 } from './sendHelpers.ts'
 
 // ── echoBytesForTrigger ──────────────────────────────────────────────────
@@ -154,4 +158,139 @@ test('parsePendingJson: валидный массив возвращается �
 
 test('parsePendingJson: пустой JSON-массив', () => {
   assert.deepEqual(parsePendingJson('[]'), [])
+})
+
+// ── shouldRetrySend (Fix round 1) ────────────────────────────────────────
+
+test('shouldRetrySend: сетевой сбой без статуса повторяем', () => {
+  assert.equal(shouldRetrySend(null), true)
+})
+
+test('shouldRetrySend: 4xx не повторяем — сервер не примет никогда', () => {
+  for (const status of [400, 401, 403, 404, 413, 422]) {
+    assert.equal(shouldRetrySend(status), false, `status ${status}`)
+  }
+})
+
+test('shouldRetrySend: 5xx повторяем — бэкенд может подняться', () => {
+  for (const status of [500, 502, 503, 504]) {
+    assert.equal(shouldRetrySend(status), true, `status ${status}`)
+  }
+})
+
+test('shouldRetrySend: успешные статусы сюда не попадают, но не ломают правило', () => {
+  assert.equal(shouldRetrySend(200), true)
+})
+
+test('shouldRetrySend: граница 399 — ещё не 4xx, повторяем', () => {
+  assert.equal(shouldRetrySend(399), true)
+})
+
+test('shouldRetrySend: граница 400 — уже 4xx, не повторяем', () => {
+  assert.equal(shouldRetrySend(400), false)
+})
+
+test('shouldRetrySend: граница 499 — ещё 4xx, не повторяем', () => {
+  assert.equal(shouldRetrySend(499), false)
+})
+
+test('shouldRetrySend: граница 500 — уже не 4xx, повторяем', () => {
+  assert.equal(shouldRetrySend(500), true)
+})
+
+// ── extractHttpStatus ─────────────────────────────────────────────────────
+
+test('extractHttpStatus: undefined/null — null', () => {
+  assert.equal(extractHttpStatus(undefined), null)
+  assert.equal(extractHttpStatus(null), null)
+})
+
+test('extractHttpStatus: обычная Error без сетевых полей — null (как сетевой сбой)', () => {
+  assert.equal(extractHttpStatus(new Error('network fail')), null)
+})
+
+test('extractHttpStatus: пустой объект — null', () => {
+  assert.equal(extractHttpStatus({}), null)
+})
+
+test('extractHttpStatus: statusCode', () => {
+  assert.equal(extractHttpStatus({ statusCode: 400 }), 400)
+})
+
+test('extractHttpStatus: response.status, когда нет statusCode', () => {
+  assert.equal(extractHttpStatus({ response: { status: 404 } }), 404)
+})
+
+test('extractHttpStatus: status, когда нет ни statusCode, ни response', () => {
+  assert.equal(extractHttpStatus({ status: 500 }), 500)
+})
+
+test('extractHttpStatus: statusCode важнее response.status и status', () => {
+  assert.equal(extractHttpStatus({ statusCode: 400, response: { status: 500 }, status: 200 }), 400)
+})
+
+test('extractHttpStatus: response.status важнее голого status', () => {
+  assert.equal(extractHttpStatus({ response: { status: 404 }, status: 200 }), 404)
+})
+
+test('extractHttpStatus: нечисловое значение не бросает — null', () => {
+  assert.equal(extractHttpStatus({ statusCode: 'oops' }), null)
+})
+
+// ── extractServerErrorCode ────────────────────────────────────────────────
+
+test('extractServerErrorCode: нет данных — null', () => {
+  assert.equal(extractServerErrorCode(undefined), null)
+  assert.equal(extractServerErrorCode({}), null)
+})
+
+test('extractServerErrorCode: берёт data.error (форма ответа diagRoutes.js)', () => {
+  assert.equal(extractServerErrorCode({ data: { error: 'diag_bundle_unprocessable' } }), 'diag_bundle_unprocessable')
+})
+
+test('extractServerErrorCode: data.errorCode важнее data.error', () => {
+  assert.equal(
+    extractServerErrorCode({ data: { errorCode: 'DIAG_TOO_BIG', error: 'diag_bundle_unprocessable' } }),
+    'DIAG_TOO_BIG'
+  )
+})
+
+test('extractServerErrorCode: нестроковое значение — null', () => {
+  assert.equal(extractServerErrorCode({ data: { error: 123 } }), null)
+})
+
+test('extractServerErrorCode: пустая строка — null', () => {
+  assert.equal(extractServerErrorCode({ data: { error: '' } }), null)
+})
+
+// ── nextPendingQueue ──────────────────────────────────────────────────────
+
+test('nextPendingQueue: пустая очередь остаётся пустой', () => {
+  assert.deepEqual(nextPendingQueue([], []), [])
+})
+
+test('nextPendingQueue: успешные уходят из очереди', () => {
+  assert.deepEqual(nextPendingQueue(['a', 'b'], ['ok', 'ok']), [])
+})
+
+test('nextPendingQueue: сетевой сбой (null) остаётся', () => {
+  assert.deepEqual(nextPendingQueue(['a'], [null]), ['a'])
+})
+
+test('nextPendingQueue: 5xx остаётся', () => {
+  assert.deepEqual(nextPendingQueue(['a'], [503]), ['a'])
+})
+
+test('nextPendingQueue: 4xx выбрасывается из очереди', () => {
+  assert.deepEqual(nextPendingQueue(['a'], [400]), [])
+})
+
+test('nextPendingQueue: смешанная очередь — порядок сохраняется, снимается только 4xx', () => {
+  const queue = ['ok-item', 'retry-network', 'drop-400', 'retry-5xx']
+  const outcomes: Array<'ok' | number | null> = ['ok', null, 400, 500]
+  assert.deepEqual(nextPendingQueue(queue, outcomes), ['retry-network', 'retry-5xx'])
+})
+
+test('nextPendingQueue: outcome отсутствует (короче queue) — трактуется как «повторить»', () => {
+  assert.deepEqual(nextPendingQueue(['a', 'b'], ['ok']), ['b'])
 })
