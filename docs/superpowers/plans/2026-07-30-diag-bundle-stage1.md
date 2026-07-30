@@ -872,9 +872,10 @@ const REDACTED = '***';
 // которые реально встречаются в текстах ошибок. Порядок важен: длинные варианты
 // раньше коротких, иначе `token` съест префикс у `access_token`.
 const SECRET_TEXT_KEYS = [
-  'access[_-]?token', 'refresh[_-]?token', 'id[_-]?token', 'token',
+  'access[_-]?token', 'refresh[_-]?token', 'refresh[_-]?id', 'id[_-]?token',
+  '[a-z]{2,}[_-]token', 'token',
   'auth[_-]?id', 'authorization', 'auth',
-  'session[_-]?id', 'sess[_-]?id', 'sessid',
+  'session[_-]?id', 'sess[_-]?id', 'sessid', 'session', 'cookie',
   'api[_-]?key', 'client[_-]?secret', 'secret',
   'password', 'passwd', 'pwd'
 ].join('|');
@@ -893,13 +894,16 @@ const BEARER_RE = /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{4,})/gi;
 export const redactText = (text) => {
   const raw = String(text ?? '');
   if (!raw) return '';
+  // BEARER_RE идёт ПЕРВЫМ. Иначе KV_RE съедает слово `Bearer` как значение
+  // ключа `authorization` ("Authorization: Bearer <jwt>" -> "Authorization=***"),
+  // после чего сам токен остаётся в тексте, а BEARER_RE уже не находит схему.
   return raw
-    .replace(KV_RE, (_m, key) => `${key}=${REDACTED}`)
-    .replace(BEARER_RE, (_m, scheme) => `${scheme} ${REDACTED}`);
+    .replace(BEARER_RE, (_m, scheme) => `${scheme} ${REDACTED}`)
+    .replace(KV_RE, (_m, key) => `${key}=${REDACTED}`);
 };
 
 export const MAX_BUNDLE_BYTES = 262_144;
-export const DIAG_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+export const DIAG_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
 const redactHeaders = (headers) => {
   if (!headers || typeof headers !== 'object') return {};
