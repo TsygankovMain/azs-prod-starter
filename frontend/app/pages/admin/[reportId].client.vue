@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { B24Frame } from '@bitrix24/b24jssdk'
+import { buildQueueSnapshot, buildUploadErrorEntry, buildUploadSuccessEntry, extractUploadHttpStatus } from '~/utils/diag/uploadDiag'
 
 type ReportRow = {
   id: number
@@ -356,6 +357,9 @@ const scrollToFirstProblemSlot = async () => {
 const runUploadTask = async (task: UploadTask) => {
   const sessionId = uploadWorker.sessionId
   const slot = photoSlots.find((item) => item.key === task.slotKey)
+  const diag = useDiagCollector()
+  const uploadStartedAtMs = performance.now()
+  const uploadStartedAt = new Date().toISOString()
   if (!slot) {
     return
   }
@@ -402,6 +406,10 @@ const runUploadTask = async (task: UploadTask) => {
       : ''
     slot.fileName = backendFileName || task.file.name
     registerUploadSuccess()
+    diag.recordUpload(buildUploadSuccessEntry(
+      { photoCode: slot.key, fileSize: task.file.size, fileType: task.file.type, startedAt: uploadStartedAt, startedAtMs: uploadStartedAtMs, attempt: task.id },
+      performance.now()
+    ))
   } catch (error) {
     if (task.sessionId !== uploadWorker.sessionId) {
       return
@@ -436,12 +444,47 @@ const runUploadTask = async (task: UploadTask) => {
     }
     saveError.value = slot.error
     saveErrorDetail.value = errorDetail(error)
+    diag.recordUpload(buildUploadErrorEntry(
+      { photoCode: slot.key, fileSize: task.file.size, fileType: task.file.type, startedAt: uploadStartedAt, startedAtMs: uploadStartedAtMs, attempt: task.id },
+      performance.now(),
+      {
+        httpStatus: extractUploadHttpStatus(error),
+        errorCode: responseData?.errorCode ?? null,
+        retryable,
+        message: String(responseData?.message || responseData?.error || humanText)
+      }
+    ))
+    diag.setQueueSnapshot(buildQueueSnapshot(
+      uploadWorker,
+      photoSlots.map((s) => ({ key: s.key, confirmed: s.confirmed, uploadState: s.uploadState, uploaded: s.uploaded, file: s.file, error: s.error }))
+    ))
+    void autoSendDiag()
   } finally {
     if (task.sessionId === uploadWorker.sessionId) {
       uploadWorker.activeCount = Math.max(0, uploadWorker.activeCount - 1)
       void pumpUploadQueue()
     }
   }
+}
+
+/**
+ * Автоотправка диагностики при сбое загрузки. Даёт покрытие, не завися от того,
+ * вспомнил ли оператор нажать кнопку на смене. Троттлинг живёт в sendPolicy,
+ * поэтому пачка сбоев даёт одну отправку.
+ */
+const autoSendDiag = async (): Promise<void> => {
+  try {
+    const { send } = useDiagSender()
+    await send('auto_upload_error', {
+      app: { build: 'unknown', route: String(route.fullPath || ''), isDemo: false },
+      user: {
+        userId: Number(report.value?.adminUserId || 0),
+        azsId: String(report.value?.azsId || ''),
+        reportId: Number(route.params.reportId) || null,
+        role: 'azs_admin'
+      }
+    })
+  } catch { /* диагностика не имеет права ломать сдачу отчёта */ }
 }
 
 const pumpUploadQueue = async () => {
@@ -888,7 +931,20 @@ watch(hasUploadErrors, (hasErr) => {
         <summary class="list-none [&::-webkit-details-marker]:hidden cursor-pointer hover:text-gray-600 select-none">Подробности</summary>
         <p class="mt-1 font-mono break-all">{{ saveErrorDetail }}</p>
       </details>
+      <DiagButton
+        :azs-id="String(report?.azsId || '')"
+        :report-id="Number(route.params.reportId) || null"
+        role="azs_admin"
+        variant="block"
+      />
     </div>
+    <DiagButton
+      v-if="!saveError && hasUploadErrors"
+      :azs-id="String(report?.azsId || '')"
+      :report-id="Number(route.params.reportId) || null"
+      role="azs_admin"
+      variant="block"
+    />
     <!-- Ошибки загрузки фото с перечнем слотов и кнопкой «Повторить» (LOGIC-F2) -->
     <div v-if="hasUploadErrors" class="space-y-2">
       <B24Alert
