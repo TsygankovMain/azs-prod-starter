@@ -100,3 +100,61 @@ test('оба слоя не искажают безобидную прозу', ()
     }
   }
 });
+
+// Корпус враждебных значений: не строки. Именно на них слои разъехались —
+// сервер перестал бросать, клиент продолжал, и строковый корпус этого
+// увидеть не мог.
+const HOSTILE_INPUTS = [
+  { toString: 'pwned' },
+  { valueOf: 'x', toString: 'y' },
+  Object.create(null),
+  [1, 2],
+  { a: 1 },
+  42,
+  true,
+  null,
+  undefined,
+  ''
+];
+
+// Безопасное описание враждебного значения для текста ассерта. String(value)
+// сам бросает на {toString:'pwned'}-подобных объектах — describeHostile нужен,
+// чтобы падение случилось на СРАВНЕНИИ, а не на построении сообщения о нём.
+const describeHostile = (value) => {
+  const json = JSON.stringify(value);
+  return json === undefined ? String(value) : json;
+};
+
+test('ни один слой не бросает на враждебном входе', () => {
+  const thrown = [];
+  for (const input of HOSTILE_INPUTS) {
+    for (const [layer, fn, name] of [
+      ['клиент', clientRedactText, 'redactText'], ['сервер', serverRedactText, 'redactText'],
+      ['клиент', clientRedactUrl, 'redactUrl'], ['сервер', serverRedactUrl, 'redactUrl']
+    ]) {
+      try { fn(input); } catch (error) {
+        thrown.push(`  ${layer} ${name}(${describeHostile(input)}): ${error.message}`);
+      }
+    }
+  }
+  for (const input of HOSTILE_INPUTS) {
+    for (const [layer, fn] of [['клиент', clientRedactHeaders], ['сервер', serverRedactHeaders]]) {
+      try { fn({ 'x-custom': input }); } catch (error) {
+        thrown.push(`  ${layer} redactHeaders(x-custom=${describeHostile(input)}): ${error.message}`);
+      }
+    }
+  }
+  assert.equal(thrown.length, 0, `Броски на враждебном входе:\n${thrown.join('\n')}`);
+});
+
+test('слои одинаково обрабатывают враждебный вход', () => {
+  for (const input of HOSTILE_INPUTS) {
+    assert.equal(serverRedactText(input), clientRedactText(input), `redactText разошёлся на ${describeHostile(input)}`);
+    assert.equal(serverRedactUrl(input), clientRedactUrl(input), `redactUrl разошёлся на ${describeHostile(input)}`);
+    assert.deepEqual(
+      serverRedactHeaders({ 'x-custom': input }),
+      clientRedactHeaders({ 'x-custom': input }),
+      `redactHeaders разошёлся на ${describeHostile(input)}`
+    );
+  }
+});

@@ -24,16 +24,32 @@ const isSecretKey = (name: string): boolean => {
   return EXTRA_SECRET_HEADERS.has(normalized) || SECRET_KEY_RE.test(normalized)
 }
 
-export function redactHeaders(headers: Record<string, string>): Record<string, string> {
+/**
+ * Безопасное приведение к строке. Бандл собирается из данных браузера, и
+ * объект с полем toString роняет String(): TypeError вылетал наружу, минуя
+ * и контракт, и логи.
+ */
+const toSafeString = (value: unknown): string => {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value)
+  try {
+    return String(value)
+  } catch {
+    return '[unserializable]'
+  }
+}
+
+export function redactHeaders(headers: Record<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(headers ?? {})) {
-    out[key] = isSecretKey(key) ? REDACTED : value
+    out[key] = isSecretKey(key) ? REDACTED : toSafeString(value)
   }
   return out
 }
 
-export function redactUrl(rawUrl: string): string {
-  const raw = String(rawUrl ?? '')
+export function redactUrl(rawUrl: unknown): string {
+  const raw = toSafeString(rawUrl)
   if (!raw) return ''
   try {
     const url = new URL(raw, 'http://local.invalid')
@@ -82,8 +98,8 @@ const BEARER_RE = /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{4,})/gi
  * message. Разбирать это как URL нельзя: строка произвольная. Поэтому ищем
  * пары «ключ=значение» и схемы авторизации.
  */
-export function redactText(text: string): string {
-  const raw = String(text ?? '')
+export function redactText(text: unknown): string {
+  const raw = toSafeString(text)
   if (!raw) return ''
   return raw
     .replace(BEARER_RE, (_m, scheme: string) => `${scheme} ${REDACTED}`)

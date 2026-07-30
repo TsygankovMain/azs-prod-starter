@@ -202,7 +202,11 @@ test('POST /report: несериализуемый toString в headers/errors н
   } finally { server.close(); }
 });
 
-test('POST /report: то, что всё же роняет sanitizeBundle (url), ловится роутером — 400 JSON, не HTML-крах', async () => {
+test('POST /report: несериализуемый toString в net[].url тоже не роняет обработчик (fix round 2: redactUrl тоже безопасен)', async () => {
+  // До fix round 2 этот же bundle приводил к 400 diag_bundle_unprocessable —
+  // redactUrl ещё бросал TypeError, и ловил его только внешний try/catch
+  // роутера. Теперь redactUrl тоже проходит через toSafeString и не бросает
+  // вовсе, поэтому запрос успешен, как и для headers/errors.
   const store = makeStore();
   const server = startServer(store);
   try {
@@ -211,6 +215,28 @@ test('POST /report: то, что всё же роняет sanitizeBundle (url), 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(bundle)
+    });
+    assert.equal(res.status, 200);
+    assert.equal(typeof res.json.code, 'string');
+    assert.equal(store.inserted.length, 1);
+    assert.equal(store.inserted[0].bundle.net[0].url, '[unserializable]');
+  } finally { server.close(); }
+});
+
+test('POST /report: внешний try/catch — если sanitizeBundle или generateDiagCode всё же бросят, роутер отдаёт 400, не HTML-крах', async () => {
+  // Все три функции редакции теперь безопасны (toSafeString на обоих слоях),
+  // поэтому реального враждебного bundle, роняющего sanitizeBundle, больше
+  // нет. Но try/catch в /report оборачивает ещё и generateDiagCode(randomBytes(6))
+  // — это законный, не выдуманный способ реально дойти до того же catch и
+  // убедиться, что он всё ещё работает как защита от неизвестных будущих сбоев.
+  const store = makeStore();
+  const throwingRandomBytes = () => { throw new Error('entropy source unavailable'); };
+  const server = startServer(store, { randomBytes: throwingRandomBytes });
+  try {
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBundle())
     });
     assert.equal(res.status, 400);
     assert.ok(res.json, 'ответ должен быть JSON, а не HTML-страницей краша Express');

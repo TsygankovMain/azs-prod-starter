@@ -84,7 +84,7 @@ export const redactHeaders = (headers) => {
 };
 
 export const redactUrl = (rawUrl) => {
-  const raw = String(rawUrl ?? '');
+  const raw = toSafeString(rawUrl);
   if (!raw) return '';
   try {
     const url = new URL(raw, 'http://local.invalid');
