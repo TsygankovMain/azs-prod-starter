@@ -31,7 +31,8 @@ const startServer = (store, overrides = {}) => {
     store,
     randomBytes: overrides.randomBytes || (() => Buffer.from([0, 1, 2, 3, 4, 5])),
     logger: silentLogger,
-    serverSelfCheck: overrides.serverSelfCheck ?? null
+    serverSelfCheck: overrides.serverSelfCheck ?? null,
+    chatNotifier: overrides.chatNotifier ?? null
   }));
   return app.listen(0);
 };
@@ -424,6 +425,113 @@ test('GET /reports: отсутствующий accessContext (attachAccessContex
 test('POST /report: гейт read-роутов не задевает запись — оператор без capabilities.settings всё ещё может сдать бандл', async () => {
   const store = makeStore();
   const server = startServer(store, { accessContext: OPERATOR_ACCESS_CONTEXT });
+  try {
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBundle())
+    });
+    assert.equal(res.status, 200);
+    assert.equal(store.inserted.length, 1);
+  } finally { server.close(); }
+});
+
+// --- Task 12: пост в дежурный чат — best-effort, не должен трогать ответ ---
+
+test('POST /report: chatNotifier.notify() отклоняется — ответ всё равно 200 с кодом, бандл всё равно сохранён', async () => {
+  const store = makeStore();
+  const chatNotifier = { notify: async () => { throw new Error('bitrix down'); } };
+  const server = startServer(store, { chatNotifier });
+  try {
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBundle())
+    });
+    assert.equal(res.status, 200);
+    assert.equal(typeof res.json.code, 'string');
+    assert.equal(store.inserted.length, 1, 'bundle must still be stored despite the notifier throwing');
+    assert.equal(store.inserted[0].azsId, '548');
+  } finally { server.close(); }
+});
+
+test('POST /report: отклонённый notify() не всплывает unhandledRejection и не меняет тело ответа', async () => {
+  const store = makeStore();
+  let rejectionSeen = false;
+  const onUnhandledRejection = () => { rejectionSeen = true; };
+  process.on('unhandledRejection', onUnhandledRejection);
+
+  const chatNotifier = { notify: async () => { throw new Error('bitrix down'); } };
+  const server = startServer(store, { chatNotifier });
+  try {
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBundle())
+    });
+    assert.deepEqual(Object.keys(res.json).sort(), ['code', 'diagId']);
+    // Дать микрозадачам/catch() дозавершиться, прежде чем проверять флаг.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(rejectionSeen, false, 'diagRoutes.js обязан гасить отказ notify() своим .catch()');
+  } finally {
+    process.off('unhandledRejection', onUnhandledRejection);
+    server.close();
+  }
+});
+
+test('POST /report: notify() не блокирует ответ — HTTP-ответ уходит раньше, чем notifier завершает свою работу', async () => {
+  const store = makeStore();
+  let notifyResolved = false;
+  const notifyCalls = [];
+  const chatNotifier = {
+    notify: async (args) => {
+      notifyCalls.push(args);
+      // Никогда не резолвится сама в рамках теста — если бы роутер ждал
+      // этот промис, запрос ниже завис бы и упал по гонке с таймаутом.
+      await new Promise(() => {});
+      notifyResolved = true; // unreachable, здесь только для ясности намерения
+    }
+  };
+  const server = startServer(store, { chatNotifier });
+  try {
+    const res = await Promise.race([
+      call(server, '/api/diag/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(validBundle())
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('response blocked on chatNotifier.notify()')), 500))
+    ]);
+    assert.equal(res.status, 200);
+    assert.equal(store.inserted.length, 1);
+    assert.equal(notifyCalls.length, 1, 'notifier must still have been invoked');
+    assert.equal(notifyResolved, false, 'sanity: the never-resolving promise really never resolved');
+  } finally { server.close(); }
+});
+
+test('POST /report: chatNotifier.notify получает ровно тот code/bundle/serverSlice, что были сохранены', async () => {
+  const store = makeStore();
+  const serverSelfCheck = { async run() { return { disk: { ok: true }, oauth: { hasContext: true } }; } };
+  const notifyCalls = [];
+  const chatNotifier = { notify: async (args) => { notifyCalls.push(args); } };
+  const server = startServer(store, { chatNotifier, serverSelfCheck });
+  try {
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBundle())
+    });
+    assert.equal(res.status, 200);
+    assert.equal(notifyCalls.length, 1);
+    assert.equal(notifyCalls[0].code, res.json.code);
+    assert.deepEqual(notifyCalls[0].bundle, store.inserted[0].bundle);
+    assert.deepEqual(notifyCalls[0].serverSlice, store.inserted[0].serverSlice);
+  } finally { server.close(); }
+});
+
+test('POST /report: chatNotifier отсутствует (null, как раньше) — запись и ответ работают без него', async () => {
+  const store = makeStore();
+  const server = startServer(store); // no chatNotifier override → null, как в остальных тестах файла
   try {
     const res = await call(server, '/api/diag/report', {
       method: 'POST',

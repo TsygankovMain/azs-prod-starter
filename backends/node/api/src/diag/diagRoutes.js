@@ -12,7 +12,17 @@ export const DIAG_ECHO_LIMIT = '1mb';
  * сеть оператора, а не нашу БД. Поэтому они не обращаются к стору и должны
  * монтироваться без attachAccessContext (см. Task 6).
  */
-export const createDiagRouter = ({ store, randomBytes = nodeRandomBytes, logger = console, serverSelfCheck = null }) => {
+export const createDiagRouter = ({
+  store,
+  randomBytes = nodeRandomBytes,
+  logger = console,
+  serverSelfCheck = null,
+  // Task 12: пост в дежурный чат — карточка + бандл файлом. Best-effort и
+  // не блокирует ответ оператору (см. вызов ниже, в конце POST /report):
+  // отсутствие настройки (chatNotifier === null, как в существующих тестах
+  // этого роутера) — не ошибка, диагностика просто не сообщается в чат.
+  chatNotifier = null
+}) => {
   const router = express.Router();
 
   router.get('/ping', (_req, res) => {
@@ -96,6 +106,21 @@ export const createDiagRouter = ({ store, randomBytes = nodeRandomBytes, logger 
     logger.info('diag_report_stored', {
       code, sizeBytes, trigger: bundle.trigger, azsId: bundle.user?.azsId || null
     });
+
+    // Store first, post best-effort: бандл уже в базе (row выше), ответ
+    // оператору уже решён — пост в чат команды не должен ни задержать его,
+    // ни тем более его изменить. Поэтому НЕ await: notify() запускается и
+    // ответ уходит сразу же. .catch() — подстраховка на случай, если сам
+    // notifier нарушит свой контракт «никогда не бросает» (см.
+    // diagChatNotifier.js): без неё такой сбой был бы unhandledRejection,
+    // а не тихим логом.
+    if (chatNotifier && typeof chatNotifier.notify === 'function') {
+      Promise.resolve(chatNotifier.notify({ code, bundle, serverSlice }))
+        .catch((error) => {
+          logger.error('diag_chat_notify_threw', { code, message: error?.message || String(error) });
+        });
+    }
+
     return res.json({ diagId: row?.id ?? null, code });
   });
 

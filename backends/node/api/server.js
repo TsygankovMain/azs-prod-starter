@@ -56,6 +56,7 @@ import cron from 'node-cron';
 import createDiagRouter from './src/diag/diagRoutes.js';
 import { createDiagStore } from './src/diag/diagStore.js';
 import { createServerSelfCheck } from './src/diag/serverSelfCheck.js';
+import { createDiagChatNotifier } from './src/diag/diagChatNotifier.js';
 import {
   createJsonParserBypass,
   createDiagUnavailableHandler,
@@ -617,9 +618,22 @@ app.use('/api/users', verifyToken, attachAccessContext, createUsersRouter({
 // а run() вызывается лишь из-под /api/diag/report, который смонтирован
 // ниже только когда diagStore не null.
 const diagSelfCheck = createServerSelfCheck({ authContextStore, bitrixClient, pool });
+// Task 12: пост карточки + бандла в дежурный чат после сохранения диагностики.
+// DIAG_CHAT_ID пуст по умолчанию — фича выключена, notify() тогда просто
+// отдаёт disabled:true и никуда не стучится (см. diagChatNotifier.js).
+// resolveContext: getAdminContext — ТОТ ЖЕ механизм, что уже используют
+// photoRemarkService/usersRoutes/brandRoutes чуть выше по файлу; передавать
+// сюда пустой {} нельзя — вызов imbot.v2.* тогда падает, не покинув сервер
+// (см. комментарий в diagChatNotifier.js).
+const diagChatNotifier = createDiagChatNotifier({
+  bitrixClient,
+  botId: Number(process.env.BITRIX_BOT_ID || 0),
+  dialogId: process.env.DIAG_CHAT_ID || '',
+  resolveContext: getAdminContext
+});
 const diagSignatureOnlyPaths = new Set(DIAG_SIGNATURE_ONLY_PATHS);
 if (diagStore) {
-  const diagRouter = createDiagRouter({ store: diagStore, serverSelfCheck: diagSelfCheck });
+  const diagRouter = createDiagRouter({ store: diagStore, serverSelfCheck: diagSelfCheck, chatNotifier: diagChatNotifier });
   app.use('/api/diag', (req, res, next) => {
     if (diagSignatureOnlyPaths.has(req.path)) return verifyTokenSignatureOnly(req, res, next);
     return verifyToken(req, res, next);
