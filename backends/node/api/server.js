@@ -4,7 +4,7 @@ import cors from 'cors';
 import { Pool } from 'pg';
 import mysql from 'mysql2/promise';
 import jwt from 'jsonwebtoken';
-import { createVerifyToken } from './utils/verifyToken.js';
+import { createVerifyToken, createVerifyTokenSignatureOnly } from './utils/verifyToken.js';
 import createSettingsRouter from './src/settings/settingsRoutes.js';
 import createDatabaseSettingsStore from './src/settings/databaseSettingsStore.js';
 import createBitrixAppSettingsStore from './src/settings/bitrixAppSettingsStore.js';
@@ -52,6 +52,16 @@ import { resolveBotSettingsContext } from './src/notifications/botSettingsContex
 import createBrandRouter from './src/brands/brandRoutes.js';
 import { createDatabaseBrandStore } from './src/brands/databaseBrandStore.js';
 import { createUsersRouter } from './src/users/usersRoutes.js';
+import cron from 'node-cron';
+import createDiagRouter from './src/diag/diagRoutes.js';
+import { createDiagStore } from './src/diag/diagStore.js';
+import { createServerSelfCheck } from './src/diag/serverSelfCheck.js';
+import {
+  createJsonParserBypass,
+  createDiagUnavailableHandler,
+  createDiagErrorHandler,
+  DIAG_SIGNATURE_ONLY_PATHS
+} from './src/diag/diagMiddleware.js';
 
 try {
   validateRequiredEnv();
@@ -69,7 +79,12 @@ process.on('uncaughtException', (error) => {
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Диаг-эндпоинты приносят свои парсеры: бандл до 512 КБ и echo-проба до 1 МБ
+// не проходят под дефолтный 100-килобайтный лимит express.json(). Для всех
+// остальных маршрутов поведение не меняется.
+// Fix round (ревью, S2): сама мидлварь теперь живёт в src/diag/diagMiddleware.js —
+// tests/diagParserBypass.test.js импортирует ровно эту функцию, а не свою копию.
+app.use(createJsonParserBypass());
 // Bitrix24 bot webhook events arrive as application/x-www-form-urlencoded with
 // PHP-nested keys (data[message][text]=...). extended:true (qs) parses them into
 // nested objects so /api/bot/event can read data.message.text etc.
@@ -148,6 +163,19 @@ const dbSettingsStore = createDatabaseSettingsStore({ pool, dbType });
 const reasonStore = createReasonStore({ pool, dbType });
 const photoRemarkStore = createPhotoRemarkStore({ pool, dbType });
 const brandStore = createDatabaseBrandStore({ pool, dbType });
+// Диагностика — вспомогательная функция и не имеет права мешать приложению
+// стартовать. diagStore поддерживает только PostgreSQL; на любой другой СУБД
+// диагностика отключается, а приложение поднимается как обычно.
+let diagStore = null;
+try {
+  diagStore = createDiagStore({ pool, dbType });
+} catch (error) {
+  console.error(JSON.stringify({
+    event: 'diag_disabled',
+    reason: error.message,
+    dbType
+  }));
+}
 const authContextStoreType = String(process.env.AUTH_CONTEXT_STORE || 'composite').trim().toLowerCase();
 const authContextStore = (() => {
   if (authContextStoreType === 'database') {
@@ -361,6 +389,10 @@ const photoRemarkService = createPhotoRemarkService({
   getAdminContext
 });
 const verifyToken = createVerifyToken({ authContextStore });
+// S1 (ревью): гвард для /ping и /echo — проверяет подпись/срок действия JWT,
+// но не трогает authContextStore (см. utils/verifyToken.js). Используется
+// только при монтировании /api/diag ниже (DIAG_SIGNATURE_ONLY_PATHS).
+const verifyTokenSignatureOnly = createVerifyTokenSignatureOnly();
 const attachAccessContext = async (req, res, next) => {
   try {
     const settings = await settingsStore.read({
@@ -556,6 +588,60 @@ app.use('/api/users', verifyToken, attachAccessContext, createUsersRouter({
   bitrixClient,
   getAdminContext
 }));
+
+// ping/echo — сигнатурный JWT-гвард без attachAccessContext: attachAccessContext
+// читает настройки из БД на каждом запросе (server.js:439), и тогда замер RTT
+// мерил бы нашу БД, а не сеть. С S1 (ревью) то же верно и для самого
+// verifyToken — его полная версия ходит в authContextStore на каждый запрос,
+// поэтому /ping и /echo получают createVerifyTokenSignatureOnly() вместо
+// verifyToken (см. utils/verifyToken.js): подпись/срок токена по-прежнему
+// проверяются и отклоняются, а БД не трогается вовсе.
+//
+// Нельзя смонтировать общий diagRouter отдельно на '/api/diag/ping' и
+// '/api/diag/echo' до общего '/api/diag': Express обрезает совпавший префикс
+// маршрута use(), и роутер получает остаток '/'. Ни один маршрут внутри
+// diagRouter не совпадает с '/', поэтому запрос проваливается дальше по
+// стеку и всё равно попадает под '/api/diag' с attachAccessContext —
+// проверено эмпирически (verifyToken вызывался дважды, attachAccessContext
+// один раз для /ping и /echo). Поэтому исключение сделано условными
+// мидлварями внутри одного монтирования на '/api/diag': req.path здесь уже
+// относительный (совпадение с '/ping'/'/echo'), Express обрезает префикс
+// до вызова мидлварей этого use(). DIAG_SIGNATURE_ONLY_PATHS общий с
+// tests/diagAuthDispatch.test.js — тот же Set, что и здесь.
+//
+// diagStore === null (СУБД не PostgreSQL) — весь мониторинг просто не
+// монтируется, без него роутер не может ни во что писать.
+// Серверный срез (Task 11): состояние OAuth-контекста, живая проба Диска,
+// пинг БД. Конструктор не делает I/O сам по себе, поэтому создаём его
+// безусловно — таймеры и сетевые вызовы запускаются только внутри run(),
+// а run() вызывается лишь из-под /api/diag/report, который смонтирован
+// ниже только когда diagStore не null.
+const diagSelfCheck = createServerSelfCheck({ authContextStore, bitrixClient, pool });
+const diagSignatureOnlyPaths = new Set(DIAG_SIGNATURE_ONLY_PATHS);
+if (diagStore) {
+  const diagRouter = createDiagRouter({ store: diagStore, serverSelfCheck: diagSelfCheck });
+  app.use('/api/diag', (req, res, next) => {
+    if (diagSignatureOnlyPaths.has(req.path)) return verifyTokenSignatureOnly(req, res, next);
+    return verifyToken(req, res, next);
+  }, (req, res, next) => {
+    if (diagSignatureOnlyPaths.has(req.path)) return next();
+    return attachAccessContext(req, res, next);
+  }, diagRouter);
+  // Fix round (ревью, live-run): ошибки парсера тела (битый JSON, превышен
+  // лимит размера) бросают ДО обработчика маршрута — эта мидлварь обязана
+  // стоять сразу после диаг-роутера, иначе такие запросы долетают до
+  // дефолтного HTML-обработчика ошибок Express. См. createDiagErrorHandler
+  // в diagMiddleware.js.
+  app.use('/api/diag', createDiagErrorHandler());
+}
+// Диагностика отключена (например, неподдерживаемая СУБД). Отвечаем в том же
+// JSON-контракте, что и остальное приложение: голый HTML-404 от Express
+// фронтенд разбирает как SyntaxError и показывает оператору не отказ, а сбой.
+// Fix round (ревью, S2): сам обработчик теперь живёт в src/diag/diagMiddleware.js —
+// tests/diagBootGuard.test.js импортирует ровно эту функцию, а не свою копию.
+if (!diagStore) {
+  app.use('/api/diag', createDiagUnavailableHandler());
+}
 
 // ---------------------------------------------------------------------------
 // BUG-019: Bot event handler — receives ONIMBOTMESSAGEADD from Bitrix24.
@@ -961,6 +1047,12 @@ brandStore.ensureSchema()
   .then(() => console.log('brand schema is ready'))
   .catch((error) => console.error('Failed to prepare brand schema', error));
 
+if (diagStore) {
+  diagStore.ensureSchema()
+    .then(() => console.log('diag_report schema is ready'))
+    .catch((error) => console.error('Failed to prepare diag_report schema', error));
+}
+
 if (typeof authContextStore.ensureSchema === 'function') {
   authContextStore.ensureSchema()
     .then(() => console.log('auth_context schema is ready'))
@@ -1053,6 +1145,19 @@ const tokenRefreshScheduler = createTokenRefreshScheduler({
 });
 
 tokenRefreshScheduler.start();
+
+// Ежесуточная чистка диаг-бандлов старше ретеншена (30 дней по умолчанию).
+// diagStore === null (СУБД не PostgreSQL) — чистить нечего, стора нет.
+if (diagStore && String(process.env.SCHEDULER_ENABLED || 'true') !== 'false') {
+  cron.schedule('30 3 * * *', async () => {
+    try {
+      const removed = await diagStore.deleteOlderThan(Number(process.env.DIAG_RETENTION_DAYS || 30));
+      console.log(JSON.stringify({ event: 'diag_retention_cleanup', removed }));
+    } catch (error) {
+      console.error(JSON.stringify({ event: 'diag_retention_failed', message: error.message }));
+    }
+  });
+}
 
 // Startup seed: if composite mode and DB is empty, migrate file → DB once.
 // This ensures a server that was previously file-only doesn't lose its admin

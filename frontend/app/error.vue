@@ -54,6 +54,7 @@ const reload = () => {
               label="Обновить"
               @click="reload"
             />
+            <DiagButton variant="block" />
           </div>
 
           <details class="list-none text-xs text-gray-400">
