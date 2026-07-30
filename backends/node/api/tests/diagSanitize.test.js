@@ -162,3 +162,35 @@ test('sanitizeBundle: секрет не доезжает ни через оди�
   assert.equal(res.ok, true);
   assert.ok(!JSON.stringify(res.bundle).includes('LEAKME'), JSON.stringify(res.bundle));
 });
+
+test('битые v и trigger отклоняются, а не роняют функцию', () => {
+  for (const bad of [
+    { v: { valueOf: 'x', toString: 'y' }, trigger: 'button' },
+    { v: 1, trigger: { toString: 'z' } },
+    { v: [1], trigger: 'button' },
+    { v: 1, trigger: ['button'] }
+  ]) {
+    const res = sanitizeBundle(bad);
+    assert.equal(res.ok, false, JSON.stringify(bad));
+  }
+});
+
+test('строковая версия принимается', () => {
+  const raw = validBundle();
+  raw.v = '1';
+  assert.equal(sanitizeBundle(raw).ok, true);
+});
+
+test('секрет во фрагменте URL не доезжает', () => {
+  const raw = validBundle();
+  raw.net = [{ url: 'https://o.test/a?x=1#access_token=LEAKME', headers: {} }];
+  assert.ok(!JSON.stringify(sanitizeBundle(raw).bundle).includes('LEAKME'));
+});
+
+test('секрет в расширенных query-ключах не доезжает', () => {
+  for (const q of ['/x?refresh_id=LEAKME', '/x?session=LEAKME', '/x?private_token=LEAKME', '/x?client_secret=LEAKME']) {
+    const raw = validBundle();
+    raw.net = [{ url: q, headers: {} }];
+    assert.ok(!JSON.stringify(sanitizeBundle(raw).bundle).includes('LEAKME'), q);
+  }
+});

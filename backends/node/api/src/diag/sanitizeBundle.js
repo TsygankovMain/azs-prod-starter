@@ -4,8 +4,6 @@
  * Клиент уже редактирует секреты, но бандл приходит из браузера: он может быть
  * подделан или собран устаревшей сборкой фронта. Приватность держится здесь.
  */
-const SECRET_HEADERS = new Set(['authorization', 'cookie', 'set-cookie', 'x-api-key']);
-const SECRET_QUERY_KEYS = new Set(['token', 'access_token', 'auth', 'sessid']);
 const ALLOWED_TRIGGERS = new Set(['button', 'auto_upload_error']);
 const REDACTED = '***';
 
@@ -20,6 +18,18 @@ const SECRET_TEXT_KEYS = [
   'api[_-]?key', 'client[_-]?secret', 'secret',
   'password', 'passwd', 'pwd'
 ].join('|');
+
+// Один словарь на все три пути редакции: свободный текст, имена
+// query-параметров и имена заголовков. Раздельные списки уже разъезжались —
+// текстовый вырос до 20 форм, а query остался на 4, и refresh_id утекал.
+const SECRET_KEY_RE = new RegExp(`^(x-)?(${SECRET_TEXT_KEYS})$`, 'i');
+// set-cookie не подходит под шаблон, но обязателен к сокрытию.
+const EXTRA_SECRET_HEADERS = new Set(['set-cookie']);
+
+const isSecretKey = (name) => {
+  const normalized = String(name || '').toLowerCase();
+  return EXTRA_SECRET_HEADERS.has(normalized) || SECRET_KEY_RE.test(normalized);
+};
 
 // Запятая и точка с запятой НЕ терминаторы значения: иначе секрет с запятой
 // маскируется частично и пригодный огрызок уезжает в базу.
@@ -47,29 +57,36 @@ export const redactText = (text) => {
 export const MAX_BUNDLE_BYTES = 262_144;
 export const DIAG_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
-const redactHeaders = (headers) => {
+export const redactHeaders = (headers) => {
   if (!headers || typeof headers !== 'object') return {};
   const out = {};
   for (const [key, value] of Object.entries(headers)) {
-    out[key] = SECRET_HEADERS.has(key.toLowerCase()) ? REDACTED : String(value);
+    out[key] = isSecretKey(key) ? REDACTED : String(value);
   }
   return out;
 };
 
-const redactUrl = (rawUrl) => {
+export const redactUrl = (rawUrl) => {
   const raw = String(rawUrl ?? '');
   if (!raw) return '';
   try {
     const url = new URL(raw, 'http://local.invalid');
     let touched = false;
     for (const key of Array.from(url.searchParams.keys())) {
-      if (SECRET_QUERY_KEYS.has(key.toLowerCase())) {
-        url.searchParams.set(key, REDACTED);
-        touched = true;
+      if (isSecretKey(key)) { url.searchParams.set(key, REDACTED); touched = true; }
+    }
+    // Секреты живут и во фрагменте: OAuth-редиректы кладут access_token
+    // после '#'. URL не разбирает hash как query, поэтому разбираем вручную.
+    if (url.hash.length > 1) {
+      const hashParams = new URLSearchParams(url.hash.slice(1));
+      let hashTouched = false;
+      for (const key of Array.from(hashParams.keys())) {
+        if (isSecretKey(key)) { hashParams.set(key, REDACTED); hashTouched = true; }
       }
+      if (hashTouched) { url.hash = `#${hashParams.toString()}`; touched = true; }
     }
     if (!touched) return raw;
-    return /^[a-z]+:\/\//i.test(raw) ? url.toString() : `${url.pathname}${url.search}`;
+    return /^[a-z]+:\/\//i.test(raw) ? url.toString() : `${url.pathname}${url.search}${url.hash}`;
   } catch {
     return raw;
   }
@@ -79,10 +96,13 @@ export const sanitizeBundle = (raw) => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, error: 'bundle_not_an_object' };
   }
-  if (Number(raw.v) !== 1) {
+  // Коерсия объекта с полями valueOf/toString бросает TypeError. Обычное JSON-тело
+  // не должно ронять приём — только получать отказ.
+  const version = typeof raw.v === 'number' || typeof raw.v === 'string' ? Number(raw.v) : NaN;
+  if (version !== 1) {
     return { ok: false, error: 'unsupported_bundle_version' };
   }
-  if (!ALLOWED_TRIGGERS.has(String(raw.trigger))) {
+  if (typeof raw.trigger !== 'string' || !ALLOWED_TRIGGERS.has(raw.trigger)) {
     return { ok: false, error: 'unknown_trigger' };
   }
 
