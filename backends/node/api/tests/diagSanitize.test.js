@@ -1,0 +1,113 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { sanitizeBundle, generateDiagCode, DIAG_CODE_ALPHABET } from '../src/diag/sanitizeBundle.js';
+
+const validBundle = () => ({
+  v: 1,
+  diagSessionId: 'sess-1',
+  sentAt: '2026-07-30T09:00:00.000Z',
+  trigger: 'button',
+  net: [{ url: '/api/x?token=abc', method: 'GET', status: 200, headers: { Authorization: 'Bearer s', 'X-Ok': 'k' } }],
+  uploads: [],
+  errors: [],
+  b24: []
+});
+
+test('отклоняет не-объект', () => {
+  assert.equal(sanitizeBundle(null).ok, false);
+  assert.equal(sanitizeBundle('str').ok, false);
+});
+
+test('отклоняет неизвестную версию', () => {
+  const res = sanitizeBundle({ ...validBundle(), v: 99 });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /version/i);
+});
+
+test('отклоняет неизвестный trigger', () => {
+  const res = sanitizeBundle({ ...validBundle(), trigger: 'hack' });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /trigger/i);
+});
+
+test('повторно скрывает секреты, даже если клиент этого не сделал', () => {
+  const res = sanitizeBundle(validBundle());
+  assert.equal(res.ok, true);
+  assert.equal(res.bundle.net[0].headers.Authorization, '***');
+  assert.equal(res.bundle.net[0].headers['X-Ok'], 'k');
+  assert.ok(!JSON.stringify(res.bundle).includes('Bearer s'));
+  assert.ok(!JSON.stringify(res.bundle).includes('token=abc'));
+});
+
+test('чистит секреты в свободном тексте ошибок, загрузок и очереди', () => {
+  const raw = validBundle();
+  raw.errors = [{ kind: 'onerror', message: 'POST /api/x?token=LEAK failed', stack: 'Error: sessid=LEAK\n  at f' }];
+  raw.uploads = [{ photoCode: 'p1', message: 'auth=LEAK' }];
+  raw.queue = { activeCount: 0, maxConcurrency: 2, workerSessionId: 1, slots: [{ key: 'p1', error: 'Bearer eyJhbGciOiJIUzI1NiJ9.abc' }] };
+  const res = sanitizeBundle(raw);
+  assert.equal(res.ok, true);
+  const serialized = JSON.stringify(res.bundle);
+  assert.ok(!serialized.includes('LEAK'), serialized);
+  assert.ok(!serialized.includes('eyJhbGciOiJIUzI1NiJ9'), serialized);
+});
+
+test('серверная чистка закрывает те же формы ключей, что и клиентская', () => {
+  const forms = [
+    'client_secret=LEAK', 'client-secret=LEAK', 'password=LEAK', 'auth_id=LEAK',
+    'api-key=LEAK', 'apikey=LEAK', 'refresh-token=LEAK', 'session-id=LEAK',
+    'secret=LEAK', 'pwd=LEAK', 'id_token=LEAK'
+  ];
+  for (const form of forms) {
+    const raw = validBundle();
+    raw.errors = [{ kind: 'onerror', message: form }];
+    const res = sanitizeBundle(raw);
+    assert.equal(res.ok, true, form);
+    assert.ok(!JSON.stringify(res.bundle).includes('LEAK'), `утечка: ${form}`);
+  }
+});
+
+test('значение с запятой маскируется целиком и на сервере', () => {
+  const raw = validBundle();
+  raw.errors = [{ kind: 'onerror', message: 'token=abc123,def456' }];
+  const serialized = JSON.stringify(sanitizeBundle(raw).bundle);
+  assert.ok(!serialized.includes('abc123'), serialized);
+  assert.ok(!serialized.includes('def456'), serialized);
+});
+
+test('отсутствующие массивы не роняют санитизацию', () => {
+  const raw = validBundle();
+  delete raw.errors;
+  delete raw.uploads;
+  delete raw.queue;
+  const res = sanitizeBundle(raw);
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.bundle.errors, []);
+  assert.deepEqual(res.bundle.uploads, []);
+});
+
+test('отклоняет бандл больше потолка', () => {
+  const big = validBundle();
+  big.errors = Array.from({ length: 5000 }, () => ({ kind: 'onerror', message: 'x'.repeat(200) }));
+  const res = sanitizeBundle(big);
+  assert.equal(res.ok, false);
+  assert.match(res.error, /too_large/);
+});
+
+test('возвращает размер в байтах', () => {
+  const res = sanitizeBundle(validBundle());
+  assert.equal(res.ok, true);
+  assert.equal(typeof res.sizeBytes, 'number');
+  assert.ok(res.sizeBytes > 0);
+});
+
+test('generateDiagCode: 6 символов из безопасного алфавита', () => {
+  const code = generateDiagCode(Buffer.from([0, 1, 2, 3, 4, 5]));
+  assert.equal(code.length, 6);
+  for (const ch of code) assert.ok(DIAG_CODE_ALPHABET.includes(ch), `${ch} вне алфавита`);
+});
+
+test('generateDiagCode: алфавит без похожих символов', () => {
+  for (const ch of ['0', 'O', '1', 'I', 'L']) {
+    assert.ok(!DIAG_CODE_ALPHABET.includes(ch), `${ch} не должен входить в алфавит`);
+  }
+});
