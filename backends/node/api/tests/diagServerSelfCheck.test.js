@@ -146,3 +146,21 @@ test('authContextStore без getLastAdmin и без getLastAdminContext не р
   const out = await check.run();
   assert.equal(out.oauth.hasContext, false);
 });
+
+// --- Доп. тест (не из брифа): бриф оборачивает withTimeout только Диск и БД,
+// но не чтение authContextStore. По умолчанию (AUTH_CONTEXT_STORE=composite
+// в server.js) это тоже поход в БД, поэтому без собственного таймаута зависший
+// authContextStore держал бы run() целиком, а не только oauth-пробу.
+test('зависший authContextStore не держит срез дольше своего таймаута', async () => {
+  const check = createServerSelfCheck(makeDeps({
+    authContextStore: { getLastAdmin: () => new Promise(() => {}) },
+    oauthTimeoutMs: 40
+  }));
+  const startedAt = Date.now();
+  const out = await check.run();
+  assert.ok(Date.now() - startedAt < 2000, 'срез должен вернуться быстро');
+  assert.equal(out.oauth.hasContext, false);
+  // Диск и БД в этом тесте здоровы — зависание одной пробы не должно портить другие.
+  assert.equal(out.disk.ok, true);
+  assert.equal(out.db.ok, true);
+});

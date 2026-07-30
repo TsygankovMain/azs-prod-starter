@@ -2,6 +2,10 @@ import { redactText } from './sanitizeBundle.js';
 
 const DISK_TIMEOUT_MS = 5_000;
 const DB_TIMEOUT_MS = 2_000;
+// authContextStore по умолчанию (AUTH_CONTEXT_STORE=composite в server.js)
+// сначала читает БД — тот же незащищённый от зависания путь, что и probeDb.
+// Без своего таймаута повисшая БД держит run() целиком, а не только db-пробу.
+const OAUTH_TIMEOUT_MS = 2_000;
 const MAX_ERROR_CHARS = 300;
 
 // Коды, по которым сразу понятно, что сломалось на нашей стороне интеграции.
@@ -87,7 +91,8 @@ export const createServerSelfCheck = ({
   logger = console,
   now = () => Date.now(),
   diskTimeoutMs = DISK_TIMEOUT_MS,
-  dbTimeoutMs = DB_TIMEOUT_MS
+  dbTimeoutMs = DB_TIMEOUT_MS,
+  oauthTimeoutMs = OAUTH_TIMEOUT_MS
 }) => {
   const probeOauth = async () => {
     const empty = {
@@ -96,7 +101,9 @@ export const createServerSelfCheck = ({
       clientConfigured: Boolean(bitrixClient?.isConfigured)
     };
     try {
-      const row = await readLastAdminRow(authContextStore);
+      // Как и Диск с БД ниже: чтение auth-контекста ограничено по времени —
+      // при composite/database-сторе это тоже поход в БД и может зависнуть.
+      const row = await withTimeout(() => readLastAdminRow(authContextStore), oauthTimeoutMs, 'oauth');
       if (!row) return empty;
 
       let payload = {};
