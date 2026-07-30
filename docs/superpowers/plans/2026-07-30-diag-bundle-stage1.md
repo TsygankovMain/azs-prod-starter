@@ -758,6 +758,29 @@ test('чистит секреты в свободном тексте ошибо�
   assert.ok(!serialized.includes('eyJhbGciOiJIUzI1NiJ9'), serialized);
 });
 
+test('серверная чистка закрывает те же формы ключей, что и клиентская', () => {
+  const forms = [
+    'client_secret=LEAK', 'client-secret=LEAK', 'password=LEAK', 'auth_id=LEAK',
+    'api-key=LEAK', 'apikey=LEAK', 'refresh-token=LEAK', 'session-id=LEAK',
+    'secret=LEAK', 'pwd=LEAK', 'id_token=LEAK'
+  ];
+  for (const form of forms) {
+    const raw = validBundle();
+    raw.errors = [{ kind: 'onerror', message: form }];
+    const res = sanitizeBundle(raw);
+    assert.equal(res.ok, true, form);
+    assert.ok(!JSON.stringify(res.bundle).includes('LEAK'), `утечка: ${form}`);
+  }
+});
+
+test('значение с запятой маскируется целиком и на сервере', () => {
+  const raw = validBundle();
+  raw.errors = [{ kind: 'onerror', message: 'token=abc123,def456' }];
+  const serialized = JSON.stringify(sanitizeBundle(raw).bundle);
+  assert.ok(!serialized.includes('abc123'), serialized);
+  assert.ok(!serialized.includes('def456'), serialized);
+});
+
 test('отсутствующие массивы не роняют санитизацию', () => {
   const raw = validBundle();
   delete raw.errors;
@@ -816,9 +839,20 @@ const SECRET_QUERY_KEYS = new Set(['token', 'access_token', 'auth', 'sessid']);
 const ALLOWED_TRIGGERS = new Set(['button', 'auto_upload_error']);
 const REDACTED = '***';
 
-const SECRET_TEXT_KEYS = 'token|access_token|refresh_token|auth|sessid|api_key|apikey';
-const KV_RE = new RegExp(`\\b(${SECRET_TEXT_KEYS})"?\\s*[=:]\\s*"?([^&\\s"'<>)\\]},;]+)"?`, 'gi');
-const BEARER_RE = /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{8,})/gi;
+// Словарь выровнен по utils/maskSecret.js (SENSITIVE_KEYS) и расширен формами,
+// которые реально встречаются в текстах ошибок. Порядок важен: длинные варианты
+// раньше коротких, иначе `token` съест префикс у `access_token`.
+const SECRET_TEXT_KEYS = [
+  'access[_-]?token', 'refresh[_-]?token', 'id[_-]?token', 'token',
+  'auth[_-]?id', 'authorization', 'auth',
+  'session[_-]?id', 'sess[_-]?id', 'sessid',
+  'api[_-]?key', 'client[_-]?secret', 'secret',
+  'password', 'passwd', 'pwd'
+].join('|');
+// Запятая и точка с запятой НЕ терминаторы значения: иначе секрет с запятой
+// маскируется частично и пригодный огрызок уезжает в базу.
+const KV_RE = new RegExp(`\\b(${SECRET_TEXT_KEYS})"?\\s*[=:]\\s*"?([^&\\s"'<>)\\]}]+)`, 'gi');
+const BEARER_RE = /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{4,})/gi;
 
 /**
  * Чистит секреты в свободном тексте — сообщениях об ошибках и стеках.
