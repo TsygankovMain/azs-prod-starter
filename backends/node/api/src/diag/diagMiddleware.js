@@ -48,3 +48,25 @@ export const createJsonParserBypass = ({
 export const createDiagUnavailableHandler = () => (_req, res) => {
   res.status(503).json({ error: 'diag_unavailable' });
 };
+
+/**
+ * Fix round (ревью, live-run на реальном сервере): express.json({limit})/
+ * express.raw({limit}) в diagRoutes.js бросают ДО обработчика маршрута —
+ * их next(err) уходит мимо try/catch внутри router.post('/report', ...) и
+ * router.post('/echo', ...). Без этой мидлвари такой запрос (битый JSON,
+ * тело сверх лимита) долетает до дефолтного обработчика ошибок Express,
+ * который — при не заданном NODE_ENV (а в этом проекте он не задан, это
+ * реальный деплой-дефолт, не dev-артефакт) — отвечает HTML-страницей с
+ * полным стеком и абсолютными путями сервера. Тот же класс дефекта, что и
+ * уже исправленный throw в sanitizeBundle, только источник другой: там
+ * бросал наш код внутри обработчика, здесь — сам парсер до обработчика.
+ *
+ * Мидлварь ошибок Express опознаёт по arity (4 аргумента) — все четыре
+ * обязаны присутствовать в сигнатуре, даже неиспользуемые.
+ */
+export const createDiagErrorHandler = () => (error, _req, res, _next) => {
+  const status = Number(error?.status || error?.statusCode) || 400;
+  const code = error?.type === 'entity.too.large' ? 'payload_too_large' : 'invalid_request_body';
+  console.error(JSON.stringify({ event: 'diag_request_rejected', code, status, message: error?.message }));
+  res.status(status).json({ error: code });
+};

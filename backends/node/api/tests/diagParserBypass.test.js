@@ -5,14 +5,20 @@ import createDiagRouter from '../src/diag/diagRoutes.js';
 // Fix round (ревью, S2): раньше этот файл писал свою копию мидлвари обхода
 // парсера — удаление или порча настоящей в server.js оставляла тест зелёным.
 // Теперь импортируется тот же код, что использует server.js.
-import { createJsonParserBypass } from '../src/diag/diagMiddleware.js';
+// Fix round (ревью, live-run): то же самое — createDiagErrorHandler теперь
+// импортируется отсюда же, а не переписывается в тестах, см. тесты внизу
+// файла про битый JSON/лимит размера.
+import { createJsonParserBypass, createDiagErrorHandler } from '../src/diag/diagMiddleware.js';
 
 const silentLogger = { info() {}, warn() {}, error() {} };
 
 /**
  * Собирает приложение так же, как server.js: глобальные парсеры с обходом для
- * диаг-путей, затем роутер. Без этого 512 КБ и 1 МБ недостижимы — глобальный
- * express.json() с дефолтным потолком 100 КБ съест тело первым.
+ * диаг-путей, затем роутер, затем обработчик ошибок парсера. Без первого
+ * 512 КБ и 1 МБ недостижимы — глобальный express.json() с дефолтным потолком
+ * 100 КБ съест тело первым. Без второго ошибки express.json()/express.raw()
+ * внутри роутера (битый JSON, тело сверх лимита) долетают до дефолтного
+ * HTML-обработчика ошибок Express вместо JSON-контракта диагностики.
  */
 const buildApp = () => {
   const app = express();
@@ -26,6 +32,7 @@ const buildApp = () => {
     async list() { return []; }
   };
   app.use('/api/diag', createDiagRouter({ store, logger: silentLogger }));
+  app.use('/api/diag', createDiagErrorHandler());
   return { app, store };
 };
 
@@ -35,7 +42,7 @@ const call = async (server, path, init) => {
   const text = await res.text();
   let json = null;
   try { json = JSON.parse(text); } catch { /* не JSON */ }
-  return { status: res.status, json };
+  return { status: res.status, json, text, contentType: res.headers.get('content-type') };
 };
 
 test('бандл на 300 КБ проходит сквозь глобальный парсер', async () => {
@@ -106,5 +113,72 @@ test('остальные маршруты по-прежнему разбираю
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ a: 5 })
     });
     assert.equal(res.json.got, 5, 'обход не должен ломать обычные маршруты');
+  } finally { server.close(); }
+});
+
+// --- Fix round (ревью, live-run на реальном сервере) ------------------------
+//
+// Живой прогон против настоящего Postgres нашёл дефект, который не поймал ни
+// один тест: битый JSON в POST /api/diag/report возвращал HTML-страницу
+// Express со стеком и абсолютными путями сервера, потому что express.json()
+// бросает ДО обработчика маршрута — try/catch внутри diagRoutes.js этого не
+// видит. NODE_ENV в проекте не задан, а это реальный деплой-дефолт, не
+// dev-артефакт — значит и в проде такой ответ уходил бы оператору как есть.
+
+test('POST /report: битый JSON — JSON-ответ без HTML и абсолютных путей, не отвечает стеком', async () => {
+  const { app } = buildApp();
+  const server = app.listen(0);
+  try {
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'не json вовсе'
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.contentType || '', /^application\/json/, `content-type: ${res.contentType}`);
+    assert.ok(res.json, `ответ должен парситься как JSON: ${res.text}`);
+    assert.equal(res.json.error, 'invalid_request_body');
+    assert.ok(!res.text.includes('<!DOCTYPE'), `HTML-страница вместо JSON: ${res.text}`);
+    assert.ok(!res.text.includes('node_modules'), `путь до node_modules утёк в ответ: ${res.text}`);
+    assert.ok(!/\/Users\/|\/home\/[a-z0-9_-]+\/|[A-Za-z]:\\/i.test(res.text), `абсолютный путь утёк в ответ: ${res.text}`);
+  } finally { server.close(); }
+});
+
+test('POST /report: тело сверх лимита 512 КБ — JSON, не HTML (тот же класс дефекта, другой источник — лимит, а не синтаксис)', async () => {
+  const { app } = buildApp();
+  const server = app.listen(0);
+  try {
+    const body = JSON.stringify({
+      v: 1, trigger: 'button', diagSessionId: 's',
+      user: { userId: 498, azsId: '548', reportId: 1 },
+      net: [], uploads: [], errors: [], b24: [],
+      pad: 'x'.repeat(700 * 1024) // заведомо больше лимита DIAG_JSON_LIMIT=512kb
+    });
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body
+    });
+    assert.equal(res.status, 413);
+    assert.match(res.contentType || '', /^application\/json/, `content-type: ${res.contentType}`);
+    assert.ok(res.json, `ответ должен парситься как JSON: ${res.text}`);
+    assert.equal(res.json.error, 'payload_too_large');
+    assert.ok(!res.text.includes('<!DOCTYPE'), `HTML-страница вместо JSON: ${res.text}`);
+  } finally { server.close(); }
+});
+
+test('POST /report: валидный бандл всё ещё проходит — обработчик ошибок не перехватывает штатный путь', async () => {
+  const { app, store } = buildApp();
+  const server = app.listen(0);
+  try {
+    const bundle = {
+      v: 1, trigger: 'button', diagSessionId: 's',
+      user: { userId: 498, azsId: '548', reportId: 1 },
+      net: [], uploads: [], errors: [], b24: []
+    };
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bundle)
+    });
+    assert.equal(res.status, 200, `ожидался 200, получен ${res.status}: ${res.text}`);
+    assert.equal(typeof res.json.code, 'string');
+    assert.equal(store.inserted.length, 1);
   } finally { server.close(); }
 });

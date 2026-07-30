@@ -58,6 +58,7 @@ import { createServerSelfCheck } from './src/diag/serverSelfCheck.js';
 import {
   createJsonParserBypass,
   createDiagUnavailableHandler,
+  createDiagErrorHandler,
   DIAG_SIGNATURE_ONLY_PATHS
 } from './src/diag/diagMiddleware.js';
 
@@ -699,6 +700,12 @@ if (diagStore) {
     if (diagSignatureOnlyPaths.has(req.path)) return next();
     return attachAccessContext(req, res, next);
   }, diagRouter);
+  // Fix round (ревью, live-run): ошибки парсера тела (битый JSON, превышен
+  // лимит размера) бросают ДО обработчика маршрута — эта мидлварь обязана
+  // стоять сразу после диаг-роутера, иначе такие запросы долетают до
+  // дефолтного HTML-обработчика ошибок Express. См. createDiagErrorHandler
+  // в diagMiddleware.js.
+  app.use('/api/diag', createDiagErrorHandler());
 }
 // Диагностика отключена (например, неподдерживаемая СУБД). Отвечаем в том же
 // JSON-контракте, что и остальное приложение: голый HTML-404 от Express
