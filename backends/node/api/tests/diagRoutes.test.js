@@ -12,13 +12,14 @@ const makeStore = () => ({
   async list() { return [{ id: 1, code: 'A7F3QQ' }]; }
 });
 
-const startServer = (store) => {
+const startServer = (store, overrides = {}) => {
   const app = express();
   app.use((req, _res, next) => { req.user = { user_id: 498 }; next(); });
   app.use('/api/diag', createDiagRouter({
     store,
-    randomBytes: () => Buffer.from([0, 1, 2, 3, 4, 5]),
-    logger: silentLogger
+    randomBytes: overrides.randomBytes || (() => Buffer.from([0, 1, 2, 3, 4, 5])),
+    logger: silentLogger,
+    serverSelfCheck: overrides.serverSelfCheck ?? null
   }));
   return app.listen(0);
 };
@@ -129,5 +130,198 @@ test('GET /reports/:code отдаёт 404 на неизвестный код', a
   try {
     assert.equal((await call(server, '/api/diag/reports/NOPE00')).status, 404);
     assert.equal((await call(server, '/api/diag/reports/A7F3QQ')).status, 200);
+  } finally { server.close(); }
+});
+
+// --- Fix round 1 (ревью: 5 реальных дефектов из 6 найденных, 1 отклонён) ---
+
+test('POST /report: serverSelfCheck.run() успешен — serverSlice уходит в стор', async () => {
+  const store = makeStore();
+  const serverSelfCheck = { async run() { return { diskPing: 12, dbPing: 3 }; } };
+  const server = startServer(store, { serverSelfCheck });
+  try {
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBundle())
+    });
+    assert.equal(res.status, 200);
+    assert.equal(store.inserted.length, 1);
+    assert.deepEqual(store.inserted[0].serverSlice, { diskPing: 12, dbPing: 3 });
+  } finally { server.close(); }
+});
+
+test('POST /report: serverSelfCheck.run() падает — бандл всё равно сохраняется, serverSlice = null', async () => {
+  const store = makeStore();
+  const serverSelfCheck = { async run() { throw new Error('disk unreachable'); } };
+  const server = startServer(store, { serverSelfCheck });
+  try {
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBundle())
+    });
+    assert.equal(res.status, 200);
+    assert.equal(store.inserted.length, 1);
+    assert.equal(store.inserted[0].serverSlice, null);
+  } finally { server.close(); }
+});
+
+test('GET /reports передаёт фильтры в store.list и отдаёт items как есть', async () => {
+  const store = makeStore();
+  let receivedArgs = null;
+  store.list = async (args) => { receivedArgs = args; return [{ id: 1, code: 'A7F3QQ' }]; };
+  const server = startServer(store);
+  try {
+    const res = await call(server, '/api/diag/reports?azsId=548&dateFrom=2026-07-01&dateTo=2026-07-30&limit=10');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.json.items, [{ id: 1, code: 'A7F3QQ' }]);
+    assert.deepEqual(receivedArgs, { azsId: '548', dateFrom: '2026-07-01', dateTo: '2026-07-30', limit: 10 });
+  } finally { server.close(); }
+});
+
+test('POST /report: несериализуемый toString в headers/errors не роняет обработчик — редактируется и сохраняется', async () => {
+  const store = makeStore();
+  const server = startServer(store);
+  try {
+    const bundle = {
+      ...validBundle(),
+      net: [{ url: '/x', headers: { 'x-custom': { toString: 'pwned' } } }],
+      errors: [{ kind: 'onerror', message: { toString: 'pwned' } }]
+    };
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bundle)
+    });
+    assert.equal(res.status, 200);
+    assert.equal(typeof res.json.code, 'string');
+    assert.equal(store.inserted.length, 1);
+    assert.equal(store.inserted[0].bundle.net[0].headers['x-custom'], '[unserializable]');
+    assert.equal(store.inserted[0].bundle.errors[0].message, '[unserializable]');
+  } finally { server.close(); }
+});
+
+test('POST /report: то, что всё же роняет sanitizeBundle (url), ловится роутером — 400 JSON, не HTML-крах', async () => {
+  const store = makeStore();
+  const server = startServer(store);
+  try {
+    const bundle = { ...validBundle(), net: [{ url: { toString: 'pwned' }, headers: {} }] };
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bundle)
+    });
+    assert.equal(res.status, 400);
+    assert.ok(res.json, 'ответ должен быть JSON, а не HTML-страницей краша Express');
+    assert.equal(res.json.error, 'diag_bundle_unprocessable');
+    assert.equal(store.inserted.length, 0);
+  } finally { server.close(); }
+});
+
+test('POST /echo: без Content-Type тело не парсится в Buffer — берём Content-Length, не отвечаем нулём', async () => {
+  const store = makeStore();
+  const server = startServer(store);
+  try {
+    const res = await call(server, '/api/diag/echo', {
+      method: 'POST',
+      body: new Uint8Array(4096)
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.buffered, false);
+    assert.equal(res.json.bytes, 4096);
+    assert.equal(store.inserted.length, 0);
+  } finally { server.close(); }
+});
+
+test('POST /report: 500 не отдаёт message клиенту, только стабильный код ошибки', async () => {
+  const store = makeStore();
+  store.insert = async () => { throw new Error('db down with sensitive connection string'); };
+  const server = startServer(store);
+  try {
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBundle())
+    });
+    assert.equal(res.status, 500);
+    assert.equal(res.json.error, 'diag_report_failed');
+    assert.equal(res.json.message, undefined);
+  } finally { server.close(); }
+});
+
+test('GET /reports: 500 не отдаёт message клиенту', async () => {
+  const store = makeStore();
+  store.list = async () => { throw new Error('relation "diag_report" does not exist'); };
+  const server = startServer(store);
+  try {
+    const res = await call(server, '/api/diag/reports');
+    assert.equal(res.status, 500);
+    assert.equal(res.json.error, 'diag_list_failed');
+    assert.equal(res.json.message, undefined);
+  } finally { server.close(); }
+});
+
+test('GET /reports/:code: 500 не отдаёт message клиенту', async () => {
+  const store = makeStore();
+  store.getByCode = async () => { throw new Error('connection terminated unexpectedly'); };
+  const server = startServer(store);
+  try {
+    const res = await call(server, '/api/diag/reports/A7F3QQ');
+    assert.equal(res.status, 500);
+    assert.equal(res.json.error, 'diag_get_failed');
+    assert.equal(res.json.message, undefined);
+  } finally { server.close(); }
+});
+
+test('POST /report: коллизия кода — повтор со свежим кодом до успеха', async () => {
+  const store = makeStore();
+  let insertCalls = 0;
+  store.insert = async (row) => {
+    insertCalls += 1;
+    if (insertCalls === 1) {
+      throw new Error('duplicate key value violates unique constraint "diag_report_code_key"');
+    }
+    store.inserted.push(row);
+    return { id: 1, code: row.code, created_at: new Date() };
+  };
+  let randomCalls = 0;
+  const randomBytes = () => {
+    randomCalls += 1;
+    return randomCalls === 1 ? Buffer.from([0, 1, 2, 3, 4, 5]) : Buffer.from([6, 7, 8, 9, 10, 11]);
+  };
+  const server = startServer(store, { randomBytes });
+  try {
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBundle())
+    });
+    assert.equal(res.status, 200);
+    assert.equal(insertCalls, 2);
+    assert.notEqual(res.json.code, 'ABCDEF');
+    assert.equal(store.inserted.length, 1);
+    assert.equal(store.inserted[0].code, res.json.code);
+  } finally { server.close(); }
+});
+
+test('POST /report: коллизии кода исчерпаны за 3 попытки — 500 без message', async () => {
+  const store = makeStore();
+  let insertCalls = 0;
+  store.insert = async () => {
+    insertCalls += 1;
+    throw new Error('duplicate key value violates unique constraint "diag_report_code_key"');
+  };
+  const server = startServer(store);
+  try {
+    const res = await call(server, '/api/diag/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBundle())
+    });
+    assert.equal(res.status, 500);
+    assert.equal(insertCalls, 3);
+    assert.equal(res.json.error, 'diag_report_failed');
+    assert.equal(res.json.message, undefined);
   } finally { server.close(); }
 });

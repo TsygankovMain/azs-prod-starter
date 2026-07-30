@@ -4,6 +4,23 @@
  * Клиент уже редактирует секреты, но бандл приходит из браузера: он может быть
  * подделан или собран устаревшей сборкой фронта. Приватность держится здесь.
  */
+
+/**
+ * Безопасное приведение к строке. Бандл приходит из браузера, и обычное
+ * JSON-тело с полем toString роняет String(): TypeError вылетал наружу
+ * HTML-страницей Express со стеком, минуя и наш контракт, и логи.
+ */
+const toSafeString = (value) => {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value);
+  try {
+    return String(value);
+  } catch {
+    return '[unserializable]';
+  }
+};
+
 const ALLOWED_TRIGGERS = new Set(['button', 'auto_upload_error']);
 const REDACTED = '***';
 
@@ -44,7 +61,7 @@ const BEARER_RE = /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{4,})/gi;
  * пары «ключ=значение» и схемы авторизации.
  */
 export const redactText = (text) => {
-  const raw = String(text ?? '');
+  const raw = toSafeString(text);
   if (!raw) return '';
   // BEARER_RE идёт ПЕРВЫМ. Иначе KV_RE съедает слово `Bearer` как значение
   // ключа `authorization` ("Authorization: Bearer <jwt>" -> "Authorization=***"),
@@ -61,7 +78,7 @@ export const redactHeaders = (headers) => {
   if (!headers || typeof headers !== 'object') return {};
   const out = {};
   for (const [key, value] of Object.entries(headers)) {
-    out[key] = isSecretKey(key) ? REDACTED : String(value);
+    out[key] = isSecretKey(key) ? REDACTED : toSafeString(value);
   }
   return out;
 };

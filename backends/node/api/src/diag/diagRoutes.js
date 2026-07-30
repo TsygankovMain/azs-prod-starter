@@ -21,19 +21,34 @@ export const createDiagRouter = ({ store, randomBytes = nodeRandomBytes, logger 
 
   router.post('/echo', express.raw({ type: '*/*', limit: DIAG_ECHO_LIMIT }), (req, res) => {
     const startedAt = Date.now();
-    const bytes = Buffer.isBuffer(req.body) ? req.body.length : 0;
-    res.json({ bytes, serverMs: Date.now() - startedAt });
+    // Если тело уже разобрано другим парсером, Buffer недоступен — берём
+    // объявленную длину. Молча ответить 0 нельзя: ноль читается как «канал
+    // мёртв», и замер становится вредным, а не бесполезным.
+    const bytes = Buffer.isBuffer(req.body)
+      ? req.body.length
+      : Number(req.headers['content-length'] || 0) || 0;
+    res.json({ bytes, serverMs: Date.now() - startedAt, buffered: Buffer.isBuffer(req.body) });
   });
 
   router.post('/report', express.json({ limit: DIAG_JSON_LIMIT }), async (req, res) => {
-    const result = sanitizeBundle(req.body);
+    // sanitizeBundle разбирает произвольный JSON из браузера: поле вроде
+    // toString может уронить внутреннюю коерсию в String()/Number(). Ничего
+    // не должно долетать до клиента как HTML-страница Express со стеком.
+    let result;
+    let code;
+    try {
+      result = sanitizeBundle(req.body);
+      code = generateDiagCode(randomBytes(6));
+    } catch (error) {
+      logger.error('diag_report_malformed', { message: error.message });
+      return res.status(400).json({ error: 'diag_bundle_unprocessable' });
+    }
     if (!result.ok) {
       logger.warn('diag_report_rejected', { reason: result.error });
       return res.status(400).json({ error: result.error });
     }
 
     const { bundle, sizeBytes } = result;
-    const code = generateDiagCode(randomBytes(6));
 
     // Серверный срез — best-effort и никогда не роняет приём бандла: клиентская
     // половина ценна сама по себе, терять её из-за зависшего Диска нельзя.
@@ -47,26 +62,41 @@ export const createDiagRouter = ({ store, randomBytes = nodeRandomBytes, logger 
       }
     }
 
-    try {
-      const row = await store.insert({
-        code,
-        diagSessionId: bundle.diagSessionId || null,
-        userId: Number(req.user?.user_id || req.user?.id || 0) || null,
-        azsId: bundle.user?.azsId || null,
-        reportId: bundle.user?.reportId || null,
-        trigger: bundle.trigger,
-        sizeBytes,
-        bundle,
-        serverSlice
-      });
-      logger.info('diag_report_stored', {
-        code, sizeBytes, trigger: bundle.trigger, azsId: bundle.user?.azsId || null
-      });
-      return res.json({ diagId: row?.id ?? null, code });
-    } catch (error) {
-      logger.error('diag_report_failed', { code, message: error.message });
-      return res.status(500).json({ error: 'diag_report_failed', message: error.message });
+    // Коллизия кода маловероятна (31^6), но UNIQUE-нарушение не должно
+    // превращать корректную отправку в 500 — пробуем новый код.
+    const isDuplicateCode = (error) => /duplicate key|unique/i.test(String(error?.message || ''));
+
+    let row = null;
+    let attempt = 0;
+    while (attempt < 3) {
+      attempt += 1;
+      try {
+        row = await store.insert({
+          code,
+          diagSessionId: bundle.diagSessionId || null,
+          userId: Number(req.user?.user_id || req.user?.id || 0) || null,
+          azsId: bundle.user?.azsId || null,
+          reportId: bundle.user?.reportId || null,
+          trigger: bundle.trigger,
+          sizeBytes,
+          bundle,
+          serverSlice
+        });
+        break;
+      } catch (error) {
+        if (!isDuplicateCode(error) || attempt === 3) {
+          logger.error('diag_report_failed', { code, message: error.message });
+          return res.status(500).json({ error: 'diag_report_failed' });
+        }
+        logger.warn('diag_code_collision', { attempt });
+        code = generateDiagCode(randomBytes(6));
+      }
     }
+
+    logger.info('diag_report_stored', {
+      code, sizeBytes, trigger: bundle.trigger, azsId: bundle.user?.azsId || null
+    });
+    return res.json({ diagId: row?.id ?? null, code });
   });
 
   router.get('/reports', async (req, res) => {
@@ -79,7 +109,8 @@ export const createDiagRouter = ({ store, randomBytes = nodeRandomBytes, logger 
       });
       return res.json({ items });
     } catch (error) {
-      return res.status(500).json({ error: 'diag_list_failed', message: error.message });
+      logger.error('diag_list_failed', { message: error.message });
+      return res.status(500).json({ error: 'diag_list_failed' });
     }
   });
 
@@ -89,7 +120,8 @@ export const createDiagRouter = ({ store, randomBytes = nodeRandomBytes, logger 
       if (!row) return res.status(404).json({ error: 'diag_report_not_found' });
       return res.json({ item: row });
     } catch (error) {
-      return res.status(500).json({ error: 'diag_get_failed', message: error.message });
+      logger.error('diag_get_failed', { code: req.params.code, message: error.message });
+      return res.status(500).json({ error: 'diag_get_failed' });
     }
   });
 
