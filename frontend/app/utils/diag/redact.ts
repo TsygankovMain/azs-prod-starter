@@ -48,3 +48,22 @@ export function redactUrl(rawUrl: string): string {
     return raw
   }
 }
+
+const SECRET_TEXT_KEYS = 'token|access_token|refresh_token|auth|sessid|api_key|apikey'
+const KV_RE = new RegExp(`\\b(${SECRET_TEXT_KEYS})"?\\s*[=:]\\s*"?([^&\\s"'<>)\\]},;]+)"?`, 'gi')
+const BEARER_RE = /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{8,})/gi
+
+/**
+ * Чистит секреты в свободном тексте — сообщениях об ошибках и стеках.
+ *
+ * Текст ошибки почти всегда содержит URL упавшего запроса, а stack дублирует
+ * message. Разбирать это как URL нельзя: строка произвольная. Поэтому ищем
+ * пары «ключ=значение» и схемы авторизации.
+ */
+export function redactText(text: string): string {
+  const raw = String(text ?? '')
+  if (!raw) return ''
+  return raw
+    .replace(KV_RE, (_m, key: string) => `${key}=${REDACTED}`)
+    .replace(BEARER_RE, (_m, scheme: string) => `${scheme} ${REDACTED}`)
+}

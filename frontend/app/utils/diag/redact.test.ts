@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { redactHeaders, redactUrl, REDACTED } from './redact.ts'
+import { redactHeaders, redactUrl, redactText, REDACTED } from './redact.ts'
 
 test('redactHeaders: секретные заголовки скрыты независимо от регистра', () => {
   const out = redactHeaders({ Authorization: 'Bearer x', COOKIE: 'a=1', 'X-Ok': 'keep' })
@@ -72,4 +72,44 @@ test('redactUrl: относительный URL сохраняет фрагме�
 test('redactUrl: повторяющийся ключ в разном регистре не течёт', () => {
   const out = redactUrl('/x?token=a&TOKEN=b&Token=c')
   assert.ok(!/=[abc](&|$)/.test(out), out)
+})
+
+test('redactText: URL внутри текста ошибки — секрет скрыт, путь цел', () => {
+  const out = redactText('POST /api/reports?token=SECRET&azsId=548 failed with 502')
+  assert.ok(!out.includes('SECRET'), out)
+  assert.ok(out.includes('azsId=548'), out)
+  assert.ok(out.includes('/api/reports'), out)
+})
+
+test('redactText: Bearer в стеке скрыт', () => {
+  const out = redactText('at fetch (Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc)')
+  assert.ok(!out.includes('eyJhbGciOiJIUzI1NiJ9'), out)
+  assert.ok(out.includes(`Bearer ${REDACTED}`), out)
+})
+
+test('redactText: двоеточие и кавычки как разделитель тоже ловятся', () => {
+  assert.ok(!redactText('{"access_token":"zzz"}').includes('zzz'))
+})
+
+test('redactText: покрыты все текстовые ключи', () => {
+  for (const k of ['token', 'access_token', 'refresh_token', 'auth', 'sessid', 'api_key', 'apikey']) {
+    assert.ok(!redactText(`${k}=LEAK`).includes('LEAK'), k)
+  }
+})
+
+test('redactText: регистр ключа не важен', () => {
+  assert.ok(!redactText('TOKEN=LEAK').includes('LEAK'))
+})
+
+test('redactText: безобидный текст не искажается', () => {
+  const msg = 'Не удалось загрузить фото: сеть недоступна (azsId=548, попытка 2)'
+  assert.equal(redactText(msg), msg)
+})
+
+test('redactText: слово token в прозе не ломает текст', () => {
+  assert.equal(redactText('refresh token истёк'), 'refresh token истёк')
+})
+
+test('redactText: пустой вход', () => {
+  assert.equal(redactText(''), '')
 })

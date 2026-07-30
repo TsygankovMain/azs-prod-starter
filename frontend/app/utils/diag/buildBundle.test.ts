@@ -74,3 +74,52 @@ test('ошибки без stack не роняют сборку', () => {
   const bundle = buildBundle(input)
   assert.equal(bundle.errors[0]!.message, 'boom')
 })
+
+test('MAX_BUNDLE_BYTES зафиксирован', () => {
+  assert.equal(MAX_BUNDLE_BYTES, 262144)
+})
+
+test('скрывает секреты в текстах ошибок и загрузок', () => {
+  const input = baseInput()
+  input.errors = [{
+    kind: 'onerror', message: 'POST /api/reports?token=LEAK failed',
+    stack: 'Error: token=LEAK\n  at x', source: 'app.js', line: 1, col: 2,
+    at: '2026-07-30T09:00:00.000Z'
+  }]
+  input.uploads = [{
+    photoCode: 'p1', fileSize: 10, fileType: 'image/jpeg', exifTakenAt: null,
+    startedAt: '2026-07-30T09:00:00.000Z', durationMs: 5, outcome: 'error',
+    httpStatus: 502, errorCode: 'X', retryable: true, attempt: 1,
+    message: 'sessid=LEAK'
+  }]
+  input.queue.slots = [{
+    key: 'p1', confirmed: true, uploadState: 'error', uploaded: false,
+    fileSize: 10, fileType: 'image/jpeg', error: 'auth=LEAK'
+  }]
+  const bundle = buildBundle(input)
+  assert.ok(!JSON.stringify(bundle).includes('LEAK'), JSON.stringify(bundle))
+})
+
+test('обрезка доходит до потолка, даже когда net и b24 пусты', () => {
+  const input = baseInput()
+  input.errors = Array.from({ length: 50 }, (_, i) => ({
+    kind: 'onerror' as const, message: `boom ${i} ${'x'.repeat(6000)}`,
+    stack: 'y'.repeat(6000), source: 'app.js', line: i, col: 0,
+    at: '2026-07-30T09:00:00.000Z'
+  }))
+  const bundle = buildBundle(input)
+  const size = new TextEncoder().encode(JSON.stringify(bundle)).length
+  assert.ok(size <= MAX_BUNDLE_BYTES, `размер ${size} должен быть <= ${MAX_BUNDLE_BYTES}`)
+  assert.ok(bundle.dropped.errors > 0, 'сброс ошибок должен быть отмечен в dropped.errors')
+})
+
+test('b24 усекается, когда net уже пуст', () => {
+  const input = baseInput()
+  input.b24 = Array.from({ length: 100 }, (_, i) => ({
+    method: `m${i}${'z'.repeat(4000)}`, durationMs: 1, ok: false, errorCode: 'E'
+  }))
+  const bundle = buildBundle(input)
+  const size = new TextEncoder().encode(JSON.stringify(bundle)).length
+  assert.ok(size <= MAX_BUNDLE_BYTES, `размер ${size}`)
+  assert.ok(bundle.b24.length < 100)
+})
