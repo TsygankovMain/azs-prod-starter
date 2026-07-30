@@ -349,18 +349,25 @@ const settingsStore = createCompositeSettingsStore({
   }
 });
 const botRegistryService = createBotRegistryService({ bitrixClient });
+// Id бота нигде в проекте не читается из окружения на момент старта — бот
+// регистрирует себя сам (см. botRegistryService.ensureBot), поэтому id
+// становится известен только под конкретным authId, уже внутри запроса.
+// Один резолвер на botRegistryService, используется и notificationService,
+// и (ниже, Task 12) diagChatNotifier — чтобы не заводить вторую копию этой
+// логики и не создавать второй экземпляр реестра.
+const resolveBotIdViaRegistry = async (context = {}) => {
+  const authId = String(context?.authId || context?.auth_id || '').trim();
+  if (!authId) {
+    return 0;
+  }
+  const registration = await botRegistryService.ensureBot({ authId, context });
+  return registration.botId;
+};
 const notificationService = createNotificationService({
   bitrixClient,
   adminUserIds: String(process.env.SYSTEM_ADMIN_USER_IDS || process.env.ADMIN_USER_IDS || '')
     .split(/[\s,]+/).map(Number).filter(Boolean),
-  resolveBotId: async (context = {}) => {
-    const authId = String(context?.authId || context?.auth_id || '').trim();
-    if (!authId) {
-      return 0;
-    }
-    const registration = await botRegistryService.ensureBot({ authId, context });
-    return registration.botId;
-  },
+  resolveBotId: resolveBotIdViaRegistry,
   ensureBot: async (context = {}) => {
     const authId = String(context?.authId || '').trim();
     if (!authId) return { botId: 0 };
@@ -625,11 +632,19 @@ const diagSelfCheck = createServerSelfCheck({ authContextStore, bitrixClient, po
 // photoRemarkService/usersRoutes/brandRoutes чуть выше по файлу; передавать
 // сюда пустой {} нельзя — вызов imbot.v2.* тогда падает, не покинув сервер
 // (см. комментарий в diagChatNotifier.js).
+// resolveBotId: НЕ Number(process.env.BITRIX_BOT_ID) — этот бот регистрирует
+// себя сам, id не известен на старте процесса (BITRIX_BOT_ID=0 в проде —
+// норма). Тот же resolveBotIdViaRegistry, что чуть выше получает
+// notificationService, — один и тот же botRegistryService, без второго
+// экземпляра реестра. Читать переменную окружения здесь один раз уже было
+// ошибкой: DIAG_CHAT_ID был задан верно, а нотифаер молча считал себя
+// выключенным, потому что botId=0 на момент создания — нормальное состояние
+// в этом проекте, а не признак отключённой фичи (см. diagChatNotifier.js).
 const diagChatNotifier = createDiagChatNotifier({
   bitrixClient,
-  botId: Number(process.env.BITRIX_BOT_ID || 0),
   dialogId: process.env.DIAG_CHAT_ID || '',
-  resolveContext: getAdminContext
+  resolveContext: getAdminContext,
+  resolveBotId: resolveBotIdViaRegistry
 });
 const diagSignatureOnlyPaths = new Set(DIAG_SIGNATURE_ONLY_PATHS);
 if (diagStore) {

@@ -66,7 +66,12 @@ const makeNotifier = (overrides = {}) => {
   const bitrixClient = overrides.bitrixClient ?? makeBitrixClient();
   return createDiagChatNotifier({
     bitrixClient,
-    botId: overrides.botId ?? 77,
+    // Task 12 fix round: botId is no longer a constructor argument — the bot
+    // registers itself, so its id is only knowable at call time, under a
+    // resolved auth context (see diagChatNotifier.js header + server.js
+    // resolveBotIdViaRegistry). Default fake mirrors that: an async function,
+    // not a static number.
+    resolveBotId: overrides.resolveBotId ?? (async () => 77),
     dialogId: overrides.dialogId ?? 'chat22574',
     resolveContext: overrides.resolveContext ?? (async () => CONTEXT_MARKER),
     logger: overrides.logger ?? silentLogger
@@ -92,6 +97,9 @@ test('notify: uploads file with correct dialogId, filename with the code, and ba
 
   const call = bitrixClient.calls[0];
   assert.equal(call.method, 'imbot.v2.File.upload');
+  // botId comes from the fake resolveBotId (an async function), never a
+  // static constructor value — see makeNotifier() and the dedicated
+  // resolveBotId tests below.
   assert.equal(call.params.botId, 77);
   assert.equal(call.params.dialogId, 'chat22574', 'dialogId must be the string chat22574, not a number');
   assert.match(call.params.fields.name, /A7F3QQ/, 'filename must contain the diagnostic code');
@@ -246,14 +254,78 @@ test('notify: empty dialogId → disabled, nothing is called at all', async () =
   assert.equal(bitrixClient.calls.length, 0, 'no Bitrix call of any kind when disabled');
 });
 
-test('notify: missing botId → disabled, nothing is called at all', async () => {
+// Task 12 fix round: this used to be "notify: missing botId → disabled,
+// nothing is called at all", constructed with `botId: 0`. botId is no longer
+// a constructor argument at all — the bot registers itself, so its id isn't
+// knowable until call time (see diagChatNotifier.js header). The equivalent
+// scenario now is resolveBotId() resolving to 0 at call time, which is a
+// DIFFERENT situation from "disabled" (dialogId empty) and must not be
+// conflated with it — see the three tests below, replacing this one.
+
+test('notify: resolveBotId() resolving to 0 → no Bitrix call at all, non-throwing, diag_chat_no_bot logged (not "disabled")', async () => {
   const bitrixClient = makeBitrixClient();
-  const notifier = makeNotifier({ bitrixClient, botId: 0 });
+  const events = [];
+  const notifier = makeNotifier({
+    bitrixClient,
+    resolveBotId: async () => 0,
+    logger: { info() {}, warn: (event, meta) => events.push({ event, meta }), error() {} }
+  });
 
   const result = await notifier.notify({ code: 'F6O1KE', bundle: makeBundle(), serverSlice: null });
 
-  assert.equal(result.disabled, true);
-  assert.equal(bitrixClient.calls.length, 0);
+  assert.equal(bitrixClient.calls.length, 0, 'no Bitrix call of any kind when the bot id could not be resolved');
+  assert.equal(result.ok, false);
+  assert.equal(result.delivered, false);
+  // Must NOT be reported as "disabled" — DIAG_CHAT_ID is set, the owner
+  // wants delivery; the bot just isn't registered/resolvable. Different fact.
+  assert.notEqual(result.disabled, true, 'a resolvable-but-zero bot id is not the same situation as "not configured"');
+  assert.equal(result.reason, 'no_bot_id');
+  assert.ok(events.some((e) => e.event === 'diag_chat_no_bot'), 'must log the distinct diag_chat_no_bot event');
+});
+
+test('notify: resolveBotId() returning a real id → posts using exactly that id as botId', async () => {
+  const bitrixClient = makeBitrixClient();
+  const notifier = makeNotifier({ bitrixClient, resolveBotId: async () => 4242 });
+
+  const result = await notifier.notify({ code: 'H8Q3ME', bundle: makeBundle(), serverSlice: null });
+
+  assert.equal(result.ok, true);
+  assert.equal(bitrixClient.calls.length, 1);
+  assert.equal(bitrixClient.calls[0].params.botId, 4242);
+});
+
+test('notify: resolveBotId() throwing → notify() still resolves, nothing escapes, no Bitrix call is attempted', async () => {
+  const bitrixClient = makeBitrixClient();
+  const events = [];
+  const notifier = makeNotifier({
+    bitrixClient,
+    resolveBotId: async () => { throw new Error('botRegistryService: registration blew up'); },
+    logger: { info() {}, warn: (event, meta) => events.push({ event, meta }), error() {} }
+  });
+
+  await assert.doesNotReject(() => notifier.notify({ code: 'J1R4EE', bundle: makeBundle(), serverSlice: null }));
+  const result = await notifier.notify({ code: 'J1R4EE', bundle: makeBundle(), serverSlice: null });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.delivered, false);
+  assert.equal(bitrixClient.calls.length, 0, 'a throwing resolveBotId must never reach bitrixClient.callMethod');
+  assert.ok(events.some((e) => e.event === 'diag_chat_no_bot'), 'still ends up in the same "no bot" outcome, logged');
+});
+
+test('notify: resolveBotId() is called with the resolved auth context, not {} — same class of bug already fixed in the Disk probe', async () => {
+  const bitrixClient = makeBitrixClient();
+  const receivedContexts = [];
+  const notifier = makeNotifier({
+    bitrixClient,
+    resolveContext: async () => CONTEXT_MARKER,
+    resolveBotId: async (context) => { receivedContexts.push(context); return 99; }
+  });
+
+  await notifier.notify({ code: 'K2S5PP', bundle: makeBundle(), serverSlice: null });
+
+  assert.equal(receivedContexts.length, 1);
+  assert.deepEqual(receivedContexts[0], CONTEXT_MARKER, 'resolveBotId must receive the real resolved context, never an empty {}');
+  assert.notDeepEqual(receivedContexts[0], {}, 'sanity: must not be the empty-context bug repeated for bot id resolution');
 });
 
 // ---------------------------------------------------------------------------
@@ -299,5 +371,5 @@ test('notify: card text does not leak OAuth/token details beyond presence — fi
 });
 
 test('createDiagChatNotifier: throws when bitrixClient is missing (fail fast on misconfiguration, like sibling notification services)', () => {
-  assert.throws(() => createDiagChatNotifier({ botId: 1, dialogId: 'chat1' }));
+  assert.throws(() => createDiagChatNotifier({ dialogId: 'chat1', resolveBotId: async () => 1 }));
 });

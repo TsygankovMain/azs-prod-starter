@@ -13,6 +13,17 @@
  * (imbot.v2.File.upload: один вызов одновременно грузит файл И постит
  * сообщение) и notificationService.js/reasonForwardingService.js
  * (imbot.v2.Chat.Message.send для текста без вложения).
+ *
+ * Id бота НЕ читается из BITRIX_BOT_ID при создании нотифаера. В этом
+ * проекте бот регистрирует себя сам через botRegistryService — его id не
+ * известен заранее и не может жить в переменной окружения (BITRIX_BOT_ID=0
+ * в проде — нормальное состояние, не ошибка конфигурации). Поэтому id
+ * резолвится ВНУТРИ notify(), на каждый вызов, той же функцией
+ * resolveBotId(context), что уже получает notificationService в server.js —
+ * см. createDiagChatNotifier ниже. Прежняя версия читала
+ * process.env.BITRIX_BOT_ID при создании нотифаера и получала 0 — не «бот
+ * не настроен», а «бот ещё не зарегистрирован», два разных факта. Нотифаер
+ * молча считал себя выключенным в проде при верно заданном DIAG_CHAT_ID.
  */
 
 const TRIGGER_LABELS = {
@@ -147,24 +158,36 @@ export const buildCardText = ({ code, bundle, serverSlice }) => {
 const buildFileName = (code) => `diag-${code}.json`;
 
 /**
- * createDiagChatNotifier({ bitrixClient, botId, dialogId, resolveContext, logger })
+ * createDiagChatNotifier({ bitrixClient, dialogId, resolveContext, resolveBotId, logger })
  *   → { notify({ code, bundle, serverSlice }) }
  *
  * dialogId — готовая строка вида "chat22574" (см. reasonForwardingService.js,
  * где chatId из настроек ЧИСЛОВОЙ и префикс "chat" добавляется на месте; здесь
  * DIAG_CHAT_ID уже приходит как полный dialogId — префиксовать не нужно).
+ * Единственное, что решает «включена ли фича»: id бота заранее не известен
+ * (см. заголовок файла) и на это решение не влияет.
  *
  * resolveContext — та же функция, что server.js передаёт как getAdminContext
  * в photoRemarkService/usersRoutes/brandRoutes и т.д. Оба метода imbot.v2.*
  * принимают auth-контекст третьим аргументом callMethod; без него (пустой {})
  * вызов уходит под контекстом, которого Bitrix не узнаёт, и падает, не покинув
  * наш сервер, — это уже происходило с соседним модулем этой же фичи.
+ *
+ * resolveBotId(context) — та же функция (по форме), что server.js передаёт
+ * notificationService как resolveBotId: async (context) => ... с той же
+ * логикой поверх botRegistryService.ensureBot. Вызывается на каждый notify()
+ * с уже разрешённым auth-контекстом (authId живёт внутри него), а не при
+ * создании нотифаера — id бота становится известен только после того, как
+ * botRegistryService его зарегистрировал/нашёл, что само требует authId из
+ * контекста конкретного запроса. Раз id недоверенный источник может вернуть
+ * что угодно (throw, не-число, отрицательное), контракт notify() «никогда не
+ * бросает» защищает и от этого вызова, не только от bitrixClient.callMethod.
  */
 export const createDiagChatNotifier = ({
   bitrixClient,
-  botId = null,
   dialogId = null,
   resolveContext = null,
+  resolveBotId = null,
   logger = console
 } = {}) => {
   if (!bitrixClient) {
@@ -172,8 +195,10 @@ export const createDiagChatNotifier = ({
   }
 
   const trimmedDialogId = String(dialogId || '').trim();
-  const numericBotId = Number(botId);
-  const enabled = trimmedDialogId.length > 0 && Number.isFinite(numericBotId) && numericBotId > 0;
+  // Id бота НЕ участвует в этом решении: он резолвится позже, за пределами
+  // конструктора (см. комментарий выше и notify() ниже). «Выключено» здесь
+  // означает ровно одно — DIAG_CHAT_ID пуст, владелец не задал чат.
+  const enabled = trimmedDialogId.length > 0;
 
   const resolveAuthContext = async () => {
     if (typeof resolveContext !== 'function') return {};
@@ -183,6 +208,23 @@ export const createDiagChatNotifier = ({
     } catch (error) {
       logger.warn('diag_chat_notify_context_failed', { message: error?.message || String(error) });
       return {};
+    }
+  };
+
+  /**
+   * Резолвит id бота под уже разрешённый auth-контекст. Untrusted-граница:
+   * resolveBotId — колбэк снаружи модуля (в проде — обёртка над
+   * botRegistryService.ensureBot, которая сама ходит в Bitrix), поэтому throw
+   * отсюда ловится здесь же и никогда не долетает до notify() как есть —
+   * просто становится «id не резолвился», той же формы, что и botId=0.
+   */
+  const resolveRuntimeBotId = async (context) => {
+    if (typeof resolveBotId !== 'function') return 0;
+    try {
+      return Number(await resolveBotId(context)) || 0;
+    } catch (error) {
+      logger.warn('diag_chat_resolve_bot_id_threw', { message: error?.message || String(error) });
+      return 0;
     }
   };
 
@@ -198,7 +240,20 @@ export const createDiagChatNotifier = ({
 
     try {
       const cardText = buildCardText({ code, bundle, serverSlice });
+      // Контекст резолвится ПЕРВЫМ: id бота ищется/регистрируется под authId
+      // ИЗ этого контекста (см. resolveRuntimeBotId выше и server.js:356-363,
+      // где notificationService делает то же самое в том же порядке).
       const context = await resolveAuthContext();
+      const numericBotId = await resolveRuntimeBotId(context);
+
+      if (!numericBotId) {
+        // Другая ситуация, чем «фича выключена» (см. заголовок файла и
+        // enabled выше) — DIAG_CHAT_ID задан, значит владелец ХОЧЕТ доставку,
+        // но бот не зарегистрирован/не резолвится. Это стоит видеть в логах
+        // отдельной строкой, а не тонуть в «disabled» тишине.
+        logger.warn('diag_chat_no_bot', { code });
+        return { ok: false, delivered: false, reason: 'no_bot_id' };
+      }
 
       try {
         // Один вызов грузит JSON-файл с полным бандлом И постит карточку —
