@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sanitizeBundle, generateDiagCode, DIAG_CODE_ALPHABET } from '../src/diag/sanitizeBundle.js';
+import { sanitizeBundle, generateDiagCode, DIAG_CODE_ALPHABET, redactText } from '../src/diag/sanitizeBundle.js';
 
 const validBundle = () => ({
   v: 1,
@@ -110,4 +110,55 @@ test('generateDiagCode: алфавит без похожих символов', 
   for (const ch of ['0', 'O', '1', 'I', 'L']) {
     assert.ok(!DIAG_CODE_ALPHABET.includes(ch), `${ch} не должен входить в алфавит`);
   }
+});
+
+test('redactText закрывает все формы, найденные проверкой исполнением', () => {
+  const cases = [
+    'client_secret=LEAKME', 'client-secret=LEAKME', 'password=LEAKME', 'passwd=LEAKME',
+    'auth_id=LEAKME', 'authid=LEAKME', 'REFRESH_ID=LEAKME', 'refresh_id: LEAKME',
+    'api-key=LEAKME', 'apikey=LEAKME', 'private_token=LEAKME', 'bot_token=LEAKME',
+    'session=LEAKME', 'session-id=LEAKME', 'Cookie: connect.sid=LEAKME',
+    'secret=LEAKME', 'pwd=LEAKME', 'id_token=LEAKME'
+  ];
+  for (const c of cases) {
+    assert.ok(!redactText(c).includes('LEAKME'), `утечка: ${c} -> ${redactText(c)}`);
+  }
+});
+
+test('redactText: Authorization + Bearer не оставляют токен', () => {
+  for (const c of [
+    'at fetch (Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abcdefgh)',
+    'headers: {authorization: Bearer SUPERSECRETJWT}',
+    'Bearer eyJhbGciOiJIUzI1NiJ9.abcdefgh',
+    'basic YWRtaW46cGFzc3dvcmQ='
+  ]) {
+    const out = redactText(c);
+    assert.ok(!out.includes('eyJhbGciOiJIUzI1NiJ9'), `утечка: ${c} -> ${out}`);
+    assert.ok(!out.includes('SUPERSECRETJWT'), `утечка: ${c} -> ${out}`);
+    assert.ok(!out.includes('YWRtaW46cGFzc3dvcmQ'), `утечка: ${c} -> ${out}`);
+  }
+});
+
+test('redactText: значение с запятой маскируется целиком', () => {
+  const out = redactText('token=abc123,def456');
+  assert.ok(!out.includes('abc123'), out);
+  assert.ok(!out.includes('def456'), out);
+});
+
+test('redactText: полезный контекст и проза сохраняются', () => {
+  const out = redactText('POST /api/reports?token=SECRET&azsId=548 failed 502');
+  assert.ok(!out.includes('SECRET'), out);
+  assert.ok(out.includes('azsId=548') && out.includes('502'), out);
+  assert.equal(redactText('refresh token истёк'), 'refresh token истёк');
+});
+
+test('sanitizeBundle: секрет не доезжает ни через один текстовый путь', () => {
+  const raw = validBundle();
+  raw.net = [{ url: '/api/x?token=LEAKME', headers: { Authorization: 'Bearer LEAKME' } }];
+  raw.errors = [{ kind: 'onerror', message: 'client_secret=LEAKME', stack: 'auth_id=LEAKME' }];
+  raw.uploads = [{ photoCode: 'p', message: 'REFRESH_ID=LEAKME' }];
+  raw.queue = { activeCount: 0, maxConcurrency: 2, workerSessionId: 1, slots: [{ key: 'p', error: 'Bearer eyJ.LEAKME' }] };
+  const res = sanitizeBundle(raw);
+  assert.equal(res.ok, true);
+  assert.ok(!JSON.stringify(res.bundle).includes('LEAKME'), JSON.stringify(res.bundle));
 });

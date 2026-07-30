@@ -13,12 +13,14 @@ const REDACTED = '***';
 // которые реально встречаются в текстах ошибок. Порядок важен: длинные варианты
 // раньше коротких, иначе `token` съест префикс у `access_token`.
 const SECRET_TEXT_KEYS = [
-  'access[_-]?token', 'refresh[_-]?token', 'id[_-]?token', 'token',
+  'access[_-]?token', 'refresh[_-]?token', 'refresh[_-]?id', 'id[_-]?token',
+  '[a-z]{2,}[_-]token', 'token',
   'auth[_-]?id', 'authorization', 'auth',
-  'session[_-]?id', 'sess[_-]?id', 'sessid',
+  'session[_-]?id', 'sess[_-]?id', 'sessid', 'session', 'cookie',
   'api[_-]?key', 'client[_-]?secret', 'secret',
   'password', 'passwd', 'pwd'
 ].join('|');
+
 // Запятая и точка с запятой НЕ терминаторы значения: иначе секрет с запятой
 // маскируется частично и пригодный огрызок уезжает в базу.
 const KV_RE = new RegExp(`\\b(${SECRET_TEXT_KEYS})"?\\s*[=:]\\s*"?([^&\\s"'<>)\\]}]+)`, 'gi');
@@ -34,9 +36,12 @@ const BEARER_RE = /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{4,})/gi;
 export const redactText = (text) => {
   const raw = String(text ?? '');
   if (!raw) return '';
+  // BEARER_RE идёт ПЕРВЫМ. Иначе KV_RE съедает слово `Bearer` как значение
+  // ключа `authorization` ("Authorization: Bearer <jwt>" -> "Authorization=***"),
+  // после чего сам токен остаётся в тексте, а BEARER_RE уже не находит схему.
   return raw
-    .replace(KV_RE, (_m, key) => `${key}=${REDACTED}`)
-    .replace(BEARER_RE, (_m, scheme) => `${scheme} ${REDACTED}`);
+    .replace(BEARER_RE, (_m, scheme) => `${scheme} ${REDACTED}`)
+    .replace(KV_RE, (_m, key) => `${key}=${REDACTED}`);
 };
 
 export const MAX_BUNDLE_BYTES = 262_144;
