@@ -2465,6 +2465,131 @@ git commit -m "feat(DIAG): серверный срез — состояние OA
 
 ---
 
+### Task 12: Тест паритета клиентской и серверной редакции
+
+**Files:**
+- Create: `backends/node/api/tests/diagRedactionParity.test.js`
+
+**Interfaces:**
+- Consumes: `redactText` из `frontend/app/utils/diag/redact.ts` (Task 1–2) и `redactText` из `backends/node/api/src/diag/sanitizeBundle.js` (Task 4). Никакого нового кода не производит.
+
+**Зачем.** Логика редакции секретов намеренно продублирована: frontend и backend — разные npm-пакеты без общего модуля, а серверная чистка не должна зависеть от клиента (см. врезку в Task 4). Плата за это — расхождение, и оно уже случалось **дважды**: сначала в бриф Task 4 попал словарь без `errors`/`uploads`, потом — словарь раунда 2 без раундов 3–4, из-за чего серверный слой утекал `REFRESH_ID` и `Authorization: Bearer`, то есть был слабее того слоя, который подстраховывает.
+
+Ловить это глазами не работает. Этот тест делает расхождение падающим тестом.
+
+**Технически это возможно** потому, что Node 25 исполняет TypeScript нативно (strip-only), и бэкендный тест может импортировать клиентский `.ts` по относительному пути. Проверено: `import('../../../frontend/app/utils/diag/redact.ts')` отдаёт `REDACTED, redactHeaders, redactText, redactUrl`.
+
+- [ ] **Step 1: Написать тест**
+
+`backends/node/api/tests/diagRedactionParity.test.js`:
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { redactText as serverRedactText } from '../src/diag/sanitizeBundle.js';
+import { redactText as clientRedactText } from '../../../frontend/app/utils/diag/redact.ts';
+
+/**
+ * Общий корпус. Каждая строка — форма, которая реально встречалась в этом
+ * проекте либо была найдена ревью как утечка. Дополняйте корпус, а не
+ * ослабляйте проверку.
+ */
+const CORPUS = [
+  // формы, найденные ревью как утечки
+  'client_secret=LEAKME', 'client-secret=LEAKME', 'password=LEAKME', 'passwd=LEAKME',
+  'auth_id=LEAKME', 'authid=LEAKME', 'REFRESH_ID=LEAKME', 'refresh_id: LEAKME',
+  'api-key=LEAKME', 'apikey=LEAKME', 'api_key=LEAKME',
+  'private_token=LEAKME', 'bot_token=LEAKME',
+  'session=LEAKME', 'session-id=LEAKME', 'sessid=LEAKME', 'Cookie: connect.sid=LEAKME',
+  'secret=LEAKME', 'pwd=LEAKME', 'id_token=LEAKME', 'authorization=LEAKME',
+  // схемы авторизации
+  'at fetch (Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.LEAKME)',
+  'headers: {authorization: Bearer LEAKMEJWT}',
+  'Bearer eyJhbGciOiJIUzI1NiJ9.LEAKME',
+  'basic YWRtaW46LEAKME',
+  // частичная маскировка
+  'token=abc123,LEAKME', 'token=abc123;LEAKME',
+  // реальные поля установки приложения
+  'postInstall failed: {AUTH_ID: LEAKME, REFRESH_ID: LEAKME}',
+  // JSON-форма
+  '{"access_token":"LEAKME","azsId":"548"}',
+  // то, что искажать нельзя
+  'POST /api/reports?token=SECRETV&azsId=548 failed 502',
+  'Не удалось загрузить фото: сеть недоступна (azsId=548, попытка 2)',
+  'refresh token истёк',
+  'Ошибка авторизации',
+  ''
+];
+
+test('клиент и сервер чистят текст одинаково', () => {
+  const divergent = [];
+  for (const input of CORPUS) {
+    const client = clientRedactText(input);
+    const server = serverRedactText(input);
+    if (client !== server) {
+      divergent.push(`  вход:   ${JSON.stringify(input)}\n  клиент: ${JSON.stringify(client)}\n  сервер: ${JSON.stringify(server)}`);
+    }
+  }
+  assert.equal(
+    divergent.length, 0,
+    `Редакция разошлась между слоями (${divergent.length} из ${CORPUS.length}):\n${divergent.join('\n')}`
+  );
+});
+
+test('ни один слой не пропускает секрет из корпуса', () => {
+  const leaks = [];
+  for (const input of CORPUS) {
+    if (!input.includes('LEAKME')) continue;
+    for (const [layer, fn] of [['клиент', clientRedactText], ['сервер', serverRedactText]]) {
+      const out = fn(input);
+      if (out.includes('LEAKME')) leaks.push(`  ${layer}: ${JSON.stringify(input)} -> ${JSON.stringify(out)}`);
+    }
+  }
+  assert.equal(leaks.length, 0, `Утечки:\n${leaks.join('\n')}`);
+});
+
+test('оба слоя сохраняют диагностически полезный контекст', () => {
+  for (const fn of [clientRedactText, serverRedactText]) {
+    const out = fn('POST /api/reports?token=SECRETV&azsId=548 failed 502');
+    assert.ok(!out.includes('SECRETV'), out);
+    assert.ok(out.includes('azsId=548'), out);
+    assert.ok(out.includes('502'), out);
+    assert.ok(out.includes('/api/reports'), out);
+  }
+});
+
+test('оба слоя не искажают безобидную прозу', () => {
+  for (const fn of [clientRedactText, serverRedactText]) {
+    for (const msg of [
+      'Не удалось загрузить фото: сеть недоступна (azsId=548, попытка 2)',
+      'refresh token истёк',
+      'Ошибка авторизации'
+    ]) {
+      assert.equal(fn(msg), msg);
+    }
+  }
+});
+```
+
+- [ ] **Step 2: Прогнать — должно пройти сразу**
+
+Run: `cd backends/node/api && node --test tests/diagRedactionParity.test.js`
+Expected: PASS, 4 теста. Если паритет нарушен, тест печатает построчное расхождение — приводите **серверный** слой к клиентскому, он прошёл больше раундов ревью.
+
+- [ ] **Step 3: Прогнать весь набор**
+
+Run: `node --test "tests/**/*.test.js"`
+Expected: без падений.
+
+- [ ] **Step 4: Коммит**
+
+```bash
+git add backends/node/api/tests/diagRedactionParity.test.js
+git commit -m "test(DIAG): паритет клиентской и серверной редакции секретов"
+```
+
+---
+
 ## Порядок и зависимости
 
 ```
@@ -2476,5 +2601,7 @@ Task 3 (стор) ──► Task 4 (санитизация) ──► Task 5 (р
 ```
 
 Бэкенд (Task 3–6) и фронтовые утилиты (Task 1–2) независимы и могут идти параллельно. Task 7 зависит только от Task 1–2. Task 8 требует и Task 7, и работающего Task 6 (для проб). Task 9 — последний код, Task 10 — чистка и приёмка.
+
+**Task 12 (тест паритета редакции)** идёт сразу после Task 4 — он фиксирует то, что уже дважды разъезжалось, и дальше держит оба слоя вместе.
 
 **Task 11 (серверный срез)** идёт после Task 6: он использует `redactText` из Task 4 и шов `serverSelfCheck`, заложенный в Task 5. Колонка `server_slice` создаётся сразу в Task 3, поэтому миграция не нужна. До реализации Task 11 роутер работает с `serverSelfCheck === null` и просто пишет `NULL` в колонку — то есть Tasks 3–6 остаются самодостаточными и деплоятся без Task 11.
