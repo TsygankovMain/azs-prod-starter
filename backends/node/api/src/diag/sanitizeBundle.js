@@ -142,7 +142,10 @@ export const sanitizeBundle = (raw) => {
         // Fix round (ревью, S3): source (event.filename) — URL-образное поле,
         // раньше проходило нередактированным. Симметрия с клиентом
         // (buildBundle.ts) проверяется diagRedactionParity.test.js.
-        source: redactUrl(entry?.source)
+        // Re-review fix: должно вести себя как stack выше — отсутствующий
+        // source остаётся undefined, а не превращается редакцией в '' —
+        // редактирование не имеет права ДОБАВЛЯТЬ поля, которых не было.
+        source: entry?.source === undefined ? undefined : redactUrl(entry.source)
       }))
       : [],
     uploads: Array.isArray(raw.uploads)

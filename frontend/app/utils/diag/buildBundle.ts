@@ -25,7 +25,12 @@ export function buildBundle(input: BuildBundleInput): DiagBundle {
     // поле и может нести query-секреты (?token=...), но раньше проходило в
     // бандл как есть, без redactUrl. Симметрию с сервером (sanitizeBundle.js)
     // проверяет diagRedactionParity.test.js.
-    app: { ...input.app, route: redactUrl(input.app.route) },
+    // Re-review fix: input.app типизирован как обязательное поле, но
+    // sanitizeBundle.js (untrusted JSON с сервера) защищается от его
+    // отсутствия — для той же симметрии, которую проверяет parity-тест,
+    // guard нужен и здесь: диагностика не имеет права бросить, даже если
+    // какой-то будущий вызывающий код нарушит тип во время выполнения.
+    app: input.app ? { ...input.app, route: redactUrl(input.app.route) } : input.app,
     net: (input.net ?? []).map((entry) => ({
       ...entry,
       url: redactUrl(entry.url),

@@ -23,7 +23,8 @@ import {
   shouldRetrySend,
   extractHttpStatus,
   extractServerErrorCode,
-  nextPendingQueue
+  nextPendingQueue,
+  shouldFlushPending
 } from '~/utils/diag/sendHelpers'
 import type { BuildBundleInput, DiagBundle, DiagTrigger } from '~/utils/diag/types'
 import type { SendAttemptOutcome } from '~/utils/diag/sendHelpers'
@@ -129,8 +130,19 @@ export const useDiagSender = () => {
    * writePending()/trimPendingQueue().
    */
   const flushPending = async (): Promise<void> => {
+    // Re-review fix (BLOCKING 3 regression): без токена authHeaders() не
+    // положит Authorization, бэкенд ответит 401, а 401 — это 4xx:
+    // shouldRetrySend(401) === false, «сервер не примет никогда». Раньше
+    // это стирало всю очередь ретрая при каждом холодном старте, пока токен
+    // ещё не пришёл (см. 00.diag.client.ts — теперь сам вызов flushPending()
+    // ждёт токен через watch на apiStore.isInitTokenJWT). Проверяем ДО
+    // единого обращения к очереди — не только до сети, — чтобы будущий
+    // вызывающий код физически не мог повторить эту же ошибку.
+    const hasToken = Boolean(apiStore.tokenJWT)
+    if (!hasToken) return
+
     const queue = readPending()
-    if (queue.length === 0) return
+    if (!shouldFlushPending(hasToken, queue.length)) return
     const outcomes: SendAttemptOutcome[] = []
     for (const bundle of queue) {
       try {
@@ -150,15 +162,20 @@ export const useDiagSender = () => {
   }
 
   /**
-   * queued в ответе — fix round (ревью, BLOCKING 3): DiagButton.vue раньше
-   * не мог отличить «бандл лёг в очередь ретрая и правда уйдёт сам» от
-   * «троттлинг — попытки вообще не было» или «4xx — бэкенд отклонил
+   * queued/rejected в ответе — fix round (ревью, BLOCKING 3): DiagButton.vue
+   * раньше не мог отличить «бандл лёг в очередь ретрая и правда уйдёт сам»
+   * от «троттлинг — попытки вообще не было» или «4xx — бэкенд отклонил
    * окончательно, в очередь не ставили» (see комментарий про shouldRetrySend
    * ниже). Все три ветки одинаково возвращали { ok: false, code: null },
    * и кнопка врала оператору, что диагностика «уйдёт, когда появится связь»,
    * даже когда сохранять было нечего или нечего ждать.
+   *
+   * Re-review fix: throttled и permanently-rejected (4xx) — тоже разные
+   * случаи для тоста: при троттлинге повтор через минуту действительно
+   * поможет, а после 4xx — нет (тот же бандл или структурно такой же
+   * следующий тоже будет отклонён). rejected: true — только для 4xx-отказа.
    */
-  const send = async (trigger: DiagTrigger, meta: SendMeta): Promise<{ ok: boolean; code: string | null; queued: boolean }> => {
+  const send = async (trigger: DiagTrigger, meta: SendMeta): Promise<{ ok: boolean; code: string | null; queued: boolean; rejected: boolean }> => {
     try {
       // Троттлинг проверяется до пробы (probe ниже ждёт до PROBE_TIMEOUT_MS+3*PING_TIMEOUT_MS
       // при мёртвом канале) — иначе заброшенный из-за троттлинга вызов всё равно
@@ -166,7 +183,7 @@ export const useDiagSender = () => {
       // тут же выбрасывается.
       const lastRaw = window.localStorage.getItem(LAST_SENT_KEY)
       const lastSentAtMs = lastRaw === null ? null : Number(lastRaw)
-      if (!shouldSend(lastSentAtMs, Date.now())) return { ok: false, code: null, queued: false }
+      if (!shouldSend(lastSentAtMs, Date.now())) return { ok: false, code: null, queued: false, rejected: false }
       window.localStorage.setItem(LAST_SENT_KEY, String(Date.now()))
 
       const probeResult = await probe(trigger)
@@ -174,7 +191,7 @@ export const useDiagSender = () => {
 
       try {
         const code = await post(bundle)
-        return { ok: true, code, queued: false }
+        return { ok: true, code, queued: false, rejected: false }
       } catch (error) {
         // Fix round 1: 4xx от бэкенда — «этот бандл не примут никогда»
         // (битая версия, неизвестный триггер, превышен потолок), в очередь
@@ -185,15 +202,15 @@ export const useDiagSender = () => {
         const status = extractHttpStatus(error)
         if (shouldRetrySend(status)) {
           writePending([...readPending(), bundle])
-          return { ok: false, code: null, queued: true }
+          return { ok: false, code: null, queued: true, rejected: false }
         }
         console.warn('[diag] бэкенд отклонил бандл окончательно, в очередь ретрая не ставим', {
           status, serverErrorCode: extractServerErrorCode(error)
         })
-        return { ok: false, code: null, queued: false }
+        return { ok: false, code: null, queued: false, rejected: true }
       }
     } catch {
-      return { ok: false, code: null, queued: false }
+      return { ok: false, code: null, queued: false, rejected: false }
     }
   }
 

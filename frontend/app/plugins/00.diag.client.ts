@@ -129,24 +129,40 @@ export default defineNuxtPlugin(() => {
   // сохранённая диагностика «уйдёт, когда появится связь», хотя её отправку
   // никто не запускал.
   //
-  // Запускаем один раз на буте, ПОСЛЕ установки рекордера (строки выше) и
-  // вне критического пути первой отрисовки: requestIdleCallback, если
-  // браузер его поддерживает, иначе — setTimeout(0). Двойная защита от
-  // влияния на боевой процесс — try/catch снаружи планирования и .catch()
-  // на самом промисе, — потому что сдача фотоотчёта не имеет права зависеть
-  // от диагностики ни на миллисекунду.
-  const runFlushPending = (): void => {
-    try {
-      useDiagSender().flushPending().catch(() => { /* flushPending уже не бросает — это перестраховка */ })
-    } catch { /* см. комментарий выше */ }
-  }
-
+  // Re-review fix: первая версия этого фикса планировала flushPending()
+  // через requestIdleCallback/setTimeout(0) — оба срабатывают на первом же
+  // простое, задолго до того, как apiStore.tokenJWT вообще появится
+  // (stores/api.ts: tokenJWT = ref('') изначально, реальный токен приходит
+  // через useAppInit → ensureFreshToken → POST /api/getToken уже ПОСЛЕ
+  // инициализации фрейма Б24). Без Authorization бэкенд отвечал 401, а
+  // 401 — это 4xx: shouldRetrySend(401) === false, «сервер не примет
+  // никогда». flushPending() трактовал это как окончательный отказ и СТИРАЛ
+  // всю очередь ретрая — не «не смогли отправить», а «потеряли». Это было
+  // хуже исходного дефекта (там бандлы просто зависали, а не удалялись).
+  //
+  // Правильный триггер — не «прошло немного времени», а «токен появился».
+  // Тот же паттерн, что и в auth-refresh.client.ts: watch(...,
+  // { immediate: true }) на apiStore.isInitTokenJWT, срабатывает один раз
+  // при первом переходе в true (pendingFlushed ниже не даёт повторить это
+  // при последующих изменениях токена — обновление токена не должно снова
+  // и снова пытаться дожать уже пустую или уже обработанную очередь).
+  // useDiagSender.flushPending() тоже сам отказывается работать без токена
+  // (см. useDiagSender.ts) — вторая, независимая линия защиты от того же
+  // сценария, на случай если flushPending() когда-нибудь вызовут раньше
+  // токена откуда-то ещё.
+  let pendingFlushed = false
   try {
-    const ric = (window as Window & { requestIdleCallback?: (callback: () => void) => number }).requestIdleCallback
-    if (typeof ric === 'function') {
-      ric(() => runFlushPending())
-    } else {
-      setTimeout(runFlushPending, 0)
-    }
-  } catch { /* и requestIdleCallback, и setTimeout недоступны — тихая деградация */ }
+    const apiStore = useApiStore()
+    watch(
+      () => apiStore.isInitTokenJWT,
+      (ready) => {
+        if (!ready || pendingFlushed) return
+        pendingFlushed = true
+        try {
+          useDiagSender().flushPending().catch(() => { /* flushPending уже не бросает — это перестраховка */ })
+        } catch { /* диагностика не имеет права ломать сдачу отчёта */ }
+      },
+      { immediate: true }
+    )
+  } catch { /* useApiStore()/watch недоступны — тихая деградация */ }
 })

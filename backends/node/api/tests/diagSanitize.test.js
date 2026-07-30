@@ -216,6 +216,18 @@ test('редактирует секрет в errors[].source', () => {
   assert.ok(!res.bundle.errors[0].source.includes('LEAKME'), res.bundle.errors[0].source);
 });
 
+// Re-review fix: source должен вести себя как stack — отсутствующее поле
+// остаётся undefined, а не превращается редакцией в '' (редактирование не
+// имеет права ДОБАВЛЯТЬ поля, которых не было во входном бандле).
+test('errors[].source отсутствует — остаётся undefined, не становится пустой строкой', () => {
+  const raw = validBundle();
+  raw.errors = [{ kind: 'onerror', message: 'boom' }];
+  const res = sanitizeBundle(raw);
+  assert.equal(res.ok, true);
+  assert.equal(res.bundle.errors[0].source, undefined);
+  assert.ok(!('source' in JSON.parse(JSON.stringify(res.bundle.errors[0]))), 'source не должен появляться в сериализованном виде');
+});
+
 test('app отсутствует или не объект — санитизация не падает', () => {
   for (const badApp of [undefined, null, 'x', ['a']]) {
     const raw = validBundle();

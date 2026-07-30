@@ -109,6 +109,17 @@ test('app.route без секретов не искажается', () => {
   assert.equal(bundle.app.route, '/admin/1')
 })
 
+// Re-review fix: app типизирован как обязательное поле, но sanitizeBundle.js
+// (untrusted JSON) защищается от его отсутствия — для симметрии, которую
+// проверяет diagRedactionParity.test.js, buildBundle() не должен бросать,
+// даже если какой-то будущий вызывающий код нарушит тип во время выполнения.
+test('buildBundle не бросает, если app отсутствует (нарушение типа рантаймом)', () => {
+  const input = baseInput()
+  // @ts-expect-error — намеренно нарушаем тип, чтобы проверить рантайм-защиту
+  input.app = undefined
+  assert.doesNotThrow(() => buildBundle(input))
+})
+
 test('скрывает секреты в текстах ошибок и загрузок', () => {
   const input = baseInput()
   input.errors = [{

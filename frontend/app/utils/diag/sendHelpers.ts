@@ -163,3 +163,32 @@ export function nextPendingQueue<T>(queue: T[], outcomes: SendAttemptOutcome[]):
     return shouldRetrySend(status)
   })
 }
+
+// ── Re-review fix (BLOCKING 3 regression): flushPending() без токена ──────
+//
+// 00.diag.client.ts — самый ранний клиентский плагин — планировал
+// flushPending() через requestIdleCallback/setTimeout(0), то есть на первом
+// же простое главного потока. apiStore.tokenJWT в этот момент ещё пуст:
+// токен приходит позже, через useAppInit → ensureFreshToken → POST
+// /api/getToken, уже ПОСЛЕ инициализации фрейма Б24. Без Authorization
+// бэкенд отвечает 401, а 401 — это 4xx: shouldRetrySend(401) === false,
+// «сервер не примет никогда». flushPending() трактовал это как
+// окончательный отказ и СТИРАЛ всю очередь ретрая — не «не смогли
+// отправить», а «потеряли». Хуже исходного дефекта (там бандлы просто
+// зависали, а не удалялись).
+//
+// shouldFlushPending() — вынесенное наружу решение «пробовать ли вообще»,
+// проверяется ДО единого обращения к сети. Правильный триггер для самой
+// попытки — появление токена (см. watch на apiStore.isInitTokenJWT в
+// 00.diag.client.ts, тот же паттерн, что и в auth-refresh.client.ts), а не
+// «прошло немного времени с холодного старта».
+
+/**
+ * Решает, стоит ли запускать flushPending(): нужен и токен (иначе любая
+ * попытка гарантированно вернёт 401, который shouldRetrySend не отличит от
+ * настоящего «сервер отклонил бандл навсегда»), и непустая очередь
+ * (иначе пытаться нечего).
+ */
+export function shouldFlushPending(hasToken: boolean, queueLength: number): boolean {
+  return hasToken && queueLength > 0
+}

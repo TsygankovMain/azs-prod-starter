@@ -12,7 +12,8 @@ import {
   shouldRetrySend,
   extractHttpStatus,
   extractServerErrorCode,
-  nextPendingQueue
+  nextPendingQueue,
+  shouldFlushPending
 } from './sendHelpers.ts'
 
 // ── echoBytesForTrigger ──────────────────────────────────────────────────
@@ -293,4 +294,30 @@ test('nextPendingQueue: смешанная очередь — порядок с�
 
 test('nextPendingQueue: outcome отсутствует (короче queue) — трактуется как «повторить»', () => {
   assert.deepEqual(nextPendingQueue(['a', 'b'], ['ok']), ['b'])
+})
+
+// ── shouldFlushPending (re-review fix: BLOCKING 3 regression) ─────────────
+//
+// 00.diag.client.ts изначально планировал flushPending() через
+// requestIdleCallback/setTimeout(0) — задолго до того, как apiStore.tokenJWT
+// вообще появляется. Без токена запрос гарантированно получает 401,
+// shouldRetrySend(401) === false, и flushPending() стирал всю очередь как
+// «отклонена окончательно» — путал «мы сами не приложили токен» с «сервер
+// не хочет этот бандл». shouldFlushPending() — это решение «пробовать ли
+// вообще», проверяемое ДО единого обращения к сети.
+
+test('shouldFlushPending: нет токена, очередь пуста — не запускаем', () => {
+  assert.equal(shouldFlushPending(false, 0), false)
+})
+
+test('shouldFlushPending: токен есть, очередь пуста — нечего дожимать', () => {
+  assert.equal(shouldFlushPending(true, 0), false)
+})
+
+test('shouldFlushPending: токен есть, очередь не пуста — запускаем', () => {
+  assert.equal(shouldFlushPending(true, 3), true)
+})
+
+test('shouldFlushPending: нет токена, но очередь НЕ пуста — всё равно не запускаем (иначе 401 из-за отсутствия токена был бы принят за окончательный отказ сервера и стёр бы очередь)', () => {
+  assert.equal(shouldFlushPending(false, 3), false)
 })
