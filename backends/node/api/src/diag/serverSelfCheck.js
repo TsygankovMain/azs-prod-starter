@@ -30,6 +30,14 @@ const cleanError = (error) => {
 /**
  * Ограничивает пробу по времени. Зависший Диск не должен задерживать запрос
  * оператора: таймер unref'ится, чтобы не держать процесс живым.
+ *
+ * Текст самой ошибки таймаута явно называет себя НАШИМ лимитом и содержит
+ * сработавшую величину в мс. Раньше это был голый `${label}_timeout` без
+ * контекста, и на боевых бандлах (инцидент 2026-07-31: 147 бандлов подряд,
+ * errorCode: null, errorMessage: "disk_timeout", ms: 5000) это читалось так,
+ * будто Bitrix не отвечает — хотя на самом деле Bitrix вообще не успевал
+ * ответить ДО того, как срабатывал наш же таймер. Без явной оговорки
+ * «не ответ Bitrix/БД» эта же путаница повторится при следующем инциденте.
  */
 const withTimeout = async (factory, ms, label) => {
   let timer = null;
@@ -37,7 +45,10 @@ const withTimeout = async (factory, ms, label) => {
     return await Promise.race([
       Promise.resolve().then(factory),
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label}_timeout`)), ms);
+        timer = setTimeout(
+          () => reject(new Error(`${label}_timeout after ${ms}ms — our own limit, not a Bitrix/DB response`)),
+          ms
+        );
         if (typeof timer.unref === 'function') timer.unref();
       })
     ]);
@@ -107,6 +118,31 @@ const buildDiskContext = (payload) => ({
 export const createServerSelfCheck = ({
   authContextStore,
   bitrixClient,
+  // Проба Диска звонит через ОТДЕЛЬНЫЙ клиент, не через bitrixClient выше.
+  // Причина (боевой инцидент 2026-07-31: ~4200 упавших загрузок за два часа
+  // на 15 АЗС): у bitrixClient (см. server.js) включены ретраи транзиентных
+  // ошибок — RETRY_BACKOFF_MS = [800, 1600, 3200] в bitrixRestClient.js, это
+  // 5600 мс сна ещё ДО самих сетевых попыток. diskTimeoutMs по умолчанию —
+  // 5000 мс, поэтому проба физически не могла пережить цикл ретраев:
+  // withTimeout обрывал её раньше, чем клиент успевал вернуть настоящую
+  // ошибку Bitrix. Логи сервера показывали wrong_client 143 раза за пять
+  // минут открытым текстом, а срез вместо этого писал errorCode: null,
+  // errorMessage: "disk_timeout" на 147 бандлах подряд — главный сигнал,
+  // ради которого этот срез существует, глушился нашей же машинерией
+  // ретраев.
+  //
+  // Проба — измерение, а не боевая работа: ей нужен первый быстрый честный
+  // ответ, а не устойчивость к сбоям. diskClient создаётся в server.js через
+  // createBitrixRestClient({ retryBackoffMs: [] }) и БЕЗ onTokenRefreshed —
+  // проба лишь наблюдает и не имеет права писать обновлённый токен обратно
+  // в authContextStore. Один авторефреш при refreshable auth-ошибке (внутри
+  // callInternalWithAuthRefresh в bitrixRestClient.js) при этом остаётся —
+  // это и есть путь, которым настоящий wrong_client доходит до пробы, и он
+  // нам нужен: одна попытка, быстро, реальная ошибка.
+  //
+  // diskClient не передан (старые тесты/вызовы) → используем bitrixClient,
+  // как было раньше — обратная совместимость.
+  diskClient = bitrixClient,
   pool,
   logger = console,
   now = () => Date.now(),
@@ -193,7 +229,7 @@ export const createServerSelfCheck = ({
   const probeDisk = async (authContext) => {
     const startedAt = now();
     try {
-      if (!bitrixClient?.callMethod) {
+      if (!diskClient?.callMethod) {
         return { ok: false, ms: 0, errorCode: null, errorMessage: 'bitrix_client_unavailable' };
       }
       if (!authContext) {
@@ -203,7 +239,7 @@ export const createServerSelfCheck = ({
         return { ok: false, ms: 0, errorCode: null, errorMessage: 'no_auth_context' };
       }
       const context = buildDiskContext(authContext.payload);
-      await withTimeout(() => bitrixClient.callMethod('disk.storage.getlist', {}, context), diskTimeoutMs, 'disk');
+      await withTimeout(() => diskClient.callMethod('disk.storage.getlist', {}, context), diskTimeoutMs, 'disk');
       return { ok: true, ms: now() - startedAt, errorCode: null, errorMessage: null };
     } catch (error) {
       const errorMessage = cleanError(error);

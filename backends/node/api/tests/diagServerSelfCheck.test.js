@@ -75,6 +75,14 @@ test('зависший Диск не держит срез дольше тайм
   assert.ok(Date.now() - startedAt < 2000, 'срез должен вернуться быстро');
   assert.equal(out.disk.ok, false);
   assert.match(String(out.disk.errorMessage), /timeout/);
+  // Fix round (боевой инцидент 2026-07-31): голый "disk_timeout" без
+  // контекста на боевых бандлах читался так, будто не отвечает сам Bitrix.
+  // Сообщение обязано называть сработавшую величину лимита и явно говорить,
+  // что это НАШ лимит, а не ответ Bitrix/БД — см. withTimeout в
+  // serverSelfCheck.js.
+  assert.match(String(out.disk.errorMessage), /40\s*ms/i, 'сообщение должно содержать величину сработавшего таймаута');
+  assert.match(String(out.disk.errorMessage), /our own limit/i, 'сообщение должно явно называть лимит нашим');
+  assert.doesNotMatch(String(out.disk.errorMessage), /^disk_timeout$/, 'сообщение не должно быть голым кодом без контекста');
 });
 
 test('падение хранилища контекста не роняет срез', async () => {
@@ -263,4 +271,92 @@ test('токен из payload, использованный для реальн�
   assert.ok(!serialized.includes('DISKPROBEREFRESHTOKEN'), serialized);
   assert.equal(out.oauth.hasAuthId, true);
   assert.equal(out.oauth.hasRefreshToken, true);
+});
+
+// --- Fix round (живой инцидент 2026-07-31, ~4200 упавших загрузок за два
+// часа на 15 АЗС): найдено сравнением боевых бандлов диагностики с боевыми
+// логами сервера во время самого инцидента. Логи сервера показывали
+// "Bitrix OAuth refresh failed: wrong_client" 143 раза за пять минут — но
+// server_slice.disk во всех 147 бандлах за тот же промежуток писал
+// errorCode: null, errorMessage: "disk_timeout", ms: 5000 ровно. Причина:
+// bitrixClient (боевой) ретраит транзиентные ошибки по RETRY_BACKOFF_MS =
+// [800, 1600, 3200] — 5600 мс сна ещё до сетевых попыток, — а diskTimeoutMs
+// пробы по умолчанию 5000 мс. Проба физически не могла пережить цикл
+// ретраев основного клиента и обрывалась первой, до того как клиент
+// успевал вернуть настоящую ошибку Bitrix. Проба — измерение, а не боевая
+// работа: ей нужен первый быстрый честный ответ, а не устойчивость к
+// сбоям. Фикс: probeDisk теперь звонит через отдельный diskClient
+// (в server.js создаётся с retryBackoffMs: [] и без onTokenRefreshed), а
+// bitrixClient остаётся дефолтом для обратной совместимости. -------------
+
+test('Disk-проба звонит через отдельный diskClient, а не через bitrixClient, когда оба заданы', async () => {
+  let bitrixClientCalls = 0;
+  let diskClientCalls = 0;
+  const check = createServerSelfCheck(makeDeps({
+    bitrixClient: {
+      isConfigured: true,
+      async callMethod() {
+        bitrixClientCalls += 1;
+        throw new Error('bitrixClient не должен звониться из пробы Диска, когда передан diskClient');
+      }
+    },
+    diskClient: {
+      async callMethod() {
+        diskClientCalls += 1;
+        return { result: [] };
+      }
+    }
+  }));
+  const out = await check.run();
+  assert.equal(diskClientCalls, 1, 'diskClient.callMethod должен быть вызван ровно один раз');
+  assert.equal(bitrixClientCalls, 0, 'bitrixClient.callMethod не должен вызываться, когда передан diskClient');
+  assert.equal(out.disk.ok, true);
+});
+
+test('diskClient без retry: немедленный отказ с wrong_client даёт errorCode: wrong_client, а не таймаут', async () => {
+  const check = createServerSelfCheck(makeDeps({
+    bitrixClient: {
+      isConfigured: true,
+      async callMethod() { throw new Error('bitrixClient не должен звониться, когда передан diskClient'); }
+    },
+    diskClient: {
+      // Ровно то, что производит реальный bitrixRestClient после единственной
+      // (не повторяемой) попытки авторефреша токена — мгновенный честный
+      // отказ, без ретраев и без сна по RETRY_BACKOFF_MS.
+      async callMethod() { throw new Error('Bitrix OAuth refresh failed: wrong_client'); }
+    }
+    // diskTimeoutMs — дефолтные 5000мс намеренно не занижены: тест доказывает,
+    // что проба возвращается на порядки быстрее лимита, а не что лимит мал.
+  }));
+  const startedAt = Date.now();
+  const out = await check.run();
+  const elapsedMs = Date.now() - startedAt;
+  assert.equal(out.disk.ok, false);
+  assert.equal(out.disk.errorCode, 'wrong_client');
+  assert.ok(
+    !/_timeout/.test(String(out.disk.errorMessage)),
+    `errorMessage не должен быть таймаутом: ${out.disk.errorMessage}`
+  );
+  assert.ok(
+    elapsedMs < 1000,
+    `немедленный отказ должен вернуться быстро, а не спать по RETRY_BACKOFF_MS (заняло ${elapsedMs}мс)`
+  );
+});
+
+test('diskClient не передан — используется bitrixClient (обратная совместимость)', async () => {
+  let bitrixClientCalls = 0;
+  const check = createServerSelfCheck(makeDeps({
+    bitrixClient: {
+      isConfigured: true,
+      async callMethod() {
+        bitrixClientCalls += 1;
+        return { result: [] };
+      }
+    }
+    // diskClient намеренно не передан — старые вызовы createServerSelfCheck
+    // (и все тесты выше в этом файле) не должны сломаться.
+  }));
+  const out = await check.run();
+  assert.equal(bitrixClientCalls, 1, 'без diskClient проба обязана звонить через bitrixClient, как раньше');
+  assert.equal(out.disk.ok, true);
 });
