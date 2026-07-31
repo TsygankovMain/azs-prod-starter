@@ -311,6 +311,168 @@ test('photo upload response returns crm fileId and diskObjectId, and store persi
   assert.equal(upsertCalls[0].fileId, 1902);
 });
 
+// perf(DISK): проверяем не просто саму функцию (это уже покрыто
+// diskService.test.js), а что createReportsRouter реально прокидывает ОДИН
+// общий folderIdCache в оба вызова /:id/photo через один и тот же router —
+// именно этого провода достаточно не сделать и получить 0% эффекта на проде.
+test('photo route: two uploads for the same AZS/day via the same router instance reuse the cached folder id (no new findChildFolder calls)', async () => {
+  const diskCallCounts = { findChildFolder: 0, createFolder: 0, uploadFile: 0 };
+
+  const reportsStore = {
+    async getById(id) {
+      const numericId = Number(id);
+      if (numericId !== 77 && numericId !== 78) {
+        return null;
+      }
+      return {
+        id: numericId,
+        // Same AZS, same day -> identical {yyyy-mm}/{dd}/{azs}_{azs_name} path.
+        slotKey: '2026-05-28:1414',
+        azsId: '7',
+        adminUserId: 10,
+        status: 'new',
+        reportItemId: numericId === 77 ? 999 : 1000,
+        deadlineAt: new Date().toISOString()
+      };
+    },
+    async upsertPhoto() {},
+    async listPhotos() {
+      return [{ reportId: 77, photoCode: '42', fileId: 1, fileName: 'x.jpg', diskFolderId: 555, uploadedBy: 10 }];
+    },
+    async setReportStatus() {}
+  };
+
+  const settingsStore = {
+    async read() {
+      return {
+        azs: { entityTypeId: 145, fields: { photoSet: 'UF_PHOTO_SET' } },
+        photoType: { entityTypeId: 1112 },
+        report: {
+          entityTypeId: 163,
+          fields: { folderId: 'UF_FOLDER', photos: 'UF_PHOTOS' },
+          stages: { inProgress: 'DT163_1:IN_PROGRESS' }
+        },
+        // rootFolderId настроен (типичный прод-конфиг) — ensureRootFolder
+        // отдаёт число без единого похода в Bitrix (см. diskService.js), и
+        // единственные findChildFolder-вызовы ниже — это обход шаблона
+        // {yyyy-mm}/{dd}/{azs}_{azs_name}, который и кэширует эта задача.
+        // ensureRootFolder намеренно НЕ кэшируется (см. комментарий в
+        // diskService.js) — с непроставленным rootFolderId он бы добавлял
+        // по 1 findChildFolder на каждый запрос независимо от кэша пути, и
+        // тест ниже проверял бы смесь двух разных вещей вместо одной.
+        disk: { rootFolderId: 555, folderNameTemplate: '{yyyy-mm}/{dd}/{azs}_{azs_name}' },
+        timezone: 'Europe/Moscow'
+      };
+    }
+  };
+
+  const bitrixClient = {
+    diskApi: {
+      async findChildFolder() {
+        diskCallCounts.findChildFolder += 1;
+        return null;
+      },
+      async findChildFile() { return null; },
+      async createFolder() {
+        diskCallCounts.createFolder += 1;
+        return { id: 555 };
+      },
+      async markFileDeleted() { return { id: 1 }; },
+      async uploadFile(folderId, { fileName, content }) {
+        diskCallCounts.uploadFile += 1;
+        return { diskObjectId: 902, crmFileId: 1902, fileName };
+      }
+    },
+    async getCrmItem({ entityTypeId, id }) {
+      if (entityTypeId === 145) {
+        return { id, title: 'АЗС №7', UF_PHOTO_SET: [42] };
+      }
+      if (entityTypeId === 1112) {
+        return { id, title: '42. Колонки' };
+      }
+      if (entityTypeId === 163) {
+        return { id, UF_FOLDER: '555' };
+      }
+      return null;
+    },
+    async updateReportItem() {
+      return { ok: true };
+    }
+  };
+
+  const authContextStore = {
+    async getLastAdminContext() {
+      return {
+        key: 'admin:ctx:key',
+        context: {
+          memberId: 'member-1',
+          domain: 'example.bitrix24.ru',
+          userId: 1,
+          authId: 'admin-auth',
+          refreshToken: 'admin-refresh',
+          isAdmin: true
+        }
+      };
+    }
+  };
+
+  const router = createReportsRouter({
+    reportsStore,
+    dispatchService: {},
+    settingsStore,
+    bitrixClient,
+    notificationService: {
+      async notifyReportDone() {},
+      async notifyDispatch() {},
+      async notifyReportExpired() {}
+    },
+    authContextStore,
+    crmSyncJobStore: { async enqueue() {} }
+  });
+
+  const layer = router.stack.find((l) => l?.route?.path === '/:id/photo');
+  const handlers = layer.route.stack.map((s) => s.handle);
+  const handler = handlers[handlers.length - 1];
+
+  const buildReq = (reportId) => ({
+    params: { id: String(reportId) },
+    body: { photoCode: '42' },
+    file: { originalname: `upload-${reportId}.jpg`, mimetype: 'image/jpeg', buffer: Buffer.from('mock-image') },
+    user: { id: 10 },
+    accessContext: { capabilities: { reports: true } },
+    bitrixContext: {
+      memberId: 'member-1',
+      domain: 'example.bitrix24.ru',
+      userId: 10,
+      authId: 'user-auth',
+      refreshToken: 'user-refresh',
+      isAdmin: false
+    }
+  });
+  const buildRes = (bucket) => ({
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(payload) { bucket.push({ status: this.statusCode, payload }); return payload; }
+  });
+
+  const firstResponses = [];
+  await handler(buildReq(77), buildRes(firstResponses));
+  assert.equal(firstResponses[0]?.status, 200, JSON.stringify(firstResponses[0]?.payload));
+  const findChildFolderCallsAfterFirst = diskCallCounts.findChildFolder;
+  assert.ok(findChildFolderCallsAfterFirst > 0, 'the first request of the day must actually resolve the folder path');
+
+  const secondResponses = [];
+  await handler(buildReq(78), buildRes(secondResponses));
+  assert.equal(secondResponses[0]?.status, 200, JSON.stringify(secondResponses[0]?.payload));
+
+  assert.equal(
+    diskCallCounts.findChildFolder,
+    findChildFolderCallsAfterFirst,
+    'second request (same AZS/day) via the SAME router instance must hit the shared folder-id cache — zero new findChildFolder calls'
+  );
+  assert.equal(diskCallCounts.uploadFile, 2, 'both uploads still happen');
+});
+
 test('photo route enqueues a durable CRM sync job with correct payload', async () => {
   const enqueueCalls = [];
 

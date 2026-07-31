@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import exifr from 'exifr';
 import { ensureRootFolder, isSupportedPhotoUpload, uploadPhoto } from '../disk/diskService.js';
+import { createFolderIdCache } from '../disk/folderIdCache.js';
 import { updateReportCrmItem } from './reportCrmSync.js';
 import { generateDailyPlan } from '../dispatch/dispatchPlanGenerator.js';
 import { reissueToday } from './reissueTodayService.js';
@@ -884,6 +885,15 @@ export const createReportsRouter = ({
     }
   });
 
+  // Один инстанс на процесс (createReportsRouter вызывается один раз при
+  // старте сервера, см. server.js) — переживает запросы, но не рестарт.
+  // При нескольких инстансах приложения (масштабирование) у каждого будет
+  // свой кэш: это осознанно допустимо (см. задачу) — худший случай — по
+  // несколько лишних резолвингов пути на инстанс после рестарта/деплоя, а не
+  // рассинхронизация данных. portalKey (memberId+domain из req.bitrixContext)
+  // не даёт кэшу отдать id чужого портала — см. folderIdCache.js.
+  const photoFolderIdCache = createFolderIdCache();
+
   router.get('/', async (req, res) => {
     if (!canUseReviewerTools(req)) {
       return res.status(403).json({
@@ -1627,7 +1637,12 @@ export const createReportsRouter = ({
         mimeType: file.mimetype,
         capturedAt: exifValidation.exifAt || new Date(),
         content: file.buffer,
-        folderNameTemplate: settings.disk?.folderNameTemplate || '{yyyy-mm}/{dd}/{azs}_{azs_name}'
+        folderNameTemplate: settings.disk?.folderNameTemplate || '{yyyy-mm}/{dd}/{azs}_{azs_name}',
+        // C-perf: путь {yyyy-mm}/{dd}/{azs}_{azs_name} меняется раз в сутки на
+        // АЗС — не на каждое фото. С этим кэшем 2-й и последующие снимки той
+        // же станции в тот же день не тратят 3 REST-вызова (по одному
+        // findChildFolder на сегмент) на его повторный резолвинг.
+        folderIdCache: photoFolderIdCache
       }, diskContext);
 
       await reportsStore.upsertPhoto({
