@@ -340,12 +340,28 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
             <span class="text-white text-base">⚑</span>
           </button>
 
-          <!-- Плашка состояния публикации (Task 9) — z-20 и после overlay
-               ошибки превью в DOM, поэтому видна даже когда превью не
-               загрузилось (см. getPublishBadge) -->
+          <!-- Плашка состояния публикации (Task 9) — намеренно ВНИЗУ, не
+               вверху рядом с флажком «Отметить» (правка после ревью 1).
+               На узких тайлах (мобильный grid-cols-2, ~160px) плашка по
+               ширине centered могла заходить на 40×40 зону кнопки справа —
+               обе z-20, плашка позже в DOM, значит перехватывала бы тап,
+               и «Отметить» стало бы недоступно именно на фото, которое
+               ещё публикуется. Внизу тайла интерактивных контролов нет ни
+               в одном режиме сетки, и это верно на ЛЮБОЙ ширине (высота
+               тайла масштабируется вместе с шириной через aspect-[4/3]) —
+               устраняет пересечение по построению, а не пиксельной
+               подгонкой, которая живёт только до следующего брейкпоинта.
+               Возможное визуальное наложение на подпись «АЗС · категория ·
+               время» ниже не создаёт той же проблемы: у подписи нет
+               своего клика (весь тайл — один обработчик), и на практике
+               для accepted/failed подпись почти всегда и так скрыта тем
+               же overlay ошибки превью (см. ниже) — оба следствия одной
+               причины: нет disk_object_id, пока файла нет в Битриксе.
+               z-20 и позже overlay ошибки превью в DOM сохранены — иначе
+               именно там, где плашка нужнее всего, её не будет видно. -->
           <div
             v-if="getPublishBadge(item)"
-            class="absolute top-2 left-1/2 -translate-x-1/2 z-20 text-white text-[10px] px-2 py-0.5 rounded-full font-bold backdrop-blur-sm whitespace-nowrap"
+            class="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 text-white text-[10px] px-2 py-0.5 rounded-full font-bold backdrop-blur-sm whitespace-nowrap"
             :class="getPublishBadge(item)?.classes"
             :title="getPublishBadge(item)?.title"
           >
@@ -438,11 +454,13 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
               <span class="text-white text-base">⚑</span>
             </button>
 
-            <!-- Плашка состояния публикации (Task 9) — см. комментарий у
-                 getPublishBadge и плоского режима сетки выше -->
+            <!-- Плашка состояния публикации (Task 9) — ВНИЗУ, не вверху
+                 рядом с флажком «Отметить»: тот же риск пересечения на
+                 узких тайлах и то же исправление по построению, что и в
+                 плоском режиме сетки выше (см. полный комментарий там) -->
             <div
               v-if="getPublishBadge(item)"
-              class="absolute top-2 left-1/2 -translate-x-1/2 z-20 text-white text-[10px] px-2 py-0.5 rounded-full font-bold backdrop-blur-sm whitespace-nowrap"
+              class="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 text-white text-[10px] px-2 py-0.5 rounded-full font-bold backdrop-blur-sm whitespace-nowrap"
               :class="getPublishBadge(item)?.classes"
               :title="getPublishBadge(item)?.title"
             >
