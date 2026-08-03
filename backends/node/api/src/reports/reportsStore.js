@@ -170,6 +170,46 @@ const createPostgresStore = (pool) => ({
     `);
   },
 
+  // report_local_state — таблица создана в ensurePhotoSchema выше, но методов
+  // доступа к ней не было (Task 2 завела только схему). Эти два метода нужны
+  // приёму фото (POST /:id/photo): required_photo_codes читается ЛОКАЛЬНО, из
+  // нашей БД — это первый и самый частый из трёх уровней резолвинга списка
+  // требуемых фото, и единственный, что переживает рестарт процесса (кэш в
+  // памяти после рестарта пуст). Заполняется при открытии карточки отчёта
+  // (GET /:id), когда список уже получен и оплачен живым Битриксом.
+  //
+  // ЛОВУШКА СХЕМЫ (см. ensurePhotoSchema/report_local_state выше и MySQL-
+  // вариант ниже): updated_at обновляется автоматически ТОЛЬКО в MySQL
+  // (ON UPDATE CURRENT_TIMESTAMP) — в PostgreSQL триггера нет. updated_at
+  // здесь проставлен ЯВНО, тем же приёмом, что и dispatch_log выше
+  // (uploaded_at = NOW(), updated_at = NOW() в upsertPhoto/setReportStatus).
+  async setRequiredPhotoCodes({ reportId, codes }) {
+    const json = JSON.stringify(Array.isArray(codes) ? codes.map((code) => String(code)) : []);
+    await pool.query(
+      `INSERT INTO report_local_state (report_id, required_photo_codes)
+       VALUES ($1, $2)
+       ON CONFLICT (report_id) DO UPDATE
+          SET required_photo_codes = EXCLUDED.required_photo_codes,
+              updated_at = NOW()`,
+      [reportId, json]
+    );
+  },
+
+  async getRequiredPhotoCodes(reportId) {
+    const result = await pool.query(
+      'SELECT required_photo_codes FROM report_local_state WHERE report_id = $1 LIMIT 1',
+      [reportId]
+    );
+    const raw = result.rows[0]?.required_photo_codes;
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.map((code) => String(code)) : null;
+    } catch {
+      return null;
+    }
+  },
+
   async list({ dateFrom, dateTo, status, azsId, azsIds = [], limit = 200 } = {}) {
     const where = [];
     const params = [];
@@ -748,6 +788,38 @@ const createMysqlStore = (pool) => ({
       await pool.execute(
         `ALTER TABLE report_photo ADD COLUMN slot_verified TINYINT(1) NOT NULL DEFAULT 1`
       );
+    }
+  },
+
+  // См. комментарий у PostgreSQL-варианта выше — тот же контракт. explicit
+  // updated_at здесь не избыточен: MySQL и так обновит его через ON UPDATE
+  // CURRENT_TIMESTAMP, но код не должен молчаливо полагаться на асимметрию
+  // между движками (единственный источник правды — сам SQL, не то, какая
+  // база сейчас в проде).
+  async setRequiredPhotoCodes({ reportId, codes }) {
+    const json = JSON.stringify(Array.isArray(codes) ? codes.map((code) => String(code)) : []);
+    await pool.execute(
+      `INSERT INTO report_local_state (report_id, required_photo_codes)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE
+         required_photo_codes = VALUES(required_photo_codes),
+         updated_at = CURRENT_TIMESTAMP`,
+      [reportId, json]
+    );
+  },
+
+  async getRequiredPhotoCodes(reportId) {
+    const [rows] = await pool.execute(
+      'SELECT required_photo_codes FROM report_local_state WHERE report_id = ? LIMIT 1',
+      [reportId]
+    );
+    const raw = rows[0]?.required_photo_codes;
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.map((code) => String(code)) : null;
+    } catch {
+      return null;
     }
   },
 
