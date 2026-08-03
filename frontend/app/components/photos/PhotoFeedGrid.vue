@@ -13,6 +13,8 @@ type PhotoFeedItem = {
   photoCode: string
   exifAt: string | null
   uploadedAt: string | null
+  /** Task 9: 'accepted' — байты у нас, ещё не в Битриксе; 'published' — в Битриксе; 'failed' — само не доедет, нужен человек */
+  publishState: 'accepted' | 'published' | 'failed'
   remark: { createdAt: string | null; recipientName: string; message: string; senderName: string } | null
 }
 
@@ -191,6 +193,44 @@ const getAzsLabel = (item: PhotoFeedItem): string => {
   return item.azsTitle || `АЗС ${item.azsId}`
 }
 
+// ── Task 9: плашка состояния публикации ─────────────────────────────────
+// Фоновая публикация в Битрикс занимает время (до ~часа на весь парк при
+// живом портале). Пока фото 'accepted', превью почти наверняка не
+// загрузится (файла в Битриксе физически ещё нет — см. analyticsRoutes.js
+// GET /photos/:reportId/:photoCode/preview, 404 disk_object_id_missing) и
+// тайл покажет overlay «⚠ Не удалось» — визуально неотличимый от реально
+// сломанного фото. Плашка обязана быть видна ПОВЕРХ этого overlay (тот же
+// z-20 и позже него в DOM — см. шаблон), иначе именно в момент, когда она
+// нужнее всего, её не будет видно.
+//
+// 'failed' — отдельная и заведомо другая история: само не доедет (кончилась
+// квота Диска, папку снесли, нет прав), нужен человек. Показать это как
+// «публикуется» — соврать проверяющему, который тогда будет ждать вечно.
+// Поэтому текст, иконка и цвет для failed сделаны намеренно тревожными и
+// не похожими на «подождите» — и никакой pulse-анимации (она читается как
+// «идёт процесс», а здесь процесса нет, есть тупик).
+//
+// 'published' (и любое неизвестное значение) — без плашки: это обычное,
+// уже опубликованное фото, для него ничего не меняется.
+type PublishBadge = { text: string; classes: string; title: string }
+
+const PUBLISH_BADGES: Record<string, PublishBadge> = {
+  accepted: {
+    text: '⏳ Публикуется',
+    classes: 'bg-blue-600/90 animate-pulse',
+    title: 'Фото принято и сохранено у нас, ждёт отправки в Битрикс24 — обычно занимает не больше часа'
+  },
+  failed: {
+    text: '⚠ Ошибка публикации',
+    classes: 'bg-red-600/95',
+    title: 'Автоматическая публикация невозможна (нет места на Диске, удалена папка или нет прав) — нужна проверка вручную'
+  }
+}
+
+const getPublishBadge = (item: PhotoFeedItem): PublishBadge | null => {
+  return PUBLISH_BADGES[item.publishState] ?? null
+}
+
 // ── Форматирование времени ────────────────────────────────────────────
 const fmtTime = (iso: string | null): string => {
   if (!iso) return '—'
@@ -300,6 +340,18 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
             <span class="text-white text-base">⚑</span>
           </button>
 
+          <!-- Плашка состояния публикации (Task 9) — z-20 и после overlay
+               ошибки превью в DOM, поэтому видна даже когда превью не
+               загрузилось (см. getPublishBadge) -->
+          <div
+            v-if="getPublishBadge(item)"
+            class="absolute top-2 left-1/2 -translate-x-1/2 z-20 text-white text-[10px] px-2 py-0.5 rounded-full font-bold backdrop-blur-sm whitespace-nowrap"
+            :class="getPublishBadge(item)?.classes"
+            :title="getPublishBadge(item)?.title"
+          >
+            {{ getPublishBadge(item)?.text }}
+          </div>
+
           <!-- Подпись «АЗС · категория · время» -->
           <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
             <div class="opacity-90 truncate">{{ getAzsLabel(item) }}</div>
@@ -385,6 +437,17 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
             >
               <span class="text-white text-base">⚑</span>
             </button>
+
+            <!-- Плашка состояния публикации (Task 9) — см. комментарий у
+                 getPublishBadge и плоского режима сетки выше -->
+            <div
+              v-if="getPublishBadge(item)"
+              class="absolute top-2 left-1/2 -translate-x-1/2 z-20 text-white text-[10px] px-2 py-0.5 rounded-full font-bold backdrop-blur-sm whitespace-nowrap"
+              :class="getPublishBadge(item)?.classes"
+              :title="getPublishBadge(item)?.title"
+            >
+              {{ getPublishBadge(item)?.text }}
+            </div>
 
             <!-- Подпись «категория · время» (АЗС в заголовке группы) -->
             <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
