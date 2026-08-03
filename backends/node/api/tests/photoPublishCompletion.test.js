@@ -36,6 +36,10 @@ const SETTINGS = {
 
 // Один обязательный код (42) — достаточно, чтобы минуть 409
 // report_photos_missing и дойти до проверки комплекта/disk_folder_id.
+// (Больше не используется тестами submit — Important 1, раунд правок 1:
+// submit больше не имеет права обращаться к Битриксу вовсе, когда список
+// обязательных фото известен ЛОКАЛЬНО. Оставлен для истории/справки — ни
+// один тест ниже его сейчас не импортирует.)
 function makeBitrixClient() {
   return {
     diskApi: {},
@@ -47,6 +51,40 @@ function makeBitrixClient() {
         return { id, title: '42. Колонки' };
       }
       return null;
+    }
+  };
+}
+
+// Important 1 (раунд правок 1): submit раньше звал readRequiredPhotos(),
+// которая при холодном кэше типов идёт в Битрикс живьём (reportsRoutes.js:456)
+// — «загрузил и сразу сдал» обычно работало (карточка уже прогрела кэш), но
+// после рестарта процесса или если запросы попали на разные экземпляры на
+// Timeweb — кэш холодный, и /submit падает при мёртвом портале. Тот же
+// приём, что и makeThrowingBitrixClient в photoAcceptRoute.test.js (Task 5):
+// Proxy, бросающий на ЛЮБОМ обращении, включая доступ к вложенным свойствам
+// вроде diskApi — если submit тронет Битрикс хоть как-то, тест упадёт.
+function makeThrowingBitrixClient() {
+  return new Proxy({}, {
+    get(_target, prop) {
+      if (typeof prop === 'symbol' || prop === 'then') return undefined;
+      return (...args) => {
+        throw new Error(
+          `bitrixClient.${String(prop)}() must not be called — сдача смены обязана пережить недоступность портала`
+        );
+      };
+    }
+  });
+}
+
+// Симметрично: settingsStore.read() в проде тоже реально ходит в Bitrix
+// ПЕРВЫМ (app.option.get, см. компоновку в server.js/compositeSettingsStore
+// и комментарий в photoPublisher.js) — раньше submit звал его безусловно в
+// самом начале (нужен был readRequiredPhotos/ensureFolderFieldMapping).
+// После Important 1 критический путь /submit его не трогает вовсе.
+function makeThrowingSettingsStore() {
+  return {
+    async read() {
+      throw new Error('settingsStore.read() must not be called on the critical path of /submit');
     }
   };
 }
@@ -99,7 +137,7 @@ function makeReq({ reportId }) {
 // 1-2: POST /:id/submit
 // ---------------------------------------------------------------------------
 
-test('submit проставляет operator_completed_at и возвращает 200, даже когда фото ещё не опубликованы (не 502 report_folder_missing)', async () => {
+test('submit проставляет operator_completed_at и возвращает 200, даже когда фото ещё не опубликованы, БЕЗ единого обращения к Битриксу (не 502 report_folder_missing, Important 1)', async () => {
   const reportId = 940101;
   const setOperatorCompletedAtCalls = [];
   const setReportStatusCalls = [];
@@ -111,6 +149,10 @@ test('submit проставляет operator_completed_at и возвращае�
         status: 'in_progress', reportItemId: 999, deadlineAt: new Date().toISOString()
       };
     },
+    // Список обязательных кодов — ЛОКАЛЬНО (report_local_state), уровень 1
+    // resolveRequiredPhotoSlotLocally, тот же источник, что уже использует
+    // приём фото.
+    async getRequiredPhotoCodes() { return ['42']; },
     // Фото ПРИНЯТО локально (photoQueueStore.accept, Task 5), но ещё не
     // опубликовано — disk_folder_id пуст. Раньше это приводило к 502.
     async listPhotos() {
@@ -130,8 +172,12 @@ test('submit проставляет operator_completed_at и возвращае�
   const router = createReportsRouter({
     reportsStore,
     dispatchService: {},
-    settingsStore: { async read() { return SETTINGS; } },
-    bitrixClient: makeBitrixClient(),
+    // Проксирующие заглушки: бросают на ЛЮБОМ обращении. Important 1 (раунд
+    // правок 1): submit больше не имеет права ходить в Битрикс на этом пути
+    // (список обязательных кодов известен локально) — если тронет, тест
+    // упадёт сразу, а не молча пропустит регресс.
+    settingsStore: makeThrowingSettingsStore(),
+    bitrixClient: makeThrowingBitrixClient(),
     notificationService: {
       async notifyReportDone() {}, async notifyDispatch() {}, async notifyReportExpired() {}
     },
@@ -167,6 +213,7 @@ test('дедлайн считается по operator_completed_at, а не по
         status: 'in_progress', reportItemId: 999, deadlineAt: '2026-08-03T10:00:00.000Z'
       };
     },
+    async getRequiredPhotoCodes() { return ['42']; },
     async listPhotos() {
       // publishedAt — заведомо ПОЗЖЕ дедлайна. submit не имеет права читать
       // это поле для operator_completed_at — вот что здесь проверяется.
@@ -183,8 +230,8 @@ test('дедлайн считается по operator_completed_at, а не по
   const router = createReportsRouter({
     reportsStore,
     dispatchService: {},
-    settingsStore: { async read() { return SETTINGS; } },
-    bitrixClient: makeBitrixClient(),
+    settingsStore: makeThrowingSettingsStore(),
+    bitrixClient: makeThrowingBitrixClient(),
     notificationService: {
       async notifyReportDone() {}, async notifyDispatch() {}, async notifyReportExpired() {}
     },
@@ -204,6 +251,69 @@ test('дедлайн считается по operator_completed_at, а не по
     'operator_completed_at обязан быть временем сдачи (09:59), а не временем публикации (10:05)'
   );
   assert.notEqual(setOperatorCompletedAtCalls[0].at.toISOString(), laterPublishedAt.toISOString());
+});
+
+test('Important 1: список обязательных фото неизвестен НИ локально, НИ в кэше (Битрикс недоступен) — submit принимает сдачу, а не блокирует её', async () => {
+  const reportId = 940105;
+  // azsId уникален для этого теста — иначе requiredPhotosCache (модульный
+  // синглтон) мог бы оказаться тёплым от другого теста/файла и замаскировать
+  // именно тот сценарий, который здесь проверяется (см. тот же приём в
+  // photoAcceptRoute.test.js).
+  const setOperatorCompletedAtCalls = [];
+  const setReportStatusCalls = [];
+  const warnCalls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnCalls.push(args); };
+
+  try {
+    const reportsStore = {
+      async getById() {
+        return {
+          id: reportId, slotKey: '2026-08-03:0930', azsId: '9405-unknown', adminUserId: 10,
+          status: 'in_progress', reportItemId: 999, deadlineAt: new Date().toISOString()
+        };
+      },
+      // Колонка пуста — ничего не сохранено локально.
+      async getRequiredPhotoCodes() { return null; },
+      // Оператор вообще ничего не грузил (или грузил на непроверенный слот) —
+      // неважно: список неизвестен, сравнивать не с чем.
+      async listPhotos() { return []; },
+      async setReportStatus(args) { setReportStatusCalls.push(args); },
+      async setOperatorCompletedAt(args) { setOperatorCompletedAtCalls.push(args); }
+    };
+    const crmSyncJobStore = {
+      async enqueue() { throw new Error('must not be called from submit'); },
+      async listByReport() { return []; }
+    };
+
+    const router = createReportsRouter({
+      reportsStore,
+      dispatchService: {},
+      settingsStore: makeThrowingSettingsStore(),
+      bitrixClient: makeThrowingBitrixClient(),
+      notificationService: {
+        async notifyReportDone() {}, async notifyDispatch() {}, async notifyReportExpired() {}
+      },
+      authContextStore: makeAuthContextStore(),
+      crmSyncJobStore
+    });
+
+    const handler = findHandler(router, 'post', '/:id/submit');
+    const res = makeRes();
+    await handler(makeReq({ reportId }), res);
+
+    assert.equal(
+      res.responses[0]?.status, 200,
+      `отказать оператору в сдаче из-за НАШЕЙ неспособности узнать список — та же несправедливость, против которой всё затевалось: ${JSON.stringify(res.responses[0]?.payload)}`
+    );
+    assert.equal(setOperatorCompletedAtCalls.length, 1);
+    assert.equal(setReportStatusCalls.length, 1);
+    assert.equal(setReportStatusCalls[0].status, 'done');
+    assert.ok(warnCalls.length >= 1, 'обязан оставить след в логах, когда список неизвестен');
+    assert.equal(warnCalls[0][0], 'report_submit_required_photos_unknown');
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 // ---------------------------------------------------------------------------

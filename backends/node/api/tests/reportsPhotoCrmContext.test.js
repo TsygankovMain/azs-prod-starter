@@ -344,30 +344,26 @@ test('report submit returns REPORT_PHOTOS_MISSING errorCode when required photos
       };
     },
     async upsertPhoto() {},
+    // Список обязательных кодов — ЛОКАЛЬНО (Important 1, раунд правок 1):
+    // /submit больше не читает его через readRequiredPhotos/Битрикс.
+    async getRequiredPhotoCodes() { return ['42']; },
     async listPhotos() { return []; }, // no photos uploaded
     async setReportStatus() {}
   };
 
+  // Проксирующие заглушки: бросают на ЛЮБОМ обращении. Ветка 409 обязана
+  // отвергать сдачу ДО того, как код вообще посмотрит в сторону Битрикса —
+  // список обязательных кодов уже известен локально (getRequiredPhotoCodes
+  // выше), поэтому ни settingsStore, ни bitrixClient здесь не нужны вовсе.
   const settingsStore = {
-    async read() {
-      return {
-        azs: { entityTypeId: 145, fields: { photoSet: 'UF_PHOTO_SET' } },
-        photoType: { entityTypeId: 1112 },
-        report: { entityTypeId: 163, fields: { folderId: 'UF_FOLDER' }, stages: { inProgress: 'S1' } },
-        disk: { rootFolderId: 0, folderNameTemplate: '{yyyy-mm}/{dd}/{azs}_{azs_name}' }
-      };
+    async read() { throw new Error('settingsStore.read() must not be called on the critical path of /submit'); }
+  };
+  const bitrixClient = new Proxy({}, {
+    get(_t, prop) {
+      if (typeof prop === 'symbol' || prop === 'then') return undefined;
+      return () => { throw new Error(`bitrixClient.${String(prop)}() must not be called`); };
     }
-  };
-
-  const bitrixClient = {
-    diskApi: {},
-    async getCrmItem({ entityTypeId, id }) {
-      if (entityTypeId === 145) return { id, title: 'АЗС', UF_PHOTO_SET: [42] };
-      if (entityTypeId === 1112) return { id, title: '42. Колонки' };
-      return null;
-    },
-    async updateReportItem() { return { ok: true }; }
-  };
+  });
 
   const authContextStore = {
     async getLastAdminContext() {

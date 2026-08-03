@@ -625,16 +625,11 @@ const validateExifDate = (exifDate) => {
   };
 };
 
-const ensureFolderFieldMapping = (settings) => {
-  const folderFieldCode = String(settings?.report?.fields?.folderId || '').trim();
-  if (!folderFieldCode) {
-    throw new ReportConfigError(
-      'Field mapping report.fields.folderId is required to sync Disk folder id into report smart process item',
-      'report_folder_mapping_not_configured'
-    );
-  }
-  return folderFieldCode;
-};
+// ensureFolderFieldMapping удалена (раунд правок 1, Important 1): её
+// единственный вызов был в POST /:id/submit, охранял CRM-запись
+// disk_folder_id, которая с Task 8 переехала в photoPublishCompletion.js
+// (syncReportToCrmIfComplete) и больше не выполняется в этом обработчике.
+// Была module-private (без export) — вызывающего кода вне этого файла нет.
 
 const ensureCurrentUserOwnsReport = ({ req, report }) => {
   const currentUserId = extractUserId(req.user);
@@ -1887,15 +1882,42 @@ export const createReportsRouter = ({
 
       ensureCurrentUserOwnsReport({ req, report });
 
-      const settings = await settingsStore.read();
-      ensureFolderFieldMapping(settings); // guard: throws if folder field not configured
-      const requiredPhotos = await readRequiredPhotos({
-        bitrixClient,
-        settings,
+      // Important 1 (раунд правок 1): список обязательных фото — ЛОКАЛЬНО,
+      // тем же путём, что и приём (см. resolveRequiredPhotoSlotLocally выше,
+      // POST /:id/photo). Раньше здесь стоял readRequiredPhotos(), который
+      // при холодном кэше типов идёт в Битрикс живьём (reportsRoutes.js —
+      // уровень резолвинга №2 внутри самой readRequiredPhotos). Сценарий
+      // «загрузил и сразу сдал» обычно работал (открытие карточки уже
+      // прогрело кэш), но кэш живёт в памяти процесса: он холодный после
+      // рестарта (деплой/падение) или если запросы попали на разные
+      // экземпляры приложения на Timeweb. Тогда при мёртвом портале /submit
+      // падал бы — тот же класс вреда, что и исходный CRITICAL, с более
+      // узким условием.
+      const { requiredCodes, slotVerified } = await resolveRequiredPhotoSlotLocally({
+        reportsStore,
+        reportId,
         azsId: report.azsId,
         context: req.bitrixContext || {}
       });
-      const requiredCodes = requiredPhotos.map((item) => item.code);
+
+      // Список неизвестен НИ локально (report_local_state), НИ в кэше типов
+      // (requiredPhotosCache) — slotVerified=false, requiredCodes пуст по
+      // конструкции resolveRequiredPhotoSlotLocally. Сверить комплект не с
+      // чем. Отказать оператору в сдаче смены из-за НАШЕЙ неспособности
+      // узнать список — та же несправедливость, против которой всё
+      // затевалось: сдачу принимаем (missingCodes ниже закономерно пуст —
+      // сравнивать не с чем), но оставляем след в логах, чтобы это было
+      // видно с эксплуатационной стороны. Симметрично тому, как приём фото
+      // ведёт себя на непроверенном слоте (фото принимается, проверка
+      // откладывается до публикации).
+      if (!slotVerified) {
+        console.warn('report_submit_required_photos_unknown', {
+          reportId,
+          azsId: report.azsId,
+          message: 'Список обязательных фото недоступен ни локально, ни в кэше — сдача принята без проверки комплекта'
+        });
+      }
+
       const currentPhotos = await reportsStore.listPhotos(reportId);
       const uploadedCodes = new Set(currentPhotos.map((photo) => normalizePhotoCode(photo.photoCode)));
       const missingCodes = requiredCodes.filter((code) => !uploadedCodes.has(code));
@@ -1947,16 +1969,33 @@ export const createReportsRouter = ({
       // syncReportToCrmIfComplete — её вызывает воркер публикации после
       // каждого успешного markPublished). Путать сдачу смены и публикацию в
       // CRM — ровно то, что сломало Task 5.
+      //
+      // Уведомление проверяющего — необязательный побочный эффект, не
+      // условие сдачи. settingsStore.read() (единственное оставшееся место в
+      // /submit, где может понадобиться живой Битрикс) намеренно вызывается
+      // ЗДЕСЬ, а не в начале обработчика — после того, как
+      // operator_completed_at и status='done' уже сохранены. try/catch не
+      // даёт сбою здесь (например, Битрикс лёг именно в этот момент)
+      // откатить оператору в ошибку ответ на уже состоявшуюся сдачу смены —
+      // тот же принцип, из-за которого Important 1 вообще возник.
       const reviewerId = Number(process.env.REPORT_REVIEWER_USER_ID || 0);
       if (reviewerId > 0) {
-        const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
-        const azsTitle = await resolveAzsTitle(report.azsId);
-        await notificationService.notifyReportDone({
-          userId: reviewerId,
-          azsId: report.azsId,
-          azsTitle,
-          context: req.bitrixContext || {}
-        });
+        try {
+          const notifySettings = await settingsStore.read();
+          const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings: notifySettings, context: req.bitrixContext || {} });
+          const azsTitle = await resolveAzsTitle(report.azsId);
+          await notificationService.notifyReportDone({
+            userId: reviewerId,
+            azsId: report.azsId,
+            azsTitle,
+            context: req.bitrixContext || {}
+          });
+        } catch (notifyError) {
+          console.warn('report_submit_notify_reviewer_failed', {
+            reportId,
+            message: String(notifyError?.message || notifyError || '')
+          });
+        }
       }
 
       return res.json({
