@@ -117,6 +117,12 @@ export const createPhotoFeedRouter = ({
         dateFrom, dateTo, azsIds, photoCodes, remarks, limit, cursor
       });
 
+      // Task 9: result.items already carries publishState ('accepted' |
+      // 'published' | 'failed') from reportsStore.listPhotosFeed's view
+      // model. Every reshape below spreads `...item` — publishState MUST
+      // keep flowing through unchanged so the reviewer can tell "still
+      // publishing" apart from "vanished". Do not switch this to an
+      // explicit field allowlist without adding publishState to it.
       // BUG-021: one batch call for the page instead of per-row getCrmItem.
       const pageAzsIds = [...new Set(result.items.map((item) => item.azsId).filter(Boolean))];
       let items = result.items;

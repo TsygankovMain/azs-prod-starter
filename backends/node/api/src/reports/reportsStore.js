@@ -27,6 +27,12 @@ const toFeedItemViewModel = (row) => ({
   exifAt: row.exif_at ? new Date(row.exif_at).toISOString() : null,
   uploadedAt: row.uploaded_at ? new Date(row.uploaded_at).toISOString() : null,
   photoRowId: Number(row.photo_row_id || row.id || 0),
+  // Task 9: без этого поля проверяющий не отличит «ещё не в Битриксе» от
+  // «пропало». Дефолт 'published' сознательно совпадает с ALTER TABLE ...
+  // DEFAULT 'published' в ensurePhotoSchema — строка без явного publish_state
+  // (старая миграция, фейковая строка в тесте) трактуется как уже
+  // опубликованная, а не зависает вечно под плашкой «публикуется».
+  publishState: row.publish_state || 'published',
   remark: row.remark_id ? {
     createdAt: row.remark_created_at ? new Date(row.remark_created_at).toISOString() : null,
     recipientName: row.remark_recipient_name || null,
@@ -546,6 +552,7 @@ const createPostgresStore = (pool) => ({
         rp.photo_code,
         rp.exif_at,
         rp.uploaded_at,
+        rp.publish_state,
         d.azs_id,
         NULL          AS azs_title,
         lr.id         AS remark_id,
@@ -1168,6 +1175,7 @@ const createMysqlStore = (pool) => ({
         rp.photo_code,
         rp.exif_at,
         rp.uploaded_at,
+        rp.publish_state,
         d.azs_id,
         NULL          AS azs_title,
         lr.id         AS remark_id,
