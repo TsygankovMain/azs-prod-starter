@@ -83,3 +83,40 @@ test('ограничитель сериализован: при burst 1 оба �
   await Promise.all([limiter.acquire(), limiter.acquire(), limiter.acquire()]);
   assert.deepEqual(h.sleeps, [500, 500], 'первый — бесплатно, а двое остальных обязаны каждый дождаться своего пополнения');
 });
+
+// Раунд правок 1 (ревью нашло Critical): frozenUntil читался один раз при
+// входе в takeOne(). penalize(), прилетевший, пока этот же вызов уже спал
+// (неважно, на ожидании токена или на самой заморозке), терялся — вызов
+// просыпался, забирал токен и возвращал управление внутри окна заморозки.
+// Сценарий А (тест ревьюера, дословно): штраф прилетает во время сна на
+// ожидании токена.
+test('penalize во время ожидания токена не должен игнорироваться уже стартовавшим acquire()', async () => {
+  const h = makeHarness();
+  let limiter, injected = false;
+  const sleep = async (ms) => {
+    h.sleeps.push(ms);
+    if (!injected && ms === 500) { injected = true; limiter.penalize(3000); }
+    h.advance(ms);
+  };
+  limiter = createRateLimiter({ ratePerSec: 2, burst: 1, now: h.now, sleep });
+  await limiter.acquire();
+  await limiter.acquire();
+  assert.ok(h.now() >= 3000, `acquire() вернулся на t=${h.now()}, хотя штраф действует до t=3000`);
+});
+
+// Сценарий Б (не покрыт тестом ревьюера, добавлен отдельно): штраф прилетает
+// во время сна на уже идущей заморозке (а не на ожидании токена) и обязан её
+// продлить, а не быть проигнорированным.
+test('penalize во время сна на уже идущей заморозке продлевает её, а не игнорируется', async () => {
+  const h = makeHarness();
+  let limiter, injected = false;
+  const sleep = async (ms) => {
+    h.sleeps.push(ms);
+    if (!injected && ms === 1000) { injected = true; limiter.penalize(5000); }
+    h.advance(ms);
+  };
+  limiter = createRateLimiter({ ratePerSec: 2, burst: 5, now: h.now, sleep });
+  limiter.penalize(1000);
+  await limiter.acquire();
+  assert.ok(h.now() >= 5000, `acquire() вернулся на t=${h.now()}, хотя продление держит заморозку до t=5000`);
+});
