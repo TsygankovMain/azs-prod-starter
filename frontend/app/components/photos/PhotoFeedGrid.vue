@@ -340,42 +340,59 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
             <span class="text-white text-base">⚑</span>
           </button>
 
-          <!-- Плашка состояния публикации (Task 9) — намеренно ВНИЗУ, не
-               вверху рядом с флажком «Отметить» (правка после ревью 1).
-               На узких тайлах (мобильный grid-cols-2, ~160px) плашка по
-               ширине centered могла заходить на 40×40 зону кнопки справа —
-               обе z-20, плашка позже в DOM, значит перехватывала бы тап,
-               и «Отметить» стало бы недоступно именно на фото, которое
-               ещё публикуется. Внизу тайла интерактивных контролов нет ни
-               в одном режиме сетки, и это верно на ЛЮБОЙ ширине (высота
-               тайла масштабируется вместе с шириной через aspect-[4/3]) —
-               устраняет пересечение по построению, а не пиксельной
-               подгонкой, которая живёт только до следующего брейкпоинта.
-               Возможное визуальное наложение на подпись «АЗС · категория ·
-               время» ниже не создаёт той же проблемы: у подписи нет
-               своего клика (весь тайл — один обработчик), и на практике
-               для accepted/failed подпись почти всегда и так скрыта тем
-               же overlay ошибки превью (см. ниже) — оба следствия одной
-               причины: нет disk_object_id, пока файла нет в Битриксе.
-               z-20 и позже overlay ошибки превью в DOM сохранены — иначе
-               именно там, где плашка нужнее всего, её не будет видно. -->
-          <div
-            v-if="getPublishBadge(item)"
-            class="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 text-white text-[10px] px-2 py-0.5 rounded-full font-bold backdrop-blur-sm whitespace-nowrap"
-            :class="getPublishBadge(item)?.classes"
-            :title="getPublishBadge(item)?.title"
-          >
-            {{ getPublishBadge(item)?.text }}
-          </div>
+          <!-- Плашка состояния публикации (Task 9) + подпись «АЗС ·
+               категория · время» — потоковые блочные соседи в общей
+               обёртке, а не два независимых absolute-элемента (правка
+               после ревью 2).
+               ЧТО БЫЛО НЕ ТАК: подпись — единственный потоковый (не
+               absolute) элемент тайла, внешний flex items-end прижимает
+               её низ к низу тайла; её собственная высота — от ~30px
+               (группировка) до ~55px (здесь, с адресом). Плашка на
+               absolute bottom-2 занимала фиксированную зону 8-27px от
+               низа тайла — то есть физически ВСЕГДА попадала внутрь
+               диапазона высоты подписи, независимо от текста плашки.
+               И это не редкий случай: наложение видно в двух рутинных
+               состояниях ленты при скролле — (1) тайл ещё не попал в
+               IntersectionObserver, превью не запрошено, фон просто
+               градиент, подпись видна; (2) идёт загрузка превью, у
+               спиннера нет своего фона, подпись видна тоже. Overlay
+               ошибки (единственное, что скрывало подпись) появляется
+               только ПОСЛЕ того, как запрос упадёт — на мобильной сети
+               заметное время. (Прошлый отчёт называл это «редким
+               гоночным окном» — неверно, исправлено ниже в отчёте.)
+               ИСПРАВЛЕНИЕ: плашка (когда есть) — первый блочный ребёнок
+               общей обёртки и своей реальной высотой отодвигает подпись
+               вниз по потоку — пересечение невозможно по построению при
+               любой длине текста плашки и любой высоте подписи, а не
+               благодаря подобранным отступам. У обёртки нет своего
+               position/z-index — это чисто раскладочный контейнер,
+               поэтому дочерние z-20 (плашка) и z-10 (подпись)
+               продолжают сравниваться напрямую с overlay ошибки/
+               спиннером/кнопками тайла, как и раньше: эта правка про
+               раскладку, а не про стек. -->
+          <div class="w-full">
+            <div
+              v-if="getPublishBadge(item)"
+              class="relative z-20 flex justify-center pb-1"
+            >
+              <span
+                class="text-white text-[10px] px-2 py-0.5 rounded-full font-bold backdrop-blur-sm whitespace-nowrap"
+                :class="getPublishBadge(item)?.classes"
+                :title="getPublishBadge(item)?.title"
+              >
+                {{ getPublishBadge(item)?.text }}
+              </span>
+            </div>
 
-          <!-- Подпись «АЗС · категория · время» -->
-          <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
-            <div class="opacity-90 truncate">{{ getAzsLabel(item) }}</div>
-            <div v-if="item.azsAddress" class="text-[10px] font-normal text-blue-200 opacity-90 truncate">{{ item.azsAddress }}</div>
-            <div class="opacity-70 text-[10px] font-normal">
-              <span>{{ getCategoryTitle(item.photoCode) }}</span>
-              <span class="opacity-60"> · </span>
-              <span class="tabular-nums">{{ fmtTime(item.exifAt || item.uploadedAt) }}</span>
+            <!-- Подпись «АЗС · категория · время» -->
+            <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
+              <div class="opacity-90 truncate">{{ getAzsLabel(item) }}</div>
+              <div v-if="item.azsAddress" class="text-[10px] font-normal text-blue-200 opacity-90 truncate">{{ item.azsAddress }}</div>
+              <div class="opacity-70 text-[10px] font-normal">
+                <span>{{ getCategoryTitle(item.photoCode) }}</span>
+                <span class="opacity-60"> · </span>
+                <span class="tabular-nums">{{ fmtTime(item.exifAt || item.uploadedAt) }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -454,24 +471,31 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
               <span class="text-white text-base">⚑</span>
             </button>
 
-            <!-- Плашка состояния публикации (Task 9) — ВНИЗУ, не вверху
-                 рядом с флажком «Отметить»: тот же риск пересечения на
-                 узких тайлах и то же исправление по построению, что и в
-                 плоском режиме сетки выше (см. полный комментарий там) -->
-            <div
-              v-if="getPublishBadge(item)"
-              class="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 text-white text-[10px] px-2 py-0.5 rounded-full font-bold backdrop-blur-sm whitespace-nowrap"
-              :class="getPublishBadge(item)?.classes"
-              :title="getPublishBadge(item)?.title"
-            >
-              {{ getPublishBadge(item)?.text }}
-            </div>
+            <!-- Плашка состояния публикации (Task 9) + подпись «категория ·
+                 время» — потоковые блочные соседи в общей обёртке, тот же
+                 риск пересечения на узких тайлах и то же исправление по
+                 построению, что и в плоском режиме сетки выше (см. полный
+                 комментарий там) -->
+            <div class="w-full">
+              <div
+                v-if="getPublishBadge(item)"
+                class="relative z-20 flex justify-center pb-1"
+              >
+                <span
+                  class="text-white text-[10px] px-2 py-0.5 rounded-full font-bold backdrop-blur-sm whitespace-nowrap"
+                  :class="getPublishBadge(item)?.classes"
+                  :title="getPublishBadge(item)?.title"
+                >
+                  {{ getPublishBadge(item)?.text }}
+                </span>
+              </div>
 
-            <!-- Подпись «категория · время» (АЗС в заголовке группы) -->
-            <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
-              <span>{{ getCategoryTitle(item.photoCode) }}</span>
-              <span class="opacity-60"> · </span>
-              <span class="tabular-nums">{{ fmtTime(item.exifAt || item.uploadedAt) }}</span>
+              <!-- Подпись «категория · время» (АЗС в заголовке группы) -->
+              <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
+                <span>{{ getCategoryTitle(item.photoCode) }}</span>
+                <span class="opacity-60"> · </span>
+                <span class="tabular-nums">{{ fmtTime(item.exifAt || item.uploadedAt) }}</span>
+              </div>
             </div>
           </div>
         </div>
