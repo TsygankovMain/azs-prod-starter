@@ -374,7 +374,7 @@ test('advisory-лок запрашивается по фиксированном
   await worker.stop();
 });
 
-test('pool.connect() вызывается один раз на несколько тиков — клиент переиспользуется, а не пере-запрашивается из пула', async () => {
+test('pool.connect() вызывается один раз на несколько тиков; после первого успеха лок НЕ перезахватывается повторно (раунд правок 2, Blocker)', async () => {
   // Не деструктурируем connectCount: это геттер на исходном объекте — при
   // деструктуризации он бы вычислился ОДИН раз, в момент вызова
   // makeTrackedPool(), и дальше отдавал бы застывший снимок (0), а не живое
@@ -388,11 +388,18 @@ test('pool.connect() вызывается один раз на нескольк�
   await worker.tick();
   await worker.tick();
   assert.equal(clients.length, 1, 'ровно тот баг с ревью: pool.query()/повторный connect() могли бы отдать другое физическое соединение');
-  assert.equal(clients[0].queryLog.length, 3, 'все три проверки лока обязаны идти через один и тот же клиент');
+  // Раунд правок 2 (Blocker): было queryLog.length === 3 (по запросу на
+  // тик) — именно это раньше копило N держаний на одной сессии за N тиков
+  // лидерства, хотя releaseClient() снимает только одно. pg_try_advisory_lock
+  // — счётчик, а не флаг (см. заголовочный комментарий photoPublishWorker.js)
+  // — сессия, уже держащая лок, не обязана перепроверять его повторно, пока
+  // жива; смерть сессии детектится событием 'error', а не повторным опросом.
+  assert.equal(clients[0].queryLog.length, 1,
+    'второй и третий тик обязаны переиспользовать уже подтверждённое лидерство, а не повторно слать pg_try_advisory_lock на той же сессии');
   await worker.stop();
 });
 
-test('конкурентные вызовы tick() не порождают второй pool.connect() (дедупликация подключения)', async () => {
+test('конкурентные вызовы tick() не порождают второй pool.connect() и не шлют второй pg_try_advisory_lock (раунд правок 2)', async () => {
   const { pool, clients } = makeTrackedPool();
   const store = makeStore([[], []]);
   const worker = createPhotoPublishWorker({
@@ -400,6 +407,15 @@ test('конкурентные вызовы tick() не порождают вт�
   });
   await Promise.all([worker.tick(), worker.tick()]);
   assert.equal(clients.length, 1, 'иначе один из клиентов навсегда «утекает» из пула, оставшись checked-out');
+  // Раунд правок 2: без дедупликации самой попытки стать лидером (не только
+  // подключения) два конкурентных tick(), оба заставшие leader===false ДО
+  // того, как первый успеет присвоить результат, отправили бы ДВА
+  // pg_try_advisory_lock с одной и той же сессии — на реальном Postgres оба
+  // успешны (сессия реентерабельна сама к себе), и счётчик держаний снова
+  // стал бы больше 1 несмотря на основной фикс (не перезахватывать, если
+  // УЖЕ лидер) — момент разрыва ровно в том, что "уже лидер" в этот момент
+  // ещё не присвоено.
+  assert.equal(clients[0].queryLog.length, 1, 'конкурентные попытки стать лидером обязаны делить один и тот же запрос, а не слать по своему');
   await worker.stop();
 });
 
@@ -881,4 +897,327 @@ test('конструктор отвергает workers < 1', () => {
   assert.throws(() => createPhotoPublishWorker({
     store: makeStore([]), pool: okPool, publishOne: async () => {}, limiter: noopLimiter(), workers: 0
   }));
+});
+
+// ---------------------------------------------------------------------------
+// Секция 10: раунд правок 2 (Blocker) — pg_try_advisory_lock/pg_advisory_unlock
+// это СЧЁТЧИК держаний на сессию, а не глобальный флаг.
+//
+// makeSimplePool/makeTrackedPool выше отвечают locked:true на КАЖДЫЙ запрос
+// независимо от того, кто и сколько раз уже захватывал — они не моделируют
+// реальную семантику Postgres и поэтому НЕ МОГЛИ поймать баг раунда 1
+// (tryBecomeLeader перезахватывал лок на каждом tick(), releaseClient снимал
+// только один раз — после нескольких тиков лидерства лок оставался висеть
+// после stop()). Ревьюер поймал это только на живом Postgres 17. Ниже —
+// минимальный симулятор РЕАЛЬНОЙ семантики, достаточный, чтобы тест мог
+// провалиться так же, как проваливался бы на живой базе.
+// ---------------------------------------------------------------------------
+
+const createAdvisorySimulator = () => {
+  const holders = new Map(); // key -> { session, count }
+  return {
+    tryLock(sessionId, key) {
+      const holder = holders.get(key);
+      if (!holder) {
+        holders.set(key, { session: sessionId, count: 1 });
+        return true;
+      }
+      if (holder.session === sessionId) {
+        holder.count += 1;
+        return true;
+      }
+      return false; // держит другая сессия
+    },
+    unlock(sessionId, key) {
+      const holder = holders.get(key);
+      if (!holder || holder.session !== sessionId || holder.count <= 0) return false;
+      holder.count -= 1;
+      if (holder.count <= 0) holders.delete(key);
+      return true;
+    },
+    // Обрыв соединения — Postgres снимает ВСЕ держания этой сессии сразу,
+    // независимо от счётчика.
+    endSession(sessionId) {
+      for (const [key, holder] of holders) {
+        if (holder.session === sessionId) holders.delete(key);
+      }
+    }
+  };
+};
+
+let simulatedSessionSeq = 0;
+
+// pool.connect()-совместимый фейк поверх симулятора: КАЖДЫЙ connect() —
+// новая "сессия" (как и в реальности — новое физическое соединение), а
+// query() реально исполняет pg_try_advisory_lock/pg_advisory_unlock против
+// ОБЩЕГО симулятора (несколько таких pool, созданных с ОДНИМ и тем же
+// simulator, представляют несколько экземпляров приложения на одну базу).
+const makeSimulatedPool = (simulator) => {
+  const clients = [];
+  const pool = {
+    async connect() {
+      simulatedSessionSeq += 1;
+      const sessionId = simulatedSessionSeq;
+      const listeners = {};
+      let ended = false;
+      const c = {
+        sessionId,
+        queryLog: [],
+        releaseLog: [],
+        async query(sql, params) {
+          c.queryLog.push({ sql, params });
+          const key = params?.[0];
+          if (/pg_try_advisory_lock/.test(sql)) {
+            return { rows: [{ locked: simulator.tryLock(sessionId, key) }] };
+          }
+          if (/pg_advisory_unlock/.test(sql)) {
+            return { rows: [{ released: simulator.unlock(sessionId, key) }] };
+          }
+          throw new Error(`makeSimulatedPool: неизвестный для теста SQL: ${sql}`);
+        },
+        on(event, handler) {
+          (listeners[event] ||= []).push(handler);
+          return c;
+        },
+        // Имитация обрыва TCP-соединения: сессия обрывается на стороне
+        // Postgres (снимает ВСЕ её держания) И клиент об этом узнаёт через
+        // 'error' — ровно то, что происходит в проде.
+        kill(error = new Error('simulated connection loss')) {
+          if (ended) return;
+          ended = true;
+          simulator.endSession(sessionId);
+          (listeners.error || []).forEach((h) => h(error));
+        },
+        release(err) { c.releaseLog.push(err); }
+      };
+      clients.push(c);
+      return c;
+    }
+  };
+  return { pool, clients };
+};
+
+// ---------------------------------------------------------------------------
+// ГЛАВНЫЙ тест раунда 2: несколько тиков лидерства, потом stop() — второй,
+// полностью независимый воркер (свой pool.connect(), но ТА ЖЕ база —
+// общий simulator) обязан суметь стать лидером сразу после этого. Если
+// счётчик держаний не обнулился (баг раунда 1), второй воркер получит
+// locked:false, хотя первый уже "остановлен".
+//
+// Перед реализацией фикса этот тест запускался ОТДЕЛЬНО
+// (node --test tests/photoPublishWorker.test.js) против кода раунда 1 и
+// падал именно на assert.equal(workerB.isLeader(), true, ...) — см.
+// task-7-report.md, раздел "Раунд правок 2", за точным выводом.
+// ---------------------------------------------------------------------------
+
+test('раунд 2 (Blocker): stop() после НЕСКОЛЬКИХ тиков лидерства обязан полностью снять лок — независимый воркер должен суметь стать лидером', async () => {
+  const simulator = createAdvisorySimulator();
+  const { pool: poolA } = makeSimulatedPool(simulator);
+  const storeA = makeStore([[], [], [], [], []]); // 5 тиков подряд лидером
+  const workerA = createPhotoPublishWorker({
+    store: storeA, pool: poolA, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter()
+  });
+
+  for (let i = 0; i < 5; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    await workerA.tick();
+  }
+  assert.equal(workerA.isLeader(), true, 'workerA обязан быть лидером после серии тиков');
+
+  await workerA.stop();
+
+  const { pool: poolB } = makeSimulatedPool(simulator);
+  const storeB = makeStore([[]]);
+  const workerB = createPhotoPublishWorker({
+    store: storeB, pool: poolB, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter()
+  });
+  await workerB.tick();
+  assert.equal(
+    workerB.isLeader(),
+    true,
+    'лок обязан быть полностью свободен после stop() воркера, побывшего лидером НЕСКОЛЬКО тиков — иначе второй экземпляр приложения не сможет опубликовать НИЧЕГО'
+  );
+  await workerB.stop();
+});
+
+// ---------------------------------------------------------------------------
+// Второй механизм той же поломки раунда 2: stop() не координировался с уже
+// летящим tick(). Гвард ticking в start() защищает только срабатывания
+// планировщика между собой — прямой вызов stop() СНАРУЖИ, ровно в момент,
+// когда tick() уже взял лидерство (или ещё только берёт), раньше приводил к
+// тому, что releaseClient() отрабатывал ДО завершения tick(). Два варианта
+// гонки: пока tick() ещё решает вопрос лидерства, и пока tick() уже лидер и
+// обрабатывает пачку.
+// ---------------------------------------------------------------------------
+
+test('раунд 2: stop(), вызванный ПОКА tick() ещё захватывает лидерство, дожидается его перед освобождением клиента', async () => {
+  let firstQueryStarted = false;
+  let releaseFirstQuery;
+  const queryLog = [];
+  const releaseLog = [];
+  const pool = {
+    async connect() {
+      const c = {
+        async query(sql, params) {
+          queryLog.push({ sql, params });
+          if (!firstQueryStarted) {
+            firstQueryStarted = true;
+            // pg_try_advisory_lock зависает, пока тест сам не отпустит —
+            // имитирует медленную сеть/сервер ровно в момент, когда извне
+            // прилетает stop().
+            return new Promise((resolve) => {
+              releaseFirstQuery = () => resolve({ rows: [{ locked: true, released: true }] });
+            });
+          }
+          return { rows: [{ locked: true, released: true }] };
+        },
+        on() {},
+        release(err) { releaseLog.push(err); }
+      };
+      return c;
+    }
+  };
+  const store = makeStore([[]]);
+  const worker = createPhotoPublishWorker({
+    store, pool, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter()
+  });
+
+  const tickPromise = worker.tick();
+  await flushMicrotasks(); // дать tick() дойти до pg_try_advisory_lock и повиснуть там
+
+  let stopResolved = false;
+  const stopPromise = worker.stop().then(() => { stopResolved = true; });
+  await flushMicrotasks();
+  assert.equal(stopResolved, false, 'stop() не имеет права завершиться, пока tick() ещё не решил вопрос лидерства');
+  assert.equal(releaseLog.length, 0, 'клиент не должен быть освобождён, пока tick() им ещё пользуется');
+
+  releaseFirstQuery();
+  await tickPromise;
+  await stopPromise;
+
+  assert.equal(stopResolved, true);
+  assert.equal(releaseLog.length, 1, 'после завершения tick() stop() обязан освободить клиента');
+});
+
+test('раунд 2: stop(), вызванный ПОКА tick() уже лидер и обрабатывает пачку, дожидается завершения обработки', async () => {
+  const { pool, clients } = makeTrackedPool();
+  let releasePublish;
+  const store = makeStore([[{ id: 1, publish_attempts: 0 }]]);
+  const worker = createPhotoPublishWorker({
+    store, pool,
+    publishOne: async () => new Promise((resolve) => { releasePublish = () => resolve({ fileId: 1 }); }),
+    limiter: noopLimiter()
+  });
+
+  const tickPromise = worker.tick();
+  await flushMicrotasks(); // дать tick() пройти лидерство + claimBatch и повиснуть внутри publishOne
+
+  let stopResolved = false;
+  const stopPromise = worker.stop().then(() => { stopResolved = true; });
+  await flushMicrotasks();
+  assert.equal(stopResolved, false, 'stop() не имеет права освободить клиента, пока публикация всё ещё выполняется');
+
+  releasePublish();
+  await tickPromise;
+  await stopPromise;
+
+  assert.equal(stopResolved, true);
+  assert.equal(store.published.length, 1, 'публикация, начатая до stop(), обязана довестись до конца');
+  assert.equal(clients[0].releaseLog.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Гэпы в покрытии, найденные ревью (раунд правок 2, "на моё усмотрение", но
+// сделано): мутации "убрать finally в resolveRequiredPhotoCodesShared" и
+// "убрать проверку идентичности в dropClient" проходили зелёными — сам код
+// был верен, дыры были только в тестах.
+// ---------------------------------------------------------------------------
+
+test('раунд 2 (гэп покрытия): resolveRequiredPhotoCodesShared не кэширует результат навсегда — раздельные во времени вызовы для того же report_id резолвят заново', async () => {
+  const store = makeStore([
+    [{ id: 1, report_id: 55, photo_code: 'FRONT', publish_attempts: 0, slot_verified: false }],
+    [{ id: 2, report_id: 55, photo_code: 'FRONT', publish_attempts: 0, slot_verified: false }]
+  ]);
+  let resolverCalls = 0;
+  const worker = createPhotoPublishWorker({
+    store, pool: okPool,
+    resolveRequiredPhotoCodes: async () => { resolverCalls += 1; return ['FRONT']; },
+    publishOne: async () => ({ fileId: 1, fileName: 'a.jpg', diskFolderId: 1, diskObjectId: 1 }),
+    limiter: noopLimiter()
+  });
+  await worker.tick(); // первый резолв для report_id=55, полностью завершился
+  assert.equal(resolverCalls, 1);
+  await worker.tick(); // второй, НЕ пересекающийся по времени тик — тот же report_id
+  assert.equal(resolverCalls, 2,
+    'без очистки inFlightResolves в finally второй вызов делил бы устаревший, уже завершившийся промис первого навсегда');
+});
+
+test('раунд 2 (гэп покрытия): запоздавшее ВТОРОЕ событие error от уже отброшенного клиента не портит текущего здорового лидера', async () => {
+  const { pool, clients } = makeTrackedPool();
+  const store = makeStore([[], []]);
+  const worker = createPhotoPublishWorker({
+    store, pool, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter(),
+    logger: { error() {}, log() {} }
+  });
+
+  await worker.tick(); // client[0] активен, лидер
+  assert.equal(worker.isLeader(), true);
+
+  clients[0].emit('error', new Error('первое событие error'));
+
+  await worker.tick(); // переподключение -> client[1] активен, снова лидер
+  assert.equal(clients.length, 2);
+  assert.equal(worker.isLeader(), true);
+
+  // Запоздавшее ВТОРОЕ событие error от того же СТАРОГО (уже отброшенного)
+  // клиента — реальный node-postgres иногда шлёт 'error' более одного раза
+  // на одно и то же соединение.
+  clients[0].emit('error', new Error('запоздавшее второе событие error'));
+
+  assert.equal(worker.isLeader(), true, 'запоздавшее событие от чужого (уже отброшенного) клиента не должно портить текущего лидера');
+
+  await worker.tick(); // следующий тик обязан переиспользовать client[1], не переподключаться зря
+  assert.equal(clients.length, 2, 'здоровый client[1] не должен быть отброшен из-за чужого запоздалого события');
+
+  await worker.stop();
+});
+
+// Основной фикс (tryBecomeLeader не перезахватывает, если уже лидер) держит
+// счётчик держаний этой сессии не выше 1 в любом НОРМАЛЬНОМ потоке — из-за
+// этого сам по себе он делает цикл в releaseClient недоказуемым обычным
+// путём (одного unlock всегда достаточно, если счётчик и так не превышает
+// 1). Этот тест искусственно раздувает счётчик В ОБХОД воркера (имитируя
+// гипотетический будущий баг или посторонний SQL с того же соединения),
+// чтобы доказать: releaseClient снимает лок ПОЛНОСТЬЮ независимо от того,
+// откуда взялся лишний счётчик, а не потому, что тот НИКОГДА не бывает
+// больше 1.
+test('раунд 2 (защита в глубину): releaseClient снимает лок ПОЛНОСТЬЮ, даже если счётчик держаний искусственно больше 1', async () => {
+  const simulator = createAdvisorySimulator();
+  const { pool: poolA, clients: clientsA } = makeSimulatedPool(simulator);
+  const store = makeStore([[]]);
+  const worker = createPhotoPublishWorker({
+    store, pool: poolA, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter()
+  });
+
+  await worker.tick(); // становится лидером нормальным путём воркера — держание №1
+  assert.equal(worker.isLeader(), true);
+
+  // В обход обычного пути воркера досоздаём ещё два держания НА ТОЙ ЖЕ
+  // сессии — счётчик становится 3.
+  simulator.tryLock(clientsA[0].sessionId, ADVISORY_LOCK_KEY);
+  simulator.tryLock(clientsA[0].sessionId, ADVISORY_LOCK_KEY);
+
+  await worker.stop();
+
+  const { pool: poolB } = makeSimulatedPool(simulator);
+  const workerB = createPhotoPublishWorker({
+    store: makeStore([[]]), pool: poolB, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter()
+  });
+  await workerB.tick();
+  assert.equal(
+    workerB.isLeader(),
+    true,
+    'releaseClient обязан снимать лок В ЦИКЛЕ, пока не «нечего снимать», а не одним вызовом — иначе искусственно раздутый счётчик оставил бы лок висеть'
+  );
+  await workerB.stop();
 });

@@ -57,9 +57,34 @@
 // ниже): если к моменту остановки этот процесс был лидером, stop() зовёт
 // pg_advisory_unlock и только потом отдаёт клиента обратно в pool.
 //
-// Лидерство перепроверяется КАЖДЫЙ tick() тем же самым клиентом, а не
-// кэшируется после первого успеха — самовосстановление, если конкретно эта
-// проверка вдруг вернёт false.
+// ОБЯЗАННОСТЬ ВЫЗЫВАЮЩЕГО КОДА (раунд правок 2 — ревью попросило
+// задокументировать здесь, а не только в проводке server.js): выделенный
+// клиент чек-аутнут из pool на ВСЮ жизнь процесса воркера (см. ensureClient
+// ниже) и возвращается пулу ТОЛЬКО через releaseClient(), которую вызывает
+// stop(). pg.Pool.end() дожидается возврата ВСЕХ чек-аутнутых клиентов,
+// прежде чем завершиться — вызов pool.end() БЕЗ ПРЕДВАРИТЕЛЬНОГО
+// await worker.stop() подвесит pool.end() НАВСЕГДА, потому что клиент этого
+// воркера никогда не будет возвращён сам по себе. Порядок при остановке
+// процесса ОБЯЗАН быть: await worker.stop() (снимает лок, отдаёт клиента) ->
+// и только потом pool.end() (или закрытие всего pool, если оно общее на всё
+// приложение).
+//
+// ПЕРЕЗАХВАТ ЛОКА НА КАЖДОМ tick() — то, чего здесь БОЛЬШЕ НЕТ (раунд правок
+// 2, Blocker, доказано ревью на живом Postgres 17): pg_try_advisory_lock —
+// СЧЁТЧИК держаний сессии, а не флаг; сессия, уже держащая лок, при повторном
+// pg_try_advisory_lock того же ключа получает locked=true немедленно и
+// увеличивает свой счётчик, а снять лок для других сессий требует РОВНО
+// СТОЛЬКО ЖЕ pg_advisory_unlock. Прежняя версия перепроверяла лидерство
+// заново на каждом tick() тем же клиентом ("самовосстановление" — но
+// самовосстанавливаться там было не от чего, кроме обрыва соединения, а он и
+// так детектится событием 'error'), из-за чего воркер, проживший N тиков
+// лидером, копил N держаний, а releaseClient() снимал только одно — лок
+// оставался висеть после stop() у ЛЮБОГО воркера, прожившего больше одного
+// тика лидером (то есть у любого реального воркера в проде). Сейчас
+// tryBecomeLeader() ниже перезахватывает лок ТОЛЬКО если ещё не лидер —
+// пока сессия жива, лок при ней и без повторных запросов; releaseClient()
+// дополнительно снимает в цикле (защита в глубину, см. там же), а не одним
+// вызовом.
 //
 // ---------------------------------------------------------------------------
 // Отложенная проверка слота (slot_verified=false) — обязанность именно этого
@@ -278,8 +303,21 @@ export const createPhotoPublishWorker = ({
   // запросу" — клиент, на котором что-то пошло не так, не должен молча
   // вернуться в пул под видом здорового (это и есть Опыт D ревьюера —
   // переработанное соединение с молча снятым локом).
+  //
+  // ВАЖНО: client === broken — проверка идентичности, а не формальность
+  // (раунд правок 2, гэп покрытия, найденный ревью). Один и тот же реальный
+  // обрыв соединения иногда порождает событие 'error' ДВАЖДЫ — если бы эта
+  // функция безусловно обнуляла client/leader, запоздавшее ВТОРОЕ событие от
+  // УЖЕ отброшенного клиента затёрло бы ссылку на клиента, который к этому
+  // моменту успел смениться на новый, здоровый (переподключение уже
+  // произошло) — воркер ошибочно "потерял" бы лидерство, которое реально
+  // держит. leader сбрасывается ТОЛЬКО вместе с client и ТОЛЬКО когда
+  // broken — это именно текущий активный клиент, а не устаревшая ссылка.
   const dropClient = (broken, error) => {
-    if (client === broken) client = null;
+    if (client === broken) {
+      client = null;
+      leader = false;
+    }
     safeRelease(broken, error || new Error('photo_publish_advisory_lock_client_dropped'));
   };
 
@@ -311,25 +349,71 @@ export const createPhotoPublishWorker = ({
     }
   };
 
-  // Перепроверяется каждый tick() ТЕМ ЖЕ САМЫМ клиентом (не pool.query()) —
-  // а не кэшируется после первого успеха: самовосстановление, если
-  // конкретно эта проверка вдруг вернёт false (в т.ч. из-за обрыва клиента,
-  // который ниже трактуем как "не лидер", а не роняем весь tick()).
+  // РАУНД ПРАВОК 2 (Blocker, доказано ревью на живом Postgres 17):
+  // pg_try_advisory_lock — СЧЁТЧИК держаний на сессию, а не флаг. Одна и та
+  // же сессия (наш выделенный клиент) может успешно вызвать
+  // pg_try_advisory_lock один и тот же ключ сколько угодно раз подряд —
+  // каждый такой вызов на сессии, УЖЕ держащей лок, немедленно успешен и
+  // увеличивает внутренний счётчик держаний этой сессии. Чтобы лок стал
+  // доступен ДРУГИМ сессиям, требуется РОВНО СТОЛЬКО ЖЕ pg_advisory_unlock.
+  // Раньше эта функция безусловно перезахватывала лок на КАЖДОМ tick() —
+  // ровно то, что предыдущий заголовочный комментарий называл "перепроверять
+  // каждый tick, не кэшировать" — и воркер, проживший N тиков лидером,
+  // копил N держаний на своей сессии; releaseClient() снимал только одно.
+  // Прожил 5 тиков, снял 1 — лок фактически остаётся висеть на уже
+  // отданной пулу сессии до её физического закрытия. Воспроизведено
+  // ревьюером на настоящей базе (5 тиков -> лок удержан после stop()).
+  //
+  // Фикс — НЕ перезахватывать лок повторно, если УЖЕ лидер: Postgres хранит
+  // advisory-лок как атрибут СЕССИИ (не отдельного запроса) — если сессия
+  // жива, лок при ней и без повторных вызовов. Единственный способ
+  // ПОТЕРЯТЬ session-level advisory-лок без явного pg_advisory_unlock —
+  // гибель самой сессии/соединения (обрыв, pg_terminate_backend, рестарт
+  // Postgres), а это ровно тот случай, который уже детектит событие 'error'
+  // на клиенте (см. ensureClient/dropClient выше) — leader сбрасывается
+  // именно там, синхронно с обнулением client, а не только на следующем
+  // tick(). Другого пути потерять лок БЕЗ потери соединения в Postgres нет:
+  // снять чужой session-level лок нельзя ничем, кроме обрыва самой сессии
+  // (что наш клиент узнал бы через 'error') или явного pg_advisory_unlock С
+  // ЭТОЙ ЖЕ сессии — а таких вызовов мы нигде не делаем, кроме releaseClient
+  // при остановке.
+  //
+  // becomingLeaderPromise дедуплицирует КОНКУРЕНТНЫЕ попытки стать лидером
+  // (например, два прямых worker.tick() без ожидания — гвард ticking в
+  // start() защищает только вызовы из планировщика между собой, не прямые):
+  // без этой дедупликации два конкурентных tick(), заставших leader===false
+  // ОБА до того, как первый успеет присвоить результат, отправили бы ДВА
+  // pg_try_advisory_lock с одной и той же сессии — оба успешны (сессия
+  // реентерабельна сама к себе), и счётчик снова стал бы больше 1 даже с
+  // этим фиксом.
+  let becomingLeaderPromise = null;
+
   const tryBecomeLeader = async () => {
-    let activeClient;
+    if (leader) return true;
+    if (becomingLeaderPromise) return becomingLeaderPromise;
+
+    becomingLeaderPromise = (async () => {
+      let activeClient;
+      try {
+        activeClient = await ensureClient();
+      } catch (error) {
+        logger.error('photo_publish_advisory_lock_connect_error', { message: toErrorMessage(error) });
+        return false;
+      }
+      try {
+        const result = await activeClient.query('SELECT pg_try_advisory_lock($1) AS locked', [ADVISORY_LOCK_KEY]);
+        return Boolean(result?.rows?.[0]?.locked);
+      } catch (error) {
+        logger.error('photo_publish_advisory_lock_query_error', { message: toErrorMessage(error) });
+        dropClient(activeClient, error);
+        return false;
+      }
+    })();
+
     try {
-      activeClient = await ensureClient();
-    } catch (error) {
-      logger.error('photo_publish_advisory_lock_connect_error', { message: toErrorMessage(error) });
-      return false;
-    }
-    try {
-      const result = await activeClient.query('SELECT pg_try_advisory_lock($1) AS locked', [ADVISORY_LOCK_KEY]);
-      return Boolean(result?.rows?.[0]?.locked);
-    } catch (error) {
-      logger.error('photo_publish_advisory_lock_query_error', { message: toErrorMessage(error) });
-      dropClient(activeClient, error);
-      return false;
+      return await becomingLeaderPromise;
+    } finally {
+      becomingLeaderPromise = null;
     }
   };
 
@@ -338,13 +422,30 @@ export const createPhotoPublishWorker = ({
   // на чужом локе — бессмысленный вызов и вводящий в заблуждение лог).
   // Клиент возвращается пулу без ошибки — это штатное завершение работы,
   // а не обрыв.
+  //
+  // Снятие — ЦИКЛОМ, пока pg_advisory_unlock не ответит "нечего снимать"
+  // (false), а не одним вызовом (раунд правок 2, защита в глубину поверх
+  // основного фикса выше). Основной фикс (не перезахватывать, если уже
+  // лидер) держит счётчик этой сессии не выше 1 в любой нормальный момент,
+  // поэтому цикл в норме отработает 0 или 1 раз — это НЕ замена основному
+  // фиксу, а недорогая страховка на случай будущего бага, который снова
+  // раздует счётчик: тогда releaseClient всё равно снимет лок ПОЛНОСТЬЮ, а
+  // не оставит его частично висеть. Верхняя граница — защита от
+  // бесконечного цикла при по-настоящему сломанном сервере, а не ожидаемый
+  // рабочий путь.
+  const MAX_UNLOCK_ATTEMPTS = 1000;
+
   const releaseClient = async () => {
     const toRelease = client;
     client = null;
     if (!toRelease) return;
     try {
       if (leader) {
-        await toRelease.query('SELECT pg_advisory_unlock($1)', [ADVISORY_LOCK_KEY]);
+        for (let i = 0; i < MAX_UNLOCK_ATTEMPTS; i += 1) {
+          // eslint-disable-next-line no-await-in-loop
+          const result = await toRelease.query('SELECT pg_advisory_unlock($1) AS released', [ADVISORY_LOCK_KEY]);
+          if (!result?.rows?.[0]?.released) break;
+        }
       }
     } catch (error) {
       logger.error('photo_publish_advisory_unlock_error', { message: toErrorMessage(error) });
@@ -507,32 +608,52 @@ export const createPhotoPublishWorker = ({
     await finishPublished(task, result);
   };
 
+  // inFlightTicks — раунд правок 2, второй механизм той же поломки: гвард
+  // ticking в start() защищает только срабатывания ПЛАНИРОВЩИКА друг от
+  // друга, но никак не координируется со stop(), вызванным СНАРУЖИ. Сигнал
+  // остановки ровно в момент, когда tick() уже взял лидерство (или ещё
+  // только берёт), раньше приводил к тому, что releaseClient() срабатывал
+  // ДО завершения tick() — клиент мог быть отдан пулу (или лок снят не тем
+  // состоянием leader), пока сам tick() ещё работает с ним же. Теперь
+  // каждый tick() регистрирует свой промис здесь, а stop() ниже дожидается
+  // ВСЕХ зарегистрированных тиков, прежде чем звать releaseClient().
+  const inFlightTicks = new Set();
+
   const tick = async () => {
-    leader = await tryBecomeLeader();
-    if (!leader) return { leader: false, claimed: 0 };
+    const run = (async () => {
+      leader = await tryBecomeLeader();
+      if (!leader) return { leader: false, claimed: 0 };
 
-    const tasks = await store.claimBatch({ limit: workers, now: new Date(now()) });
-    if (!tasks.length) return { leader: true, claimed: 0 };
+      const tasks = await store.claimBatch({ limit: workers, now: new Date(now()) });
+      if (!tasks.length) return { leader: true, claimed: 0 };
 
-    const settled = await Promise.allSettled(tasks.map(runTask));
+      const settled = await Promise.allSettled(tasks.map(runTask));
 
-    for (let i = 0; i < tasks.length; i += 1) {
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        await applyOutcome(tasks[i], settled[i]);
-      } catch (error) {
-        // Падение самого применения исхода (например, store.markPublished
-        // бросил из-за обрыва БД) для одной задачи не должно останавливать
-        // применение исхода для соседних — тот же принцип, что и у падения
-        // publishOne().
-        logger.error('photo_publish_apply_outcome_failed', {
-          id: tasks[i]?.id,
-          message: toErrorMessage(error)
-        });
+      for (let i = 0; i < tasks.length; i += 1) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await applyOutcome(tasks[i], settled[i]);
+        } catch (error) {
+          // Падение самого применения исхода (например, store.markPublished
+          // бросил из-за обрыва БД) для одной задачи не должно останавливать
+          // применение исхода для соседних — тот же принцип, что и у падения
+          // publishOne().
+          logger.error('photo_publish_apply_outcome_failed', {
+            id: tasks[i]?.id,
+            message: toErrorMessage(error)
+          });
+        }
       }
-    }
 
-    return { leader: true, claimed: tasks.length };
+      return { leader: true, claimed: tasks.length };
+    })();
+
+    inFlightTicks.add(run);
+    try {
+      return await run;
+    } finally {
+      inFlightTicks.delete(run);
+    }
   };
 
   const start = () => {
@@ -553,14 +674,24 @@ export const createPhotoPublishWorker = ({
     if (timer && typeof timer.unref === 'function') timer.unref();
   };
 
-  // async: обязана дождаться releaseClient() (снятие лока при лидерстве +
-  // возврат клиента пулу) ПРЕЖДЕ чем считаться завершённой — иначе при
-  // graceful shutdown лок мог бы остаться висеть на клиенте, который
-  // технически ещё не отдан пулу.
+  // async: обязана дождаться и летящего tick() (inFlightTicks — раунд
+  // правок 2, см. выше), и releaseClient() (снятие лока при лидерстве +
+  // возврат клиента пулу) ПРЕЖДЕ чем считаться завершённой. Порядок важен:
+  // сначала снимаем таймер (чтобы не стартовал ещё один tick, пока мы
+  // ждём), потом дожидаемся уже летящих, и только затем освобождаем
+  // клиента — иначе при graceful shutdown ровно в момент тика клиент мог
+  // быть отдан пулу (или лок снят при не финальном leader) раньше, чем
+  // tick() успевал с ним доработать.
   const stop = async () => {
     if (timer) {
       clearIntervalFn(timer);
       timer = null;
+    }
+    if (inFlightTicks.size > 0) {
+      // allSettled, не all: свой собственный сбой tick() (например,
+      // store.claimBatch бросил) не имеет права помешать stop() дождаться
+      // остальных летящих тиков и всё равно освободить клиента.
+      await Promise.allSettled([...inFlightTicks]);
     }
     await releaseClient();
   };
