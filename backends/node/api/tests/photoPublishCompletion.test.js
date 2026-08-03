@@ -345,19 +345,21 @@ test('отчёт уходит в CRM только когда опубликов�
   };
   const crmSyncJobStore = makeCrmSyncJobStoreFake();
 
+  const incompleteStates = requiredCodes.map((code, i) => ({ photoCode: code, publishState: i < 39 ? 'published' : 'accepted' }));
   const incompleteResult = await syncReportToCrmIfComplete({
     reportId,
     reportsStore,
-    photoQueueStore: { async countByState({ reportId: id }) { assert.equal(id, reportId); return { accepted: 1, published: 39 }; } },
+    photoQueueStore: { async listPhotoStates({ reportId: id }) { assert.equal(id, reportId); return incompleteStates; } },
     crmSyncJobStore
   });
   assert.equal(incompleteResult.synced, false);
   assert.equal(crmSyncJobStore.jobs.length, 0, '39 из 40 published -> enqueue не вызван');
 
+  const completeStates = requiredCodes.map((code) => ({ photoCode: code, publishState: 'published' }));
   const completeResult = await syncReportToCrmIfComplete({
     reportId,
     reportsStore,
-    photoQueueStore: { async countByState({ reportId: id }) { assert.equal(id, reportId); return { published: 40 }; } },
+    photoQueueStore: { async listPhotoStates({ reportId: id }) { assert.equal(id, reportId); return completeStates; } },
     crmSyncJobStore
   });
   assert.equal(completeResult.synced, true);
@@ -372,7 +374,7 @@ test('повторный проход проверки при уже полно�
     async getRequiredPhotoCodes() { return requiredCodes; },
     async listPhotos() { return [{ reportId, photoCode: '1', diskFolderId: 777 }]; }
   };
-  const photoQueueStore = { async countByState() { return { published: 3 }; } };
+  const photoQueueStore = { async listPhotoStates() { return requiredCodes.map((code) => ({ photoCode: code, publishState: 'published' })); } };
   const crmSyncJobStore = makeCrmSyncJobStoreFake();
 
   const first = await syncReportToCrmIfComplete({ reportId, reportsStore, photoQueueStore, crmSyncJobStore });
@@ -395,9 +397,69 @@ test('syncReportToCrmIfComplete: список обязательных кодо�
   const result = await syncReportToCrmIfComplete({
     reportId,
     reportsStore,
-    photoQueueStore: { async countByState() { return {}; } },
+    photoQueueStore: { async listPhotoStates() { return []; } },
     crmSyncJobStore
   });
   assert.equal(result.synced, false);
+  assert.equal(crmSyncJobStore.jobs.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Important 3 (раунд правок 1): агрегат (было — countByState, count >=
+// requiredCodes.length) недостаточен — количество может совпасть, а
+// КОНКРЕТНЫЕ коды не совпасть. Оба сценария ниже — реальные пробои агрегата,
+// которые обязана ловить построчная сверка (listPhotoStates).
+// ---------------------------------------------------------------------------
+
+test('Important 3: лишний опубликованный код (не входящий в requiredCodes, например с непроверенного слота) не маскирует реально недостающий обязательный код', async () => {
+  const reportId = 940207;
+  const requiredCodes = ['1', '2'];
+  const reportsStore = {
+    async getRequiredPhotoCodes() { return requiredCodes; },
+    async listPhotos() { return [{ reportId, photoCode: '1', diskFolderId: 111 }]; }
+  };
+  // Код '1' — обязательный, опубликован. Код '2' — обязательный, НЕ
+  // опубликован. Код '999' — опубликован, но в requiredCodes не входит
+  // (например, принят на непроверенном слоте, слот оказался неверным).
+  // Агрегат счёл бы published=2 >= requiredCodes.length(2) "полным
+  // комплектом" — ложно.
+  const photoQueueStore = {
+    async listPhotoStates() {
+      return [
+        { photoCode: '1', publishState: 'published' },
+        { photoCode: '999', publishState: 'published' }
+      ];
+    }
+  };
+  const crmSyncJobStore = makeCrmSyncJobStoreFake();
+
+  const result = await syncReportToCrmIfComplete({ reportId, reportsStore, photoQueueStore, crmSyncJobStore });
+  assert.equal(result.synced, false, 'лишний опубликованный код (не из requiredCodes) не должен маскировать недостающий код 2');
+  assert.equal(crmSyncJobStore.jobs.length, 0);
+});
+
+test('Important 3: смена состава обязательных кодов посреди смены при том же их числе не маскирует реально недостающий новый код', async () => {
+  const reportId = 940208;
+  // Было обязательно ['1','2'], стало ['1','3'] (то же число — 2): код '3'
+  // теперь обязателен, но ещё не опубликован; код '2' опубликован, но уже не
+  // обязателен. Агрегат: published=2 (коды 1 и 2) >= requiredCodes.length(2)
+  // — ложный "полный комплект".
+  const requiredCodes = ['1', '3'];
+  const reportsStore = {
+    async getRequiredPhotoCodes() { return requiredCodes; },
+    async listPhotos() { return [{ reportId, photoCode: '1', diskFolderId: 222 }]; }
+  };
+  const photoQueueStore = {
+    async listPhotoStates() {
+      return [
+        { photoCode: '1', publishState: 'published' },
+        { photoCode: '2', publishState: 'published' } // старый код, уже не обязателен
+      ];
+    }
+  };
+  const crmSyncJobStore = makeCrmSyncJobStoreFake();
+
+  const result = await syncReportToCrmIfComplete({ reportId, reportsStore, photoQueueStore, crmSyncJobStore });
+  assert.equal(result.synced, false, 'код 3 реально не опубликован — комплект не полный, несмотря на совпавшее по числу published');
   assert.equal(crmSyncJobStore.jobs.length, 0);
 });

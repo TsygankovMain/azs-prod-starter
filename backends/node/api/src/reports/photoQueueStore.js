@@ -248,6 +248,26 @@ const createPostgresStore = (pool) => ({
     return counts;
   },
 
+  // Важно 3 (раунд правок 1, ревью Task 8): агрегат countByState недостаточен
+  // для проверки комплекта ОДНОГО отчёта — количество совпавших строк не
+  // гарантирует, что совпали именно ТЕ коды, что сейчас обязательны. Два
+  // реальных пробоя, которые ловит именно построчная сверка, а агрегат — нет:
+  // (1) фото на непроверенном слоте (slot_verified=false) опубликовалось, не
+  //     будучи ни для кого требуемым — раздувает счётчик мимо дела;
+  //     (2) состав обязательных кодов у АЗС поменялся посреди смены при том
+  //     же их числе — старое опубликованное фото по коду, переставшему быть
+  //     нужным, маскирует реально недостающий новый код.
+  // photoPublishCompletion.js обязан сверять requiredCodes с КОНКРЕТНЫМИ
+  // кодами построчно, для чего и нужен этот метод (countByState остаётся —
+  // полезен как есть для глобальной диагностики/сторожа).
+  async listPhotoStates({ reportId }) {
+    const result = await pool.query(
+      `SELECT photo_code, publish_state FROM report_photo WHERE report_id = $1`,
+      [reportId]
+    );
+    return result.rows.map((row) => ({ photoCode: row.photo_code, publishState: row.publish_state }));
+  },
+
   // LEFT JOIN, в отличие от claimBatch, намеренно: сторож обязан увидеть
   // фото, у которого пропали байты (b.report_photo_id IS NULL), а не только
   // те, что просто долго лежат неопубликованными. По той же причине
@@ -467,6 +487,15 @@ const createMysqlStore = (pool) => ({
     const counts = {};
     for (const row of rows) counts[row.publish_state] = Number(row.count);
     return counts;
+  },
+
+  // См. комментарий у PostgreSQL-версии listPhotoStates выше — тот же контракт.
+  async listPhotoStates({ reportId }) {
+    const [rows] = await pool.execute(
+      `SELECT photo_code, publish_state FROM report_photo WHERE report_id = ?`,
+      [reportId]
+    );
+    return rows.map((row) => ({ photoCode: row.photo_code, publishState: row.publish_state }));
   },
 
   // См. комментарий у PostgreSQL-версии listStuck: 'failed' — тоже

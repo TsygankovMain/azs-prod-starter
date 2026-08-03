@@ -267,6 +267,29 @@ test('countByState({reportId}) считает только фото этого �
   assert.deepEqual(params, [501]);
 });
 
+// Важно 3 (раунд правок 1): агрегат (countByState) недостаточен для проверки
+// комплекта отчёта построчно — количество может совпасть, а конкретные коды
+// не совпасть (лишний код на непроверенном слоте; сменившийся состав
+// обязательных кодов при том же их числе). photoPublishCompletion.js
+// обязан сверять КОНКРЕТНЫЕ коды, для чего и нужен построчный список.
+test('listPhotoStates({reportId}) отдаёт коды с их publish_state построчно', async () => {
+  const pool = makeFakePool([{ rows: [
+    { photo_code: '1', publish_state: 'published' },
+    { photo_code: '2', publish_state: 'accepted' }
+  ] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  const states = await store.listPhotoStates({ reportId: 501 });
+  assert.deepEqual(states, [
+    { photoCode: '1', publishState: 'published' },
+    { photoCode: '2', publishState: 'accepted' }
+  ]);
+  const { sql, params } = pool.calls[0];
+  assert.match(sql, /WHERE report_id = \$1/);
+  assert.match(sql, /photo_code/);
+  assert.match(sql, /publish_state/);
+  assert.deepEqual(params, [501]);
+});
+
 test('listStuck отбирает не опубликованные фото старше порога, лимитируя выборку', async () => {
   const pool = makeFakePool([{ rows: [] }]);
   const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
@@ -452,6 +475,22 @@ test('MySQL: countByState({reportId}) считает только фото эт�
   const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
   const counts = await store.countByState({ reportId: 501 });
   assert.deepEqual(counts, { published: 2 });
+  const { sql, params } = pool.calls[0];
+  assert.match(sql, /WHERE report_id = \?/);
+  assert.deepEqual(params, [501]);
+});
+
+test('MySQL: listPhotoStates({reportId}) отдаёт коды с их publish_state построчно', async () => {
+  const pool = makeFakeMysqlPool([[[
+    { photo_code: '1', publish_state: 'published' },
+    { photo_code: '2', publish_state: 'accepted' }
+  ]]]);
+  const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
+  const states = await store.listPhotoStates({ reportId: 501 });
+  assert.deepEqual(states, [
+    { photoCode: '1', publishState: 'published' },
+    { photoCode: '2', publishState: 'accepted' }
+  ]);
   const { sql, params } = pool.calls[0];
   assert.match(sql, /WHERE report_id = \?/);
   assert.deepEqual(params, [501]);

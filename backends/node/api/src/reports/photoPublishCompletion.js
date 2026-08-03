@@ -37,8 +37,8 @@ export const syncReportToCrmIfComplete = async ({
   if (!reportsStore || typeof reportsStore.getRequiredPhotoCodes !== 'function' || typeof reportsStore.listPhotos !== 'function') {
     throw new Error('reportsStore with getRequiredPhotoCodes()/listPhotos() is required');
   }
-  if (!photoQueueStore || typeof photoQueueStore.countByState !== 'function') {
-    throw new Error('photoQueueStore with countByState() is required');
+  if (!photoQueueStore || typeof photoQueueStore.listPhotoStates !== 'function') {
+    throw new Error('photoQueueStore with listPhotoStates() is required');
   }
   if (!crmSyncJobStore || typeof crmSyncJobStore.enqueue !== 'function' || typeof crmSyncJobStore.listByReport !== 'function') {
     throw new Error('crmSyncJobStore with enqueue()/listByReport() is required');
@@ -55,13 +55,27 @@ export const syncReportToCrmIfComplete = async ({
     return { synced: false, reason: 'required_codes_unknown' };
   }
 
-  const counts = await photoQueueStore.countByState({ reportId });
-  const publishedCount = Number(counts?.published || 0);
-  if (publishedCount < requiredCodes.length) {
+  // Important 3 (раунд правок 1, ревью): сверка КОНКРЕТНЫХ кодов, а не
+  // агрегата. count(published) >= requiredCodes.length — недостаточное
+  // условие, ловит совпадение по числу, но не по составу. Два реальных
+  // пробоя, которые агрегат пропускал бы молча: (1) фото на непроверенном
+  // слоте опубликовалось, не будучи ни для кого требуемым, и раздувало счёт;
+  // (2) состав requiredCodes поменялся посреди смены при том же их числе —
+  // старое опубликованное фото по коду, переставшему быть нужным,
+  // маскировало реально недостающий новый код. Построчный список
+  // (listPhotoStates) и сверка по Set — то же самое усиление, что submit уже
+  // делает через сравнение множеств кодов (missingCodes), только на стороне
+  // публикации.
+  const states = await photoQueueStore.listPhotoStates({ reportId });
+  const publishedCodes = new Set(
+    states.filter((row) => row.publishState === 'published').map((row) => row.photoCode)
+  );
+  const missingRequiredCodes = requiredCodes.filter((code) => !publishedCodes.has(code));
+  if (missingRequiredCodes.length > 0) {
     return {
       synced: false,
       reason: 'incomplete',
-      publishedCount,
+      missingCodes: missingRequiredCodes,
       requiredCount: requiredCodes.length
     };
   }
