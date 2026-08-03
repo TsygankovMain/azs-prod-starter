@@ -1932,6 +1932,19 @@ export const createReportsRouter = ({
         });
       }
 
+      // ИНВАРИАНТ (раунд правок 1, Important 4 — ревью Task 8; НЕ трогать
+      // без синхронной сверки с markFailed в photoQueueStore.js/
+      // classifyPublishError в photoPublisher.js): uploadedCodes строится по
+      // ФАКТУ строки report_photo, независимо от её publish_state —
+      // reportsStore.listPhotos сознательно даже не выбирает эту колонку.
+      // Это безопасно ТОЛЬКО потому, что markFailed сегодня ставится
+      // исключительно на отказы, за которые отвечает Битрикс/инфраструктура
+      // (квота Диска, удалённая папка, нет прав), а не на то, что код в
+      // принципе не должен был считаться загруженным. Если множество причин
+      // markFailed расширится (например, будущей проверкой
+      // slot_verified при публикации) — эта строка обязана быть пересмотрена
+      // синхронно, иначе код, которому вообще не место в отчёте, тихо
+      // засчитается как принятый и замаскирует реально недостающий.
       const currentPhotos = await reportsStore.listPhotos(reportId);
       const uploadedCodes = new Set(currentPhotos.map((photo) => normalizePhotoCode(photo.photoCode)));
       const missingCodes = requiredCodes.filter((code) => !uploadedCodes.has(code));

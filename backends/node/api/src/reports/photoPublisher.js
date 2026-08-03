@@ -51,6 +51,17 @@ const NEVER_PERMANENT_PATTERN = /\bQUERY_LIMIT_EXCEEDED\b/i;
 // с установленной в проекте конвенцией простого сопоставления по тексту.
 const PERMANENT_BITRIX_ERROR_PATTERN = /\b(DISK_QUOTA_EXCEEDED|ERROR_NOT_FOUND_FOLDER|ACCESS_DENIED)\b/i;
 
+// ИНВАРИАНТ, ЗАЩИЩАЮЩИЙ ПОВЕДЕНИЕ POST /:id/submit (раунд правок 1,
+// Important 4 — ревью Task 8; см. полный комментарий над markFailed в
+// photoQueueStore.js, куда результат 'permanent' в итоге приводит). Все три
+// причины 'permanent' сегодня — коды Bitrix, то есть отказы, за которые
+// отвечает инфраструктура/портал, а не оператор. Это тот же класс отказов,
+// на который submit опирается, чтобы НЕ фильтровать report_photo по
+// publish_state. Если этот список расширится кодом, который означает НЕ
+// "Битрикс отказал", а "код в принципе не должен считаться загруженным"
+// (например, будущая проверка slot_verified при публикации) — реши в
+// markFailed/reportsRoutes.js, обязан ли /submit это различать, ПРЕЖДЕ чем
+// расширять паттерн, а не после.
 export const classifyPublishError = (error) => {
   const haystack = buildErrorHaystack(error);
   if (NEVER_PERMANENT_PATTERN.test(haystack)) return 'retryable';

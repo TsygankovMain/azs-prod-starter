@@ -56,6 +56,30 @@ test('состояние отчёта — своя таблица, а не ко�
 });
 
 // ---------------------------------------------------------------------------
+// Important 4 (раунд правок 1, ревью Task 8) — тест, закрепляющий инвариант,
+// на котором стоит POST /:id/submit (см. развёрнутый комментарий над
+// markFailed в photoQueueStore.js и над missingCodes в reportsRoutes.js):
+// submit засчитывает код как "принятый" по самому ФАКТУ строки report_photo,
+// не по её publish_state. listPhotos ОБЯЗАН не выбирать и не фильтровать по
+// этой колонке — если этот тест когда-нибудь покраснеет из-за появившегося
+// здесь publish_state, это ЗНАК остановиться и сначала прочитать инвариант
+// (и решить, обязан ли markFailed теперь различать причины отказа), а не
+// проходной рефакторинг.
+// ---------------------------------------------------------------------------
+
+test('listPhotos не выбирает и не фильтрует по publish_state — submit опирается на присутствие строки, а не на её состояние (Important 4)', async () => {
+  const pool = makeFakePool();
+  const store = createReportsStore({ pool, dbType: 'postgres' });
+  await store.listPhotos(42);
+  assert.equal(pool.statements.length, 1);
+  const sql = pool.statements[0];
+  assert.doesNotMatch(
+    sql, /publish_state/i,
+    'listPhotos не имеет права ни выбирать, ни фильтровать по publish_state — см. инвариант над markFailed (photoQueueStore.js) и над missingCodes (reportsRoutes.js, POST /:id/submit)'
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Идемпотентность (не описана в брифе явно, но обязательна: ensureSchema
 // должен безопасно переживать повторный запуск на уже смигрированной базе,
 // не падая и не меняя данные).
