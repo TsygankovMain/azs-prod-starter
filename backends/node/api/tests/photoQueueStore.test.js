@@ -52,6 +52,17 @@ test('markPublished проставляет published_at и не трогает �
   assert.match(sql, /published_at = NOW\(\)/);
   assert.doesNotMatch(sql, /DELETE FROM report_photo_blob/,
     'байты удаляет отдельная очистка через N дней, а не публикация');
+  // MUTATION-GAP (проверено мутацией на этапе разработки, не догадка): проверка
+  // одного только pool.calls[0].sql слепа к DELETE, дописанному ВТОРЫМ,
+  // отдельным вызовом pool.query после update — ровно так выглядела бы
+  // случайная регрессия («заодно почистим блоб»). Явно фиксируем, что вызов
+  // ровно один, и что ни в одном из вызовов нет DELETE — это ловит оба вида
+  // мутации (правку того же выражения и добавление отдельного запроса).
+  assert.equal(pool.calls.length, 1, 'markPublished не должен делать второй запрос к БД');
+  assert.ok(
+    pool.calls.every((c) => !/DELETE FROM report_photo_blob/.test(c.sql)),
+    'байты удаляет отдельная очистка через N дней, а не публикация'
+  );
 });
 
 test('reschedule увеличивает счётчик попыток и оставляет фото в очереди', async () => {
@@ -240,6 +251,10 @@ test('MySQL: markPublished не трогает байты', async () => {
   const sql = pool.calls[0].sql;
   assert.match(sql, /publish_state = 'published'/);
   assert.doesNotMatch(sql, /DELETE FROM report_photo_blob/);
+  // См. комментарий у PG-версии этого теста: один запрос, и ни в одном из
+  // вызовов нет DELETE — иначе проверка слепа ко второму, отдельному вызову.
+  assert.equal(pool.calls.length, 1, 'markPublished не должен делать второй запрос к БД');
+  assert.ok(pool.calls.every((c) => !/DELETE FROM report_photo_blob/.test(c.sql)));
 });
 
 test('MySQL: reschedule увеличивает попытки и оставляет фото в очереди', async () => {
