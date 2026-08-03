@@ -17,25 +17,49 @@
 // в памяти ОДНОГО процесса и физически не видит расход соседнего экземпляра.
 // pg_try_advisory_lock даёт ровно одного лидера на всю базу: не-лидер просто
 // не публикует (accept фото на уровне HTTP этому не мешает — приём и
-// публикация независимы по конструкции photoQueueStore.js). Лок снимается
-// сам при обрыве соединения, поэтому смерть лидера не требует ручного
-// вмешательства — соответственно, tick() тоже не пытается вручную снимать
-// лок в stop().
+// публикация независимы по конструкции photoQueueStore.js).
 //
-// pg_try_advisory_lock — лок УРОВНЯ СЕССИИ (конкретного соединения), а не
-// отдельного запроса. Этот модуль использует pool.query(...) как чёрный ящик,
-// ровно так, как задано интерфейсом брифа — он не проверяет и не может
-// проверить, что каждый вызов физически попадает на одно и то же соединение.
-// Если под pool окажется обычный многосоединенческий pg.Pool, а не выделенный
-// клиент, лидерство способно "мигать" между проверками. Это сознательно
-// оставлено на совести вызывающего кода (server.js, "проводка" — отдельная
-// задача от этой): какой именно pool сюда передать — решение уровня wiring,
-// а не этого файла.
+// ВЫДЕЛЕННЫЙ КЛИЕНТ, А НЕ pool.query() (раунд правок 1, Critical — ревью
+// нашло на живой базе). pg_try_advisory_lock — лок УРОВНЯ СЕССИИ конкретного
+// соединения, а не отдельного запроса. pool.query() у обычного
+// многосоединенческого pg.Pool (в проде — 10 соединений по умолчанию,
+// server.js:107, размер там не переопределён) на КАЖДЫЙ вызов может отдать
+// ДРУГОЕ физическое соединение — ревьюер поднял настоящий Postgres 17 и
+// сконструировал pool ровно как server.js, без искусственных допущений:
+//   - пул простаивает без посторонней нагрузки -> все проверки случайно
+//     попадают на одно и то же соединение, лок держится (ложное ощущение,
+//     что всё работает);
+//   - тот же пул плюс четыре параллельных чужих запроса (обычный прод, где
+//     пул общий на всё приложение) -> 5 тиков из 8 отдали locked=false, хотя
+//     лок физически держало СОБСТВЕННОЕ простаивающее соединение того же
+//     процесса — просто проверка ушла на другое соединение пула. Воркер сам
+//     себя разжаловал, публикация встала бы молча;
+//   - простаивающее соединение, которое pool успел переработать -> лок
+//     снялся сам, никто не уведомлён, и второй, полностью независимый pool
+//     взял тот же лок немедленно. Два лидера.
+// Двойной публикации это, скорее всего, не даёт (SKIP LOCKED + аренда в
+// photoQueueStore поделят бэклог), но лок в этом задании существует РАДИ
+// ДРУГОЙ гарантии — не дать двум экземплярам поднять по своему ограничителю
+// темпа в памяти и удвоить нагрузку на портал, который и так дважды ронял
+// смены из-за перегруза. Гарантия "ровно один ведущий" держится, только если
+// "я держу лок" и "моё физическое соединение живо" — один и тот же факт, а
+// не два разных, которые pool.query() умеет незаметно развести.
 //
-// Лидерство перепроверяется КАЖДЫЙ tick(), а не кэшируется после первого
-// успеха — самовосстановление, если конкретно эта проверка вдруг вернёт
-// false (в т.ч. из-за ошибки соединения, которую ниже ловим и трактуем как
-// "не лидер", а не роняем весь tick()).
+// Поэтому: pool.connect() вызывается ОДИН раз (лениво, на первом tick()),
+// клиент удерживается в замыкании и переиспользуется на КАЖДОЙ последующей
+// проверке — pool.query() в этом файле для лока больше не используется
+// вовсе. На событии 'error' у клиента (обрыв соединения) ссылка обнуляется,
+// клиент возвращается пулу С ошибкой (pg: .release(err) просит пул уничтожить
+// это соединение, а не отдать его следующему запросу сомнительным), и
+// следующий tick() переподключается заново — лок при обрыве соединения и так
+// снимается сам на стороне Postgres, вручную его снимать при обрыве не нужно.
+// stop() — единственное место, где лок снимается ЯВНО (см. releaseClient
+// ниже): если к моменту остановки этот процесс был лидером, stop() зовёт
+// pg_advisory_unlock и только потом отдаёт клиента обратно в pool.
+//
+// Лидерство перепроверяется КАЖДЫЙ tick() тем же самым клиентом, а не
+// кэшируется после первого успеха — самовосстановление, если конкретно эта
+// проверка вдруг вернёт false.
 //
 // ---------------------------------------------------------------------------
 // Отложенная проверка слота (slot_verified=false) — обязанность именно этого
@@ -46,7 +70,16 @@
 // заводилась и проставлялась, но не читалась — обещание без исполнителя.
 //
 // Три исхода, ровно как в задании:
-//   - код есть в дорезолвленном списке -> публикуем как обычно;
+//   - код есть в дорезолвленном списке -> публикуем как обычно (сам столбец
+//     slot_verified при этом НЕ обновляется отдельным запросом — метода на
+//     это store не даёт, а после публикации строка покидает 'accepted' и
+//     больше никем не читается по slot_verified; если публикация временно
+//     не удастся и задача вернётся в reschedule, следующая попытка резолвит
+//     слот заново — дёшево, кэш почти всегда тёплый, и то же самое верно
+//     для уже ОПУБЛИКОВАННЫХ строк: их slot_verified тоже навсегда
+//     останется FALSE в БД. Безвредно — эта колонка больше не читается
+//     никем, кроме claimBatch, а published-строки claimBatch не выбирает —
+//     но при ручном осмотре таблицы может сбить с толку, отсюда эта заметка);
 //   - кода в списке нет -> markFailed с внятной причиной
 //     (PHOTO_CODE_NOT_REQUIRED) — байты не теряются, сторож (listStuck) и
 //     сам отчёт видят явный отказ, а не молчаливую дыру;
@@ -78,7 +111,13 @@
 // Как и publishOne (см. photoPublisher.js), resolveRequiredPhotoCodes сама
 // отвечает за свой проход через ограничитель темпа, если внутри дёргается
 // Битрикс — этот файл не оборачивает её лимитером повторно (иначе — двойной
-// расход токена на один настоящий HTTP-вызов).
+// расход токена на один настоящий HTTP-вызов). Этот файл, впрочем, НЕ отдаёт
+// её вызывать по разу на каждое фото пачки вслепую — см. resolveRequiredPhotoCodesShared
+// ниже (минорная заметка ревью, раунд правок 1): несколько фото ОДНОГО отчёта
+// со slot_verified=false в одной пачке иначе независимо резолвили бы список
+// параллельно, до трёх одновременных походов в Битрикс на холодный кэш одной
+// АЗС — тот же класс "стада", что createSettingsCache в photoPublisher.js уже
+// решает для настроек.
 //
 // НОВАЯ причина markFailed и инвариант POST /:id/submit: photoQueueStore.js
 // (комментарий над markFailed) и reportsRoutes.js (комментарий над
@@ -89,13 +128,32 @@
 // SELECT в listPhotos) — то есть отвечает только на вопрос "есть ли строка
 // для этого кода", независимо от того, published она, failed или accepted.
 // Код, помеченный здесь как "не обязателен", по определению НИКОГДА не входил
-// и не войдёт в requiredCodes (тот самый список, что вернула
-// resolveRequiredPhotoCodes) — ни на приёме, ни здесь, ни при пересчёте на
-// submit. Его наличие или отсутствие в uploadedCodes не может ни скрыть, ни
-// подменить реально недостающий требуемый код: missingCodes = requiredCodes
-// minus uploadedCodes, а этого кода в requiredCodes нет ни у одной из трёх
-// точек времени. Правки reportsRoutes.js это не требует — файл в этой задаче
-// не трогаем.
+// и не войдёт в requiredCodes В МОМЕНТ ЭТОГО ЖЕ резолва. Правки reportsRoutes.js
+// это не требует — файл в этой задаче не трогаем.
+//
+// ДРЕЙФ МЕЖДУ ИСТОЧНИКАМИ (раунд правок 1, Important — ревью). Предыдущий
+// абзац верен только про ОДИН и тот же резолв. Но воркер и POST /:id/submit
+// читают список требуемых кодов из РАЗНЫХ источников с разным моментом
+// актуальности: воркер — живой (resolveRequiredPhotoCodes: кэш с TTL или
+// прямо Битрикс), submit — зафиксированный снепшот в
+// report_local_state.required_photo_codes, который обновляется только при
+// открытии карточки отчёта (см. reportsRoutes.js, resolveRequiredPhotoSlotLocally).
+// Если состав обязательных фото у АЗС сменится МЕЖДУ "воркер дорезолвил
+// список" и "оператор переоткрыл карточку" (или даже без изменений в
+// Битриксе — просто из-за повтора: slot_verified в БД после успешной
+// проверки не обновляется отдельным запросом, следующая попытка резолвит
+// слот заново, см. заметку выше), код, которого не было в списке воркера,
+// может оказаться в списке submit — и тогда помеченная здесь строка
+// (markFailed/not_required) тихо засчитается как загруженная у submit,
+// маскируя реально недостающий слот. persistResolvedCodes ниже закрывает
+// дрейф ПО КОНСТРУКЦИИ, а не по вероятности: после каждого успешного резолва
+// актуальный список пишется обратно в report_local_state тем же приёмом,
+// что и открытие карточки (reportsStore.setRequiredPhotoCodes) — так оба
+// потребителя (воркер и следующий submit) сходятся на одном и том же
+// свежем снепшоте. Best-effort и опционально (reportsStore может быть не
+// передан): ошибка здесь не имеет права остановить публикацию — тот же
+// принцип, что и у backfill в самой resolveRequiredPhotoSlotLocally
+// (.catch(() => {})).
 //
 // ---------------------------------------------------------------------------
 // Почему обработка пачки построена как
@@ -150,12 +208,13 @@ const buildNotRequiredError = (task) =>
  * @param {object} deps.store — createPhotoQueueStore(...) из photoQueueStore.js
  * @param {Function} deps.publishOne — publishOne(task) из createPhotoPublisher(...) (photoPublisher.js); сама берёт токен лимитера на каждое обращение к Битриксу
  * @param {object} deps.limiter — createRateLimiter(...) из shared/rateLimiter.js; ОДИН общий экземпляр на процесс, разделяемый со всем, что ходит в Битрикс
- * @param {object} deps.pool — что угодно с query(sql, params); используется ТОЛЬКО для pg_try_advisory_lock (см. предупреждение про session-affinity выше)
+ * @param {object} deps.pool — что угодно с connect(): Promise<client>, где client — { query(sql, params), on('error', fn), release([err]) }. ИМЕННО connect(), не query() — см. заголовочный комментарий про session-affinity advisory-лока (раунд правок 1, Critical)
  * @param {number} [deps.workers] — размер пачки claimBatch за один tick; по умолчанию 3
  * @param {number[]} [deps.backoffMs] — паузы reschedule по номеру попытки
  * @param {number} [deps.maxAttempts] — после этого числа попыток -> markFailed вместо reschedule
  * @param {number} [deps.pollIntervalMs] — интервал setInterval в start()
  * @param {Function} [deps.resolveRequiredPhotoCodes] — (task) => Promise<string[]>; нужна ТОЛЬКО для задач со slot_verified=false (см. блок комментариев выше)
+ * @param {object} [deps.reportsStore] — { setRequiredPhotoCodes({ reportId, codes }) }; локальная БД (не Битрикс). После каждого успешного resolveRequiredPhotoCodes актуальный список пишется сюда же, чтобы POST /:id/submit не сверялся с устаревшим снепшотом (раунд правок 1, Important). Опционален — без него backfill просто не происходит, поведение публикации не меняется
  * @param {Function} [deps.syncCrmIfComplete] — (reportId, task) => Promise<any>; зовётся после КАЖДОГО успешного markPublished, best-effort (ошибка не отменяет уже состоявшуюся публикацию). task — второй, необязательный для реализации аргумент, на случай если вызывающему нужен более широкий контекст, чем голый id
  * @param {Function} [deps.now] — инжектируемые часы (мс), как в crmSyncWorker.js; по умолчанию Date.now
  * @param {object} [deps.logger] — по умолчанию console; используется только .error()
@@ -172,6 +231,7 @@ export const createPhotoPublishWorker = ({
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   resolveRequiredPhotoCodes = null,
+  reportsStore = null,
   syncCrmIfComplete = null,
   now = () => Date.now(),
   logger = console,
@@ -183,8 +243,8 @@ export const createPhotoPublishWorker = ({
   if (!limiter || typeof limiter.acquire !== 'function' || typeof limiter.penalize !== 'function') {
     throw new Error('limiter with acquire()/penalize() is required');
   }
-  if (!pool || typeof pool.query !== 'function') {
-    throw new Error('pool with query() is required (advisory lock)');
+  if (!pool || typeof pool.connect !== 'function') {
+    throw new Error('pool with connect() is required (advisory lock needs one dedicated, session-pinned client — see header comment)');
   }
   if (!(Number(workers) >= 1)) throw new Error('workers must be at least 1');
 
@@ -192,17 +252,156 @@ export const createPhotoPublishWorker = ({
   let timer = null;
   let ticking = false;
 
-  // Перепроверяется каждый tick (см. комментарий про session-affinity выше) —
-  // ошибка соединения трактуется как "не лидер", а не роняет весь tick():
-  // неопределённость лучше разрешать в пользу "не публикуем", а не наоборот.
-  const tryBecomeLeader = async () => {
+  // -------------------------------------------------------------------------
+  // Advisory-лок: один выделенный клиент на весь процесс воркера (см.
+  // заголовочный комментарий файла — Critical, раунд правок 1).
+  // -------------------------------------------------------------------------
+  let client = null;
+  let connecting = null;
+  const releasedClients = new WeakSet();
+
+  const safeRelease = (target, err) => {
+    if (!target || releasedClients.has(target)) return;
+    releasedClients.add(target);
+    if (typeof target.release !== 'function') return;
     try {
-      const result = await pool.query('SELECT pg_try_advisory_lock($1) AS locked', [ADVISORY_LOCK_KEY]);
-      return Boolean(result?.rows?.[0]?.locked);
+      target.release(err);
+    } catch (releaseError) {
+      // Настоящий pg.PoolClient.release() не бросает — защита на случай
+      // самодельного клиента (тесты/будущая обёртка).
+      logger.error('photo_publish_advisory_lock_release_error', { message: toErrorMessage(releaseError) });
+    }
+  };
+
+  // Роняем СВОЮ ссылку и возвращаем клиента пулу С ошибкой: pg трактует
+  // .release(err) как "уничтожь это соединение, не отдавай его следующему
+  // запросу" — клиент, на котором что-то пошло не так, не должен молча
+  // вернуться в пул под видом здорового (это и есть Опыт D ревьюера —
+  // переработанное соединение с молча снятым локом).
+  const dropClient = (broken, error) => {
+    if (client === broken) client = null;
+    safeRelease(broken, error || new Error('photo_publish_advisory_lock_client_dropped'));
+  };
+
+  // pool.connect() — один раз (лениво, на первом tick(), см. JSDoc pool
+  // выше), с дедупликацией конкурентных вызовов через connecting: без неё
+  // два одновременных tick() (в теории — прямой вызов worker.tick() дважды
+  // без ожидания) породили бы два клиента, и один навсегда "утёк" бы из
+  // пула, оставшись висеть checked-out.
+  const ensureClient = async () => {
+    if (client) return client;
+    if (connecting) return connecting;
+    connecting = (async () => {
+      const newClient = await pool.connect();
+      newClient.on('error', (error) => {
+        // Обрыв сессии = обрыв соединения = лок снимается сам на стороне
+        // Postgres (см. заголовочный комментарий). Обнуляем ссылку и
+        // отдаём клиента пулу с ошибкой, чтобы СЛЕДУЮЩИЙ tick()
+        // переподключился на новом соединении, а не бился в мёртвый сокет.
+        logger.error('photo_publish_advisory_lock_client_error', { message: toErrorMessage(error) });
+        dropClient(newClient, error);
+      });
+      client = newClient;
+      return newClient;
+    })();
+    try {
+      return await connecting;
+    } finally {
+      connecting = null;
+    }
+  };
+
+  // Перепроверяется каждый tick() ТЕМ ЖЕ САМЫМ клиентом (не pool.query()) —
+  // а не кэшируется после первого успеха: самовосстановление, если
+  // конкретно эта проверка вдруг вернёт false (в т.ч. из-за обрыва клиента,
+  // который ниже трактуем как "не лидер", а не роняем весь tick()).
+  const tryBecomeLeader = async () => {
+    let activeClient;
+    try {
+      activeClient = await ensureClient();
     } catch (error) {
-      logger.error('photo_publish_advisory_lock_error', { message: toErrorMessage(error) });
+      logger.error('photo_publish_advisory_lock_connect_error', { message: toErrorMessage(error) });
       return false;
     }
+    try {
+      const result = await activeClient.query('SELECT pg_try_advisory_lock($1) AS locked', [ADVISORY_LOCK_KEY]);
+      return Boolean(result?.rows?.[0]?.locked);
+    } catch (error) {
+      logger.error('photo_publish_advisory_lock_query_error', { message: toErrorMessage(error) });
+      dropClient(activeClient, error);
+      return false;
+    }
+  };
+
+  // stop() — единственное место, где лок снимается ЯВНО. Снимаем ТОЛЬКО
+  // если на момент остановки реально были лидером (иначе pg_advisory_unlock
+  // на чужом локе — бессмысленный вызов и вводящий в заблуждение лог).
+  // Клиент возвращается пулу без ошибки — это штатное завершение работы,
+  // а не обрыв.
+  const releaseClient = async () => {
+    const toRelease = client;
+    client = null;
+    if (!toRelease) return;
+    try {
+      if (leader) {
+        await toRelease.query('SELECT pg_advisory_unlock($1)', [ADVISORY_LOCK_KEY]);
+      }
+    } catch (error) {
+      logger.error('photo_publish_advisory_unlock_error', { message: toErrorMessage(error) });
+    } finally {
+      leader = false;
+      safeRelease(toRelease);
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // Отложенная проверка слота (см. заголовочный комментарий файла).
+  // -------------------------------------------------------------------------
+
+  // Раунд правок 1 (Important): дорезолвленный список пишется обратно в
+  // report_local_state тем же приёмом, что и открытие карточки отчёта —
+  // закрывает дрейф между "живым" списком воркера и "снепшотом" submit'а
+  // по конструкции (полное обоснование — заголовочный комментарий файла).
+  // Best-effort и опционально: reportsStore может быть не передан, ошибка
+  // здесь никогда не должна отменять уже состоявшийся резолв.
+  const persistResolvedCodes = async (task, requiredCodes) => {
+    if (!reportsStore || typeof reportsStore.setRequiredPhotoCodes !== 'function') return;
+    try {
+      await reportsStore.setRequiredPhotoCodes({
+        reportId: task.report_id,
+        codes: Array.isArray(requiredCodes) ? requiredCodes : []
+      });
+    } catch (error) {
+      logger.error('photo_publish_slot_codes_backfill_failed', {
+        id: task.id,
+        reportId: task.report_id,
+        message: toErrorMessage(error)
+      });
+    }
+  };
+
+  // Минорная заметка ревью (раунд правок 1): дедупликация КОНКУРЕНТНЫХ
+  // резолвов одного report_id внутри уже идущей пачки — тот же приём
+  // (Map + finally-очистка), что createSettingsCache в photoPublisher.js
+  // использует для settingsStore.read(), но БЕЗ TTL-половины: результат
+  // не кэшируется здесь на будущее, только конкурентные вызовы, заставшие
+  // уже идущий резолв ЭТОГО report_id, делят один и тот же промис вместо
+  // каждый-своего похода в Битрикс. Долгоживущее кэширование — забота
+  // инъецированной resolveRequiredPhotoCodes (или того, что она оборачивает).
+  const inFlightResolves = new Map();
+  const resolveRequiredPhotoCodesShared = async (task) => {
+    const key = task.report_id;
+    const existing = inFlightResolves.get(key);
+    if (existing) return existing;
+    const promise = (async () => {
+      try {
+        return await resolveRequiredPhotoCodes(task);
+      } finally {
+        if (inFlightResolves.get(key) === promise) inFlightResolves.delete(key);
+      }
+    })();
+    inFlightResolves.set(key, promise);
+    return promise;
   };
 
   // 'verified'     — слот уже проверен (обычный случай) ИЛИ только что успешно
@@ -215,7 +414,7 @@ export const createPhotoPublishWorker = ({
 
     let requiredCodes;
     try {
-      requiredCodes = await resolveRequiredPhotoCodes(task);
+      requiredCodes = await resolveRequiredPhotoCodesShared(task);
     } catch (error) {
       logger.error('photo_publish_slot_resolve_failed', {
         id: task.id,
@@ -225,6 +424,8 @@ export const createPhotoPublishWorker = ({
       });
       return 'unresolved';
     }
+
+    await persistResolvedCodes(task, requiredCodes);
 
     const codes = new Set((Array.isArray(requiredCodes) ? requiredCodes : []).map(String));
     return codes.has(String(task.photo_code)) ? 'verified' : 'not_required';
@@ -257,7 +458,11 @@ export const createPhotoPublishWorker = ({
       // Best-effort: перевод в CRM — отдельный факт с отдельным моментом
       // (см. photoPublishCompletion.js). Публикация УЖЕ состоялась и уже
       // записана markPublished() выше — сбой здесь не имеет права откатывать
-      // или маскировать это назад в "failed"/"rescheduled".
+      // или маскировать это назад в "failed"/"rescheduled". Лог —
+      // photo_publish_crm_sync_enqueue_failed — специфичен намеренно (раунд
+      // правок 1, M8): внешний try/catch в цикле tick() тоже поймал бы это
+      // падение, но под общим ключом photo_publish_apply_outcome_failed —
+      // менее полезным для диагностики именно CRM-шага.
       logger.error('photo_publish_crm_sync_enqueue_failed', {
         id: task.id,
         reportId: task.report_id,
@@ -348,11 +553,16 @@ export const createPhotoPublishWorker = ({
     if (timer && typeof timer.unref === 'function') timer.unref();
   };
 
-  const stop = () => {
+  // async: обязана дождаться releaseClient() (снятие лока при лидерстве +
+  // возврат клиента пулу) ПРЕЖДЕ чем считаться завершённой — иначе при
+  // graceful shutdown лок мог бы остаться висеть на клиенте, который
+  // технически ещё не отдан пулу.
+  const stop = async () => {
     if (timer) {
       clearIntervalFn(timer);
       timer = null;
     }
+    await releaseClient();
   };
 
   return {

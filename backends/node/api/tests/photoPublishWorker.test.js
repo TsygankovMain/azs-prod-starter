@@ -13,10 +13,10 @@ import { PHOTO_CODE_NOT_REQUIRED } from '../src/reports/errorCodes.js';
 // advisory-лок Postgres, чтобы на нескольких экземплярах приложения (Timeweb)
 // публиковал ровно один процесс.
 //
-// Секция 1 — тесты из брифа, ДОСЛОВНО (Шаг 1). Секция 2 — дополнительные
-// тесты на отложенную проверку слота (Grabli 2 из задания), которая в брифе
-// описана текстом, но не дана готовым тестом. Секция 3 — advisory-лок,
-// CRM-синк после публикации, старт/стоп и валидация конструктора.
+// Секция 1 — тесты из брифа, ДОСЛОВНО (Шаг 1). Секция 2 — отложенная
+// проверка слота (Grabli 2). Секция 3+ — advisory-лок (включая раунд правок
+// 1, Critical), CRM-синк, backfill списка требуемых кодов (раунд правок 1,
+// Important), старт/стоп, валидация конструктора.
 // ---------------------------------------------------------------------------
 
 const noopLimiter = () => ({ acquire: async () => {}, penalize() {} });
@@ -29,8 +29,26 @@ const makeStore = (batches) => ({
   async markFailed(args) { this.failed.push(args); }
 });
 
-const okPool = { async query() { return { rows: [{ locked: true }] }; } };
-const busyPool = { async query() { return { rows: [{ locked: false }] }; } };
+// Простой pool.connect()-совместимый фейк: один и тот же клиент на каждый
+// connect(), query() всегда отвечает одним и тем же locked. Годится для
+// подавляющего большинства тестов, которым важен только факт "лидер/не
+// лидер" — для механики session-affinity самой по себе см. makeTrackedPool
+// в секции "Advisory-лок: выделенный клиент" ниже.
+const makeSimplePool = (locked) => {
+  const client = {
+    async query() { return { rows: [{ locked }] }; },
+    on() {},
+    release() {}
+  };
+  return { async connect() { return client; } };
+};
+const okPool = makeSimplePool(true);
+const busyPool = makeSimplePool(false);
+
+// Один макротаск-барьер гарантированно дренирует ВСЮ очередь микрозадач
+// (включая те, что были добавлены в процессе дренажа) — надёжнее и без
+// хрупкой зависимости от количества await-хопов внутри tick()/claimBatch().
+const flushMicrotasks = () => new Promise((resolve) => setImmediate(resolve));
 
 // ---------------------------------------------------------------------------
 // Секция 1: тесты из брифа (task-7-brief.md, Шаг 1) — дословно.
@@ -244,8 +262,7 @@ test('slot_verified=1 (MySQL TINYINT) трактуется так же, как t
 });
 
 // ---------------------------------------------------------------------------
-// Секция 3: advisory-лок (детали сверх минимального теста брифа), CRM-синк
-// после markPublished, старт/стоп опроса, валидация конструктора.
+// Секция 3: advisory-лок — базовый гейтинг (лидер/не лидер).
 // ---------------------------------------------------------------------------
 
 test('без лидерства claimBatch вообще не вызывается — не тратим впустую чужую аренду', async () => {
@@ -261,33 +278,6 @@ test('без лидерства claimBatch вообще не вызываетс�
   });
   await worker.tick();
   assert.equal(calls.length, 0, 'claimBatch на неведущем экземпляре взял бы аренду впустую на 5 минут');
-});
-
-test('advisory-лок запрашивается по фиксированному постоянному ключу', async () => {
-  const seen = [];
-  const pool = { async query(sql, params) { seen.push({ sql, params }); return { rows: [{ locked: true }] }; } };
-  const store = makeStore([[]]);
-  const worker = createPhotoPublishWorker({
-    store, pool, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter()
-  });
-  await worker.tick();
-  assert.equal(seen.length, 1);
-  assert.match(seen[0].sql, /pg_try_advisory_lock/);
-  assert.deepEqual(seen[0].params, [ADVISORY_LOCK_KEY]);
-});
-
-test('ошибка при проверке advisory-лока не роняет tick и трактуется как «не лидер»', async () => {
-  const store = makeStore([[{ id: 1, publish_attempts: 0 }]]);
-  const throwingPool = { async query() { throw new Error('connection reset'); } };
-  const worker = createPhotoPublishWorker({
-    store, pool: throwingPool,
-    publishOne: async () => ({ fileId: 1 }),
-    limiter: noopLimiter(),
-    logger: { error() {}, log() {} }
-  });
-  await assert.doesNotReject(() => worker.tick());
-  assert.equal(worker.isLeader(), false);
-  assert.equal(store.published.length, 0);
 });
 
 test('claimBatch вызывается с limit=workers (по умолчанию 3)', async () => {
@@ -316,6 +306,209 @@ test('workers переопределяет размер пачки claimBatch', 
   assert.equal(calls[0].limit, 5);
 });
 
+// ---------------------------------------------------------------------------
+// Секция 4: Advisory-лок — ВЫДЕЛЕННЫЙ КЛИЕНТ (раунд правок 1, Critical).
+//
+// Ревьюер поднял реальный Postgres 17 и сконструировал pool ровно как
+// server.js:107 (без переопределения размера — 10 соединений). При pool.query()
+// «ровно один лидер» физически не гарантирован: 5 тиков из 8 под фоновой
+// нагрузкой на пул вернули locked=false, хотя лок держало собственное
+// простаивающее соединение того же процесса — проверка просто ушла на другое
+// физическое соединение. Хуже: переработанное простаивающее соединение тихо
+// теряло лок, и второй, независимый pool немедленно перехватывал его — два
+// лидера. Фикс — pool.connect(): один выделенный клиент на весь процесс
+// воркера, все проверки лока идут ТОЛЬКО через него. Тесты ниже не поднимают
+// реальный Postgres (в проекте — node:test без реальной БД), а проверяют
+// САМ КОНТРАКТ: сколько раз вызван pool.connect(), тот ли самый клиент
+// опрашивается повторно, что происходит при обрыве/ошибке клиента и при
+// остановке воркера.
+// ---------------------------------------------------------------------------
+
+// Отслеживающий фейк pool.connect() — в отличие от makeSimplePool, даёт
+// заглянуть, что именно происходит с каждым выданным клиентом: сколько раз
+// реально подключались, какие SQL/параметры ушли на КАЖДОГО клиента отдельно,
+// что случилось при release()/событии error.
+const makeTrackedPool = ({ responses } = {}) => {
+  const clients = [];
+  const pool = {
+    async connect() {
+      const listeners = {};
+      const c = {
+        queryLog: [],
+        releaseLog: [],
+        async query(sql, params) {
+          c.queryLog.push({ sql, params });
+          const next = responses && responses.length ? responses.shift() : undefined;
+          return next ?? { rows: [{ locked: true }] };
+        },
+        on(event, handler) {
+          (listeners[event] ||= []).push(handler);
+          return c;
+        },
+        emit(event, ...args) {
+          (listeners[event] || []).forEach((h) => h(...args));
+        },
+        release(err) { c.releaseLog.push(err); }
+      };
+      clients.push(c);
+      return c;
+    }
+  };
+  // connectCount умышленно НЕ даём отдельным полем/геттером верхнего уровня:
+  // деструктуризация геттера при возврате застыла бы на значении в момент
+  // возврата (см. комментарий в первом тесте ниже, который на этом споткнулся).
+  // clients.length — то же самое, но живое.
+  return { pool, clients };
+};
+
+test('advisory-лок запрашивается по фиксированному постоянному ключу через выделенный клиент', async () => {
+  const { pool, clients } = makeTrackedPool();
+  const store = makeStore([[]]);
+  const worker = createPhotoPublishWorker({
+    store, pool, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter()
+  });
+  await worker.tick();
+  assert.equal(clients[0].queryLog.length, 1);
+  assert.match(clients[0].queryLog[0].sql, /pg_try_advisory_lock/);
+  assert.deepEqual(clients[0].queryLog[0].params, [ADVISORY_LOCK_KEY]);
+  await worker.stop();
+});
+
+test('pool.connect() вызывается один раз на несколько тиков — клиент переиспользуется, а не пере-запрашивается из пула', async () => {
+  // Не деструктурируем connectCount: это геттер на исходном объекте — при
+  // деструктуризации он бы вычислился ОДИН раз, в момент вызова
+  // makeTrackedPool(), и дальше отдавал бы застывший снимок (0), а не живое
+  // значение. Читаем clients.length напрямую.
+  const { pool, clients } = makeTrackedPool();
+  const store = makeStore([[], [], []]);
+  const worker = createPhotoPublishWorker({
+    store, pool, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter()
+  });
+  await worker.tick();
+  await worker.tick();
+  await worker.tick();
+  assert.equal(clients.length, 1, 'ровно тот баг с ревью: pool.query()/повторный connect() могли бы отдать другое физическое соединение');
+  assert.equal(clients[0].queryLog.length, 3, 'все три проверки лока обязаны идти через один и тот же клиент');
+  await worker.stop();
+});
+
+test('конкурентные вызовы tick() не порождают второй pool.connect() (дедупликация подключения)', async () => {
+  const { pool, clients } = makeTrackedPool();
+  const store = makeStore([[], []]);
+  const worker = createPhotoPublishWorker({
+    store, pool, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter()
+  });
+  await Promise.all([worker.tick(), worker.tick()]);
+  assert.equal(clients.length, 1, 'иначе один из клиентов навсегда «утекает» из пула, оставшись checked-out');
+  await worker.stop();
+});
+
+test('обрыв выделенного клиента (событие error) -> следующий тик переподключается на новый клиент', async () => {
+  const { pool, clients } = makeTrackedPool();
+  const store = makeStore([[], []]);
+  const worker = createPhotoPublishWorker({
+    store, pool, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter(),
+    logger: { error() {}, log() {} }
+  });
+  await worker.tick();
+  assert.equal(clients.length, 1);
+
+  clients[0].emit('error', new Error('connection terminated'));
+  assert.equal(clients[0].releaseLog.length, 1, 'сломанный клиент обязан быть отдан пулу, а не просто забыт');
+  assert.ok(clients[0].releaseLog[0], 'release() обязан получить ошибку, чтобы пул уничтожил соединение, а не переработал его сомнительным (Опыт D ревьюера)');
+
+  await worker.tick();
+  assert.equal(clients.length, 2, 'после обрыва клиента следующий тик обязан подключиться заново');
+  await worker.stop();
+});
+
+test('ошибка query() на выделенном клиенте -> клиент отбрасывается, tick трактует это как «не лидер», не падает', async () => {
+  let queryCallCount = 0;
+  const releaseLog = [];
+  const pool = {
+    async connect() {
+      const c = {
+        async query() {
+          queryCallCount += 1;
+          throw new Error('connection reset');
+        },
+        on() {},
+        release(err) { releaseLog.push(err); }
+      };
+      return c;
+    }
+  };
+  const store = makeStore([[{ id: 1, publish_attempts: 0 }]]);
+  const worker = createPhotoPublishWorker({
+    store, pool, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter(),
+    logger: { error() {}, log() {} }
+  });
+  await assert.doesNotReject(() => worker.tick());
+  assert.equal(worker.isLeader(), false);
+  assert.equal(store.published.length, 0);
+  assert.equal(queryCallCount, 1);
+  assert.equal(releaseLog.length, 1, 'клиент, у которого упал запрос, обязан быть отдан пулу, а не просто забыт (утечка checked-out соединения)');
+  await worker.stop();
+});
+
+test('pool.connect() сам бросает (пул исчерпан/БД недоступна) -> tick не падает, трактуется как «не лидер»', async () => {
+  const store = makeStore([[{ id: 1, publish_attempts: 0 }]]);
+  const pool = { async connect() { throw new Error('pool exhausted'); } };
+  const worker = createPhotoPublishWorker({
+    store, pool, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter(),
+    logger: { error() {}, log() {} }
+  });
+  await assert.doesNotReject(() => worker.tick());
+  assert.equal(worker.isLeader(), false);
+  assert.equal(store.published.length, 0);
+  await worker.stop();
+});
+
+test('stop() снимает advisory-лок (pg_advisory_unlock) и освобождает клиента, если был лидером', async () => {
+  const { pool, clients } = makeTrackedPool();
+  const store = makeStore([[]]);
+  const worker = createPhotoPublishWorker({
+    store, pool, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter()
+  });
+  await worker.tick();
+  assert.equal(worker.isLeader(), true);
+
+  await worker.stop();
+
+  assert.equal(clients[0].releaseLog.length, 1, 'клиент обязан вернуться в пул');
+  assert.equal(clients[0].releaseLog[0], undefined, 'штатная остановка — не ошибка, release() без аргумента');
+  const unlockCall = clients[0].queryLog.find((c) => /pg_advisory_unlock/.test(c.sql));
+  assert.ok(unlockCall, 'лок обязан быть явно снят перед освобождением клиента');
+  assert.deepEqual(unlockCall.params, [ADVISORY_LOCK_KEY]);
+});
+
+test('stop() без лидерства не зовёт pg_advisory_unlock, но клиента освобождает', async () => {
+  const { pool, clients } = makeTrackedPool({ responses: [{ rows: [{ locked: false }] }] });
+  const store = makeStore([[]]);
+  const worker = createPhotoPublishWorker({
+    store, pool, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter()
+  });
+  await worker.tick();
+  assert.equal(worker.isLeader(), false);
+
+  await worker.stop();
+
+  assert.equal(clients[0].releaseLog.length, 1);
+  const unlockCall = clients[0].queryLog.find((c) => /pg_advisory_unlock/.test(c.sql));
+  assert.equal(unlockCall, undefined, 'лок, которым не владели, снимать незачем — бессмысленный вызов и вводящий в заблуждение лог');
+});
+
+test('stop() до единого tick() — безопасный no-op (клиента ещё нет)', async () => {
+  const worker = createPhotoPublishWorker({
+    store: makeStore([]), pool: okPool, publishOne: async () => ({ fileId: 1 }), limiter: noopLimiter()
+  });
+  await assert.doesNotReject(() => worker.stop());
+});
+
+// ---------------------------------------------------------------------------
+// Секция 5: CRM-синк после markPublished.
+// ---------------------------------------------------------------------------
+
 test('успешная публикация запускает попытку перевода отчёта в CRM (syncCrmIfComplete)', async () => {
   const store = makeStore([[{ id: 1, report_id: 77, publish_attempts: 0 }]]);
   const crmCalls = [];
@@ -342,20 +535,39 @@ test('syncCrmIfComplete не вызывается, если публикация
   assert.equal(crmCalls.length, 0);
 });
 
-test('падение syncCrmIfComplete не превращает успешную публикацию в ошибку', async () => {
+// Раунд правок 1 (M8): исходный тест проходил и без внутреннего try/catch в
+// finishPublished — внешний catch в цикле tick() тоже ловит падение
+// syncCrmIfComplete, поэтому store.published/failed/rescheduled сами по себе
+// не отличают "поймал внутренний обработчик" от "поймал внешний". Разница —
+// в специфичности лога (photo_publish_crm_sync_enqueue_failed против общего
+// photo_publish_apply_outcome_failed), и именно её теперь проверяет тест.
+test('падение syncCrmIfComplete не превращает успешную публикацию в ошибку, и ловится ИМЕННО внутренним обработчиком CRM-шага', async () => {
   const store = makeStore([[{ id: 1, report_id: 77, publish_attempts: 0 }]]);
+  const logs = [];
   const worker = createPhotoPublishWorker({
     store, pool: okPool,
     publishOne: async () => ({ fileId: 7, fileName: 'a.jpg', diskFolderId: 2, diskObjectId: 3 }),
     syncCrmIfComplete: async () => { throw new Error('crm queue down'); },
     limiter: noopLimiter(),
-    logger: { error() {}, log() {} }
+    logger: { error: (key, meta) => logs.push({ key, meta }), log() {} }
   });
   await assert.doesNotReject(() => worker.tick());
   assert.equal(store.published.length, 1, 'фото реально опубликовано — это не должно откатываться из-за отдельного шага CRM');
   assert.equal(store.failed.length, 0);
   assert.equal(store.rescheduled.length, 0);
+  assert.ok(
+    logs.some((entry) => entry.key === 'photo_publish_crm_sync_enqueue_failed'),
+    'падение CRM-шага обязано быть залогировано СВОИМ специфичным ключом'
+  );
+  assert.ok(
+    !logs.some((entry) => entry.key === 'photo_publish_apply_outcome_failed'),
+    'если сработал внешний catch цикла tick() вместо внутреннего — это и есть регресс M8'
+  );
 });
+
+// ---------------------------------------------------------------------------
+// Секция 6: изоляция падения store-вызовов при применении исхода.
+// ---------------------------------------------------------------------------
 
 test('падение store.markPublished для одной задачи не мешает применить исход остальных', async () => {
   const store = makeStore([[{ id: 1, publish_attempts: 0 }, { id: 2, publish_attempts: 0 }]]);
@@ -374,15 +586,149 @@ test('падение store.markPublished для одной задачи не м�
   assert.equal(store.published[0].id, 2);
 });
 
-// start()/stop() ниже НЕ используют реальные таймеры/сон по времени — только
-// инъецированные setIntervalFn/clearIntervalFn (см. JSDoc в
-// photoPublishWorker.js). Причина: тест на "хотя бы пару опросов за 95мс при
-// интервале 20мс" один раз реально упал в CI-подобном прогоне под сторонней
-// нагрузкой (в рабочей директории параллельно шли другие задачи) — гонка с
-// системным таймером, а не баг воркера. Дальше по флоу задания сказано прямо:
-// "если твой тест может зависнуть [или зафлакать], перепиши его" — переписано
-// на управляемый вручную фейковый "таймер", без ожидания реальных миллисекунд
-// и, соответственно, без единого шанса на флаки по нагрузке системы.
+// ---------------------------------------------------------------------------
+// Секция 7: backfill дорезолвленного списка в report_local_state
+// (раунд правок 1, Important) + дедупликация конкурентных резолвов (минор).
+//
+// Воркер (resolveRequiredPhotoCodes: живой список) и POST /:id/submit
+// (report_local_state.required_photo_codes: снепшот на момент открытия
+// карточки) читают список требуемых кодов из РАЗНЫХ источников. Если состав
+// требований у АЗС сменится между ними, submit увидит более новый список и
+// может засчитать помеченный здесь код как загруженный. persistResolvedCodes
+// закрывает дрейф по конструкции: после каждого успешного резолва актуальный
+// список пишется обратно в report_local_state тем же приёмом, что и открытие
+// карточки (reportsStore.setRequiredPhotoCodes).
+// ---------------------------------------------------------------------------
+
+test('успешный дорезолв списка пишет его обратно в report_local_state (reportsStore.setRequiredPhotoCodes)', async () => {
+  const store = makeStore([[{ id: 1, report_id: 55, photo_code: 'FRONT', publish_attempts: 0, slot_verified: false }]]);
+  const setCalls = [];
+  const reportsStore = { async setRequiredPhotoCodes(args) { setCalls.push(args); } };
+  const worker = createPhotoPublishWorker({
+    store, pool: okPool,
+    resolveRequiredPhotoCodes: async () => ['FRONT', 'BACK'],
+    reportsStore,
+    publishOne: async () => ({ fileId: 7, fileName: 'a.jpg', diskFolderId: 2, diskObjectId: 3 }),
+    limiter: noopLimiter()
+  });
+  await worker.tick();
+  assert.deepEqual(setCalls, [{ reportId: 55, codes: ['FRONT', 'BACK'] }]);
+  assert.equal(store.published.length, 1);
+});
+
+test('пишет дорезолвленный список обратно, даже если сам код не входит в него (not_required)', async () => {
+  const store = makeStore([[{ id: 1, report_id: 55, photo_code: 'WRONG', publish_attempts: 0, slot_verified: false }]]);
+  const setCalls = [];
+  const reportsStore = { async setRequiredPhotoCodes(args) { setCalls.push(args); } };
+  const worker = createPhotoPublishWorker({
+    store, pool: okPool,
+    resolveRequiredPhotoCodes: async () => ['FRONT', 'BACK'],
+    reportsStore,
+    publishOne: async () => { throw new Error('publishOne не должен вызываться'); },
+    limiter: noopLimiter()
+  });
+  await worker.tick();
+  assert.deepEqual(setCalls, [{ reportId: 55, codes: ['FRONT', 'BACK'] }]);
+  assert.equal(store.failed.length, 1);
+});
+
+test('если резолвер списка бросил, запись в report_local_state не происходит', async () => {
+  const store = makeStore([[{ id: 1, report_id: 55, photo_code: 'FRONT', publish_attempts: 3, slot_verified: false }]]);
+  const setCalls = [];
+  const reportsStore = { async setRequiredPhotoCodes(args) { setCalls.push(args); } };
+  const worker = createPhotoPublishWorker({
+    store, pool: okPool,
+    resolveRequiredPhotoCodes: async () => { throw new Error('Bitrix is down'); },
+    reportsStore,
+    publishOne: async () => { throw new Error('publishOne не должен вызываться'); },
+    limiter: noopLimiter(),
+    logger: { error() {}, log() {} }
+  });
+  await worker.tick();
+  assert.equal(setCalls.length, 0, 'нечего писать, если сам резолв не удался');
+});
+
+test('падение reportsStore.setRequiredPhotoCodes не мешает публикации — это best-effort backfill', async () => {
+  const store = makeStore([[{ id: 1, report_id: 55, photo_code: 'FRONT', publish_attempts: 0, slot_verified: false }]]);
+  const reportsStore = { async setRequiredPhotoCodes() { throw new Error('db down'); } };
+  const worker = createPhotoPublishWorker({
+    store, pool: okPool,
+    resolveRequiredPhotoCodes: async () => ['FRONT'],
+    reportsStore,
+    publishOne: async () => ({ fileId: 7, fileName: 'a.jpg', diskFolderId: 2, diskObjectId: 3 }),
+    limiter: noopLimiter(),
+    logger: { error() {}, log() {} }
+  });
+  await assert.doesNotReject(() => worker.tick());
+  assert.equal(store.published.length, 1);
+});
+
+test('reportsStore не сконфигурирован — backfill просто не происходит, публикация работает как раньше', async () => {
+  const store = makeStore([[{ id: 1, report_id: 55, photo_code: 'FRONT', publish_attempts: 0, slot_verified: false }]]);
+  const worker = createPhotoPublishWorker({
+    store, pool: okPool,
+    resolveRequiredPhotoCodes: async () => ['FRONT'],
+    publishOne: async () => ({ fileId: 7, fileName: 'a.jpg', diskFolderId: 2, diskObjectId: 3 }),
+    limiter: noopLimiter()
+  });
+  await assert.doesNotReject(() => worker.tick());
+  assert.equal(store.published.length, 1);
+});
+
+test('конкурентные фото ОДНОГО report_id внутри одного тика делят один резолв (не дублируют поход в Битрикс)', async () => {
+  const store = makeStore([[
+    { id: 1, report_id: 55, photo_code: 'FRONT', publish_attempts: 0, slot_verified: false },
+    { id: 2, report_id: 55, photo_code: 'BACK', publish_attempts: 0, slot_verified: false }
+  ]]);
+  let resolverCalls = 0;
+  let releaseResolver;
+  const worker = createPhotoPublishWorker({
+    store, pool: okPool,
+    resolveRequiredPhotoCodes: async () => {
+      resolverCalls += 1;
+      return new Promise((resolve) => { releaseResolver = resolve; });
+    },
+    publishOne: async () => ({ fileId: 1, fileName: 'a.jpg', diskFolderId: 1, diskObjectId: 1 }),
+    limiter: noopLimiter()
+  });
+  const tickPromise = worker.tick();
+  await flushMicrotasks();
+  assert.equal(resolverCalls, 1, 'два фото одного report_id обязаны дождаться ОДНОГО резолва, а не сделать по своему');
+  releaseResolver(['FRONT', 'BACK']);
+  await tickPromise;
+  assert.equal(store.published.length, 2);
+  assert.equal(resolverCalls, 1);
+});
+
+test('разные report_id резолвятся независимо (дедупликация не смешивает разные отчёты)', async () => {
+  const store = makeStore([[
+    { id: 1, report_id: 55, photo_code: 'FRONT', publish_attempts: 0, slot_verified: false },
+    { id: 2, report_id: 66, photo_code: 'FRONT', publish_attempts: 0, slot_verified: false }
+  ]]);
+  const seenReportIds = [];
+  const worker = createPhotoPublishWorker({
+    store, pool: okPool,
+    resolveRequiredPhotoCodes: async (task) => { seenReportIds.push(task.report_id); return ['FRONT']; },
+    publishOne: async () => ({ fileId: 1, fileName: 'a.jpg', diskFolderId: 1, diskObjectId: 1 }),
+    limiter: noopLimiter()
+  });
+  await worker.tick();
+  assert.deepEqual(seenReportIds.sort(), [55, 66]);
+  assert.equal(store.published.length, 2);
+});
+
+// ---------------------------------------------------------------------------
+// Секция 8: start()/stop() — периодический опрос.
+//
+// НЕ используют реальные таймеры/сон по времени — только инъецированные
+// setIntervalFn/clearIntervalFn (см. JSDoc в photoPublishWorker.js). Причина:
+// исходный вариант этих тестов спал реальными миллисекундами и один раз
+// реально упал под сторонней нагрузкой на машине — гонка с системным
+// таймером, а не баг воркера. Переписано на управляемый вручную фейковый
+// "таймер", без ожидания реальных миллисекунд и без единого шанса на флаки
+// по нагрузке системы.
+// ---------------------------------------------------------------------------
+
 const makeFakeScheduler = () => {
   let callback = null;
   let handle = null;
@@ -409,12 +755,7 @@ const makeFakeScheduler = () => {
   };
 };
 
-// Один макротаск-барьер гарантированно дренирует ВСЮ очередь микрозадач
-// (включая те, что были добавлены в процессе дренажа) — надёжнее и без
-// хрупкой зависимости от количества await-хопов внутри tick()/claimBatch().
-const flushMicrotasks = () => new Promise((resolve) => setImmediate(resolve));
-
-test('start() регистрирует опрос через setIntervalFn с заданным pollIntervalMs; stop() снимает его через clearIntervalFn', () => {
+test('start() регистрирует опрос через setIntervalFn с заданным pollIntervalMs; stop() снимает его через clearIntervalFn', async () => {
   const scheduler = makeFakeScheduler();
   const worker = createPhotoPublishWorker({
     store: makeStore([]), pool: okPool, pollIntervalMs: 2345,
@@ -425,7 +766,7 @@ test('start() регистрирует опрос через setIntervalFn с з
   });
   worker.start();
   assert.ok(scheduler.isActive, 'start() обязан зарегистрировать колбэк опроса');
-  worker.stop();
+  await worker.stop();
   assert.ok(!scheduler.isActive, 'stop() обязан снять именно тот таймер, который вернул setIntervalFn');
 });
 
@@ -494,8 +835,12 @@ test('start() не запускает пересекающиеся тики, е�
   await flushMicrotasks();
   assert.equal(tickStarts, 2, 'после завершения предыдущего tick следующее срабатывание обязано запустить новый');
 
-  worker.stop();
+  await worker.stop();
 });
+
+// ---------------------------------------------------------------------------
+// Секция 9: валидация конструктора.
+// ---------------------------------------------------------------------------
 
 test('конструктор требует store', () => {
   assert.throws(() => createPhotoPublishWorker({
@@ -515,9 +860,20 @@ test('конструктор требует limiter с acquire()/penalize()', ()
   }));
 });
 
-test('конструктор требует pool с query() — нужен для advisory-лока', () => {
+test('конструктор требует pool с connect() — нужен выделенный клиент для advisory-лока', () => {
   assert.throws(() => createPhotoPublishWorker({
     store: makeStore([]), publishOne: async () => {}, limiter: noopLimiter()
+  }));
+});
+
+// Раунд правок 1 (Critical): регрессионный тест на саму найденную форму
+// бага — pool с одним лишь query() (без connect()) когда-то было ровно тем,
+// что этот файл принимал как валидный pool. Теперь обязан отвергаться на
+// старте, а не молча ловить session-affinity баг в проде.
+test('конструктор отвергает pool без connect() (старая query()-only форма)', () => {
+  assert.throws(() => createPhotoPublishWorker({
+    store: makeStore([]), pool: { query: async () => ({ rows: [{ locked: true }] }) },
+    publishOne: async () => {}, limiter: noopLimiter()
   }));
 });
 
