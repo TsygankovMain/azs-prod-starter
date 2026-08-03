@@ -10,15 +10,51 @@
 // догадка «повторить» стоит одного лишнего запроса; неверная догадка «отказ
 // навсегда» стоит потерянного фото и несданной смены у живого человека.
 // Невидимая потеря вместо видимого отказа — главный анти-гол всей задачи.
-const PERMANENT_BITRIX_ERRORS = new Set([
-  'DISK_QUOTA_EXCEEDED',
-  'ERROR_NOT_FOUND_FOLDER',
-  'ACCESS_DENIED'
-]);
+//
+// Раунд правок 1 (ревью нашло Critical): bitrixRestClient.js прокидывает код
+// ошибки Bitrix ТОЛЬКО в message брошенного Error — см. callInternalOnce/
+// callRawOnce: `Bitrix REST ${method} error: ${responsePayload.error} ...`.
+// Свойство `.bitrixError`, на которое изначально смотрел этот классификатор
+// (ровно так заданы фикстуры в брифе), нигде в src/ не присваивается — для
+// настоящих ошибок Битрикса весь список ниже был математически недостижим, и
+// КАЖДАЯ реальная ошибка (включая DISK_QUOTA_EXCEEDED) уходила retryable по
+// дефолту. Приём чинки — тот же, что уже установлен в проекте: сопоставление
+// по тексту ошибки (см. diskService.js: isFolderMissingError,
+// isDuplicateFileNameError; bitrixRestClient.js: isRefreshableAuthError,
+// isRetryableTransientError) — единственный работающий в проекте способ
+// узнать код Bitrix из брошенной ошибки.
+//
+// buildErrorHaystack КОНКАТЕНИРУЕТ источники, а не берёт первый truthy через
+// `||`: `.bitrixError`/`.error` остаются ДОПОЛНИТЕЛЬНЫМ источником на случай,
+// если когда-нибудь появится код, кладущий такое структурированное поле — и
+// при этом синтетические фикстуры брифа (Object.assign(new Error('x'),
+// {bitrixError: ...})) продолжают работать: `.message` у них непустой ('x'),
+// но `||`-каскад с message первым отбросил бы `.bitrixError` целиком.
+const buildErrorHaystack = (error) => [
+  error?.message,
+  error?.bitrixError,
+  error?.error,
+  typeof error === 'string' ? error : ''
+].filter(Boolean).join(' ');
+
+// Проверяется ПЕРВОЙ и безусловно, до списка окончательных: QUERY_LIMIT_EXCEEDED
+// — это просьба портала подождать, а не отказ. Порядок имеет значение — если
+// бы список окончательных проверялся раньше, сообщение, где оба сигнала
+// встретились одновременно, ушло бы в permanent (см. тест на этот случай).
+const NEVER_PERMANENT_PATTERN = /\bQUERY_LIMIT_EXCEEDED\b/i;
+
+// Список снят с живого портала, а не из документации: в этом проекте догадки
+// по документации уже дважды приводили к неверным допущениям. Пополнять его
+// можно только по наблюдённой в проде ошибке. \b-границы (а не голый substring)
+// — минимальная защита от случайного попадания как части более длинного слова;
+// более строгий (позиционный/JSON-aware) парсинг был бы избыточен и расходится
+// с установленной в проекте конвенцией простого сопоставления по тексту.
+const PERMANENT_BITRIX_ERROR_PATTERN = /\b(DISK_QUOTA_EXCEEDED|ERROR_NOT_FOUND_FOLDER|ACCESS_DENIED)\b/i;
 
 export const classifyPublishError = (error) => {
-  const bitrixError = String(error?.bitrixError || error?.error || '').trim();
-  if (bitrixError && PERMANENT_BITRIX_ERRORS.has(bitrixError)) return 'permanent';
+  const haystack = buildErrorHaystack(error);
+  if (NEVER_PERMANENT_PATTERN.test(haystack)) return 'retryable';
+  if (PERMANENT_BITRIX_ERROR_PATTERN.test(haystack)) return 'permanent';
   return 'retryable';
 };
 
@@ -116,6 +152,61 @@ const wrapDiskApiWithLimiter = (diskApi, limiter) => {
   return wrapped;
 };
 
+// Раунд правок 1 (ревью нашло Critical): settingsStore, собранный в проде
+// (server.js — createCompositeSettingsStore), на read() реально ходит в
+// Bitrix ПЕРВЫМ (app.option.get), а локальная БД — только фоллбек на отказ
+// портала (settings/compositeSettingsStore.js: «Source of truth: Bitrix app
+// storage. Local DB is a warm fallback cache»; settings/bitrixAppSettingsStore.js
+// вызывает bitrixClient.callMethod('app.option.get', ...) — настоящий REST).
+// Без кэша это необнаруживаемый REST-вызов на КАЖДУЮ публикацию, мимо
+// ограничителя целиком — и худшее время для этого расхода: после сбоя, когда
+// очередь большая и несколько воркеров разом её разгребают.
+//
+// Обернуть сам вызов лимитером было бы неверным лечением: расход бюджета
+// портала остался бы, лимитер лишь равномернее размазал бы его во времени.
+// Настройки — административная конфигурация уровня приложения (меняет
+// администратор, не каждое фото), поэтому TTL-кэш не просто удобен, а
+// безопасен по своей природе. Приём — тот же, что requiredPhotosCache.js
+// (первая задача этого плана): Map/значение с TTL, вытесняемое по возрасту.
+//
+// inFlight отдельно от cached: несколько publishOne(), стартовавших почти
+// одновременно на холодный кэш (типично для нескольких воркеров, разом
+// поднявшихся после простоя), обязаны дождаться ОДНОГО read() и разделить его
+// результат, а не каждый сделать свой — иначе кэш не спасает именно в момент
+// всплеска нагрузки, ради которого он и нужен.
+const DEFAULT_SETTINGS_CACHE_TTL_MS = (() => {
+  const parsed = Number(process.env.PHOTO_PUBLISHER_SETTINGS_CACHE_TTL_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5 * 60 * 1000;
+})();
+
+const createSettingsCache = ({ settingsStore, ttlMs, now }) => {
+  let cached;
+  let expiresAt = 0;
+  let inFlight = null;
+
+  return {
+    async read() {
+      if (cached !== undefined && now() < expiresAt) {
+        return cached;
+      }
+      if (inFlight) {
+        return inFlight;
+      }
+      inFlight = (async () => {
+        try {
+          const settings = await settingsStore.read();
+          cached = settings;
+          expiresAt = now() + ttlMs;
+          return settings;
+        } finally {
+          inFlight = null;
+        }
+      })();
+      return inFlight;
+    }
+  };
+};
+
 /**
  * @param {object} deps
  * @param {object} deps.bitrixClient   — должен предоставлять diskApi (см. bitrixRestClient.js)
@@ -125,6 +216,8 @@ const wrapDiskApiWithLimiter = (diskApi, limiter) => {
  * @param {object} [deps.folderIdCache] — createFolderIdCache(...) из folderIdCache.js; передаётся в uploadPhoto как есть
  * @param {object} deps.limiter        — createRateLimiter(...) из shared/rateLimiter.js; ОДИН общий экземпляр на процесс
  * @param {Function} [deps.resolveContext] — (task) => Promise<bitrixContext> | bitrixContext; по умолчанию {}
+ * @param {number} [deps.settingsCacheTtlMs] — TTL кэша settingsStore.read(); см. createSettingsCache выше
+ * @param {Function} [deps.now] — инжектируемые часы для теста TTL кэша настроек; по умолчанию Date.now
  */
 export const createPhotoPublisher = ({
   bitrixClient,
@@ -133,7 +226,9 @@ export const createPhotoPublisher = ({
   brandStore = null,
   folderIdCache = null,
   limiter,
-  resolveContext = () => ({})
+  resolveContext = () => ({}),
+  settingsCacheTtlMs = DEFAULT_SETTINGS_CACHE_TTL_MS,
+  now = () => Date.now()
 } = {}) => {
   if (!bitrixClient || !bitrixClient.diskApi) {
     throw new Error('bitrixClient with diskApi is required');
@@ -151,6 +246,7 @@ export const createPhotoPublisher = ({
   // сама обёртка stateless относительно limiter (тот передан снаружи и разделяется
   // между всеми воркерами уже на уровне лимитера, см. rateLimiter.js).
   const rateLimitedDiskApi = wrapDiskApiWithLimiter(bitrixClient.diskApi, limiter);
+  const settingsCache = createSettingsCache({ settingsStore, ttlMs: settingsCacheTtlMs, now });
 
   const publishOne = async (task = {}) => {
     const reportId = firstDefined(task.reportId, task.report_id);
@@ -189,7 +285,10 @@ export const createPhotoPublisher = ({
     const requiredTitle = firstDefined(task.requiredTitle, task.required_title) || '';
 
     const context = (await resolveContext(task)) || {};
-    const settings = await settingsStore.read();
+    // Раунд правок 1: settingsStore.read() кэшируется с TTL — прод-стор ходит
+    // в Bitrix (см. createSettingsCache выше). Не вызывать settingsStore.read()
+    // напрямую здесь.
+    const settings = await settingsCache.read();
 
     // Учёт папки бренда — та же логика, что была в обработчике: если АЗС
     // принадлежит бренду с настроенной папкой на Диске, она становится корнем

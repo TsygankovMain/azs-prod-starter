@@ -44,6 +44,75 @@ test('ERROR_NOT_FOUND_FOLDER и ACCESS_DENIED — тоже в списке ок�
 });
 
 // ---------------------------------------------------------------------------
+// Раунд правок 1 (ревью, Critical 1): реалистичные фикстуры — НЕСУЩИЕ.
+//
+// bitrixRestClient.js (callInternalOnce/callRawOnce) бросает ошибку Bitrix
+// ровно в форме `Bitrix REST ${method} error: ${code} ${description}` — код
+// живёт ТОЛЬКО в .message. Синтетические фикстуры выше (Object.assign(...,
+// {bitrixError: ...})) при первом проходе ревью оказались проверкой
+// выдуманного мира: свойство `.bitrixError` нигде в src/ не присваивается,
+// поэтому НИ ОДНА настоящая ошибка Битрикса не долетала бы правильно
+// классифицированной (эмпирически: реальный DISK_QUOTA_EXCEEDED уходил
+// retryable). Синтетические тесты выше оставлены — они и сейчас проходят
+// (реализация не отбрасывает `.bitrixError`, а конкатенирует его с `.message`),
+// но несущими теперь являются эти.
+// ---------------------------------------------------------------------------
+
+const bitrixRestError = (method, code, description = '') =>
+  new Error(`Bitrix REST ${method} error: ${code} ${description}`.trim());
+
+test('РЕАЛЬНАЯ форма ошибки (как бросает bitrixRestClient.js): DISK_QUOTA_EXCEEDED — окончательная', () => {
+  const error = bitrixRestError('disk.folder.uploadfile', 'DISK_QUOTA_EXCEEDED', 'Disk quota exceeded');
+  assert.equal(classifyPublishError(error), 'permanent');
+});
+
+test('РЕАЛЬНАЯ форма ошибки: ACCESS_DENIED — окончательная', () => {
+  const error = bitrixRestError('disk.folder.getchildren', 'ACCESS_DENIED', 'Access denied');
+  assert.equal(classifyPublishError(error), 'permanent');
+});
+
+test('РЕАЛЬНАЯ форма ошибки: ERROR_NOT_FOUND_FOLDER — окончательная', () => {
+  const error = bitrixRestError('disk.folder.addsubfolder', 'ERROR_NOT_FOUND_FOLDER', 'Could not find entity with id `123`');
+  assert.equal(classifyPublishError(error), 'permanent');
+});
+
+test('РЕАЛЬНАЯ форма ошибки: QUERY_LIMIT_EXCEEDED — временная', () => {
+  const error = bitrixRestError('crm.item.get', 'QUERY_LIMIT_EXCEEDED', 'Too many requests');
+  assert.equal(classifyPublishError(error), 'retryable');
+});
+
+test('РЕАЛЬНАЯ форма HTTP-отказа без структурированного кода Bitrix — временная по дефолту', () => {
+  // Ветка HTTP-failure в bitrixRestClient.js (`Bitrix REST ${method} failed
+  // with HTTP ${status}...`) — отдельная от JSON error-ветки, у неё нет кода
+  // Bitrix вообще, только статус.
+  const error = new Error('Bitrix REST disk.folder.uploadfile failed with HTTP 503: Service Unavailable');
+  assert.equal(classifyPublishError(error), 'retryable');
+});
+
+test('QUERY_LIMIT_EXCEEDED отбивается первым и безусловно, даже если то же сообщение содержит окончательный код', () => {
+  // Сконструированный крайний случай (не наблюдался в проде) — фиксирует
+  // КОНТРАКТ порядка проверки, а не воспроизводит реальный текст ошибки. Если
+  // бы список окончательных проверялся раньше «никогда не окончательных»,
+  // ошибка с обоими сигналами в одном сообщении ушла бы в permanent — и увела
+  // бы фото в markFailed вместо оправданного повтора после того, как портал
+  // отпустит throttling.
+  const error = new Error('QUERY_LIMIT_EXCEEDED ACCESS_DENIED');
+  assert.equal(classifyPublishError(error), 'retryable');
+});
+
+test('человекочитаемая фраза "access denied" (не код Bitrix) не триггерит permanent — ложное совпадение по смыслу слова, не по точному токену', () => {
+  // Ответ на пункт ревью "риск случайного совпадения слова из списка
+  // окончательных в тексте временной ошибки": сопоставление идёт по точному
+  // токену Bitrix (ACCESS_DENIED, заглавные буквы и подчёркивание), а не по
+  // мягкому текстовому смыслу — "access denied" с пробелом (человекочитаемая
+  // фраза, например из тела ответа стороннего прокси/WAF при 5xx) не матчит
+  // \bACCESS_DENIED\b ни при каком регистре, потому что буквальные символы
+  // разные (пробел вместо подчёркивания). Остаточный риск обсуждён в отчёте.
+  const error = new Error('upstream proxy returned: access denied, please retry the request later');
+  assert.equal(classifyPublishError(error), 'retryable');
+});
+
+// ---------------------------------------------------------------------------
 // publishOne — общие фейки
 // ---------------------------------------------------------------------------
 
@@ -201,4 +270,174 @@ test('publishOne использует папку бренда как корен�
 
   assert.equal(diskApi.calls[0].method, 'findChildFolder');
   assert.equal(diskApi.calls[0].parentId, 777, 'корень должен быть папкой бренда, а не settings.disk.rootFolderId');
+});
+
+// ---------------------------------------------------------------------------
+// Раунд правок 1 (ревью, Critical 2): settingsStore.read() кэшируется с TTL.
+//
+// Прод-стор (createCompositeSettingsStore) реально ходит в Bitrix
+// (app.option.get) ПЕРВЫМ на каждый read() — локальная БД лишь фоллбек на
+// отказ портала. Без кэша это необнаруживаемый REST-вызов на каждую
+// публикацию, мимо ограничителя целиком.
+// ---------------------------------------------------------------------------
+
+test('publishOne кэширует settingsStore.read() — второй вызов подряд не бьёт по Bitrix повторно', async () => {
+  const diskApi = makeFakeDiskApi();
+  const limiter = makeFakeLimiter();
+  let settingsReadCalls = 0;
+  const settingsStore = {
+    async read() {
+      settingsReadCalls += 1;
+      return { disk: { rootFolderId: 100, folderNameTemplate: '{yyyy-mm}/{dd}/{azs}_{azs_name}' } };
+    }
+  };
+
+  const publisher = createPhotoPublisher({
+    bitrixClient: { diskApi },
+    settingsStore,
+    reportsStore: baseReportsStore,
+    brandStore: null,
+    folderIdCache: null,
+    limiter
+  });
+
+  await publisher.publishOne(baseTask());
+  await publisher.publishOne(baseTask());
+
+  assert.equal(settingsReadCalls, 1, 'второй publishOne() обязан переиспользовать закэшированные настройки, а не снова идти в Bitrix');
+});
+
+test('publishOne перечитывает настройки после истечения TTL кэша, но НЕ раньше', async () => {
+  // Раунд правок 1, самопроверка мутацией (Шаг 5): первая версия этого теста
+  // проверяла только "после TTL — 2 вызова", а это условие с тем же успехом
+  // проходит и при ПОЛНОСТЬЮ ОТСУТСТВУЮЩЕМ кэше (каждый publishOne() читает
+  // настройки заново независимо от часов — тоже 2 вызова на 2 публикации).
+  // Мутация "убрать кэш совсем" на такой тест не покраснела. Проверяем ОБА
+  // конца: вызов ВНУТРИ TTL не должен перечитывать, вызов ПОСЛЕ TTL — обязан.
+  const diskApi = makeFakeDiskApi();
+  const limiter = makeFakeLimiter();
+  let settingsReadCalls = 0;
+  const settingsStore = {
+    async read() {
+      settingsReadCalls += 1;
+      return { disk: { rootFolderId: 100, folderNameTemplate: '{yyyy-mm}/{dd}/{azs}_{azs_name}' } };
+    }
+  };
+  let clock = 0;
+
+  const publisher = createPhotoPublisher({
+    bitrixClient: { diskApi },
+    settingsStore,
+    reportsStore: baseReportsStore,
+    brandStore: null,
+    folderIdCache: null,
+    limiter,
+    settingsCacheTtlMs: 1000,
+    now: () => clock
+  });
+
+  await publisher.publishOne(baseTask());
+  assert.equal(settingsReadCalls, 1, 'первая публикация обязана прочитать настройки');
+
+  clock += 500; // всё ещё ВНУТРИ TTL (1000мс)
+  await publisher.publishOne(baseTask());
+  assert.equal(settingsReadCalls, 1, 'публикация внутри TTL не должна перечитывать настройки — иначе кэша нет вовсе');
+
+  clock += 600; // суммарно 1100мс — ЗА пределами TTL
+  await publisher.publishOne(baseTask());
+  assert.equal(settingsReadCalls, 2, 'после истечения TTL публикация обязана перечитать настройки заново');
+});
+
+test('publishOne не удваивает settingsStore.read() при двух publishOne(), стартовавших почти одновременно на холодный кэш', async () => {
+  // Раунд правок 1, самопроверка мутацией (Шаг 5): первая версия этого теста
+  // хранила единственный `resolveRead`, перезаписываемый на каждый вызов
+  // settingsStore.read(). При сломанной дедупликации второй вызов read()
+  // перезаписывал резолвер первого, тест звал resolveRead() один раз — и
+  // ПЕРВЫЙ publishOne() зависал НАВСЕГДА (потерянный резолвер), вместо того
+  // чтобы упасть чистым assert. Хуже того: и правильная, и сломанная версия
+  // кода в обоих случаях "проходили" тем, что второй уже не вис — просто одна
+  // версия делает это через повисший процесс, а не через понятный failure.
+  // Теперь резолверы копятся в массиве (ни один не теряется), а число вызовов
+  // read() проверяется ДО того, как что-либо резолвится — при сломанной
+  // дедупликации это чистый assert.equal(2, 1), а не дедлок теста.
+  const diskApi = makeFakeDiskApi();
+  const limiter = makeFakeLimiter();
+  let settingsReadCalls = 0;
+  const pendingResolvers = [];
+  const settingsStore = {
+    async read() {
+      settingsReadCalls += 1;
+      // Задержка имитирует реальный REST round-trip — второй publishOne()
+      // должен гарантированно застать первый ещё "в полёте" внутри read().
+      await new Promise((resolve) => { pendingResolvers.push(resolve); });
+      return { disk: { rootFolderId: 100, folderNameTemplate: '{yyyy-mm}/{dd}/{azs}_{azs_name}' } };
+    }
+  };
+
+  const publisher = createPhotoPublisher({
+    bitrixClient: { diskApi },
+    settingsStore,
+    reportsStore: baseReportsStore,
+    brandStore: null,
+    folderIdCache: null,
+    limiter
+  });
+
+  const first = publisher.publishOne(baseTask());
+  // Дать первому вызову дойти строго до settingsStore.read() и повиснуть там
+  // (все шаги до него — микрозадачи, setImmediate ждёт их полного дренажа).
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = publisher.publishOne(baseTask());
+  // Ещё один дренаж микрозадач: если дедупликация сломана, second() тоже
+  // успеет дойти до своего собственного settingsStore.read() и повиснуть там
+  // ДО того, как мы проверим счётчик ниже.
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(settingsReadCalls, 1, 'два publishOne(), почти одновременно заставших холодный кэш, обязаны дождаться ОДНОГО settingsStore.read()');
+
+  for (const resolve of pendingResolvers) resolve();
+  await Promise.all([first, second]);
+});
+
+// ---------------------------------------------------------------------------
+// Раунд правок 1 (Important): путь snake_case не был покрыт ни одним тестом —
+// все тесты publishOne выше кормили camelCase. Форма — ровно та, что отдаёт
+// claimBatch() из уже существующего src/reports/photoQueueStore.js.
+// ---------------------------------------------------------------------------
+
+test('publishOne принимает snake_case-строку ровно в форме, которую отдаёт claimBatch() из photoQueueStore.js', async () => {
+  const diskApi = makeFakeDiskApi();
+  const limiter = makeFakeLimiter();
+
+  const publisher = createPhotoPublisher({
+    bitrixClient: { diskApi },
+    settingsStore: baseSettingsStore,
+    reportsStore: baseReportsStore,
+    brandStore: null,
+    folderIdCache: null,
+    limiter
+  });
+
+  // Форма — из photoQueueStore.js claimBatch(): rp.id, rp.report_id,
+  // rp.photo_code, rp.publish_attempts, rp.exif_at, rp.slot_verified,
+  // b.content, b.mime_type, b.original_name.
+  const queueRow = {
+    id: 42,
+    report_id: 1,
+    photo_code: 'photo1',
+    publish_attempts: 0,
+    exif_at: new Date('2026-05-28T09:00:00.000Z'),
+    slot_verified: 1,
+    content: Buffer.from('fake-bytes-from-queue'),
+    mime_type: 'image/jpeg',
+    original_name: 'from-queue.jpg'
+  };
+
+  const result = await publisher.publishOne(queueRow);
+
+  assert.ok(diskApi.calls.length > 1, 'тест бессмыслен, если Битрикс вызывался 0-1 раз');
+  assert.equal(limiter.acquired, diskApi.calls.length, 'snake_case-путь обязан так же попадать под лимитер, как camelCase');
+  assert.equal(result.fileId, 9001);
+  assert.equal(result.diskObjectId, 5001);
+  assert.match(result.fileName, /\.jpg$/);
 });
