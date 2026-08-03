@@ -374,72 +374,127 @@ test('падение store.markPublished для одной задачи не м�
   assert.equal(store.published[0].id, 2);
 });
 
-test('start() запускает периодический опрос, stop() его останавливает', async () => {
-  let calls = 0;
-  const store = {
-    async claimBatch() { calls += 1; return []; },
-    async markPublished() {}, async reschedule() {}, async markFailed() {}
+// start()/stop() ниже НЕ используют реальные таймеры/сон по времени — только
+// инъецированные setIntervalFn/clearIntervalFn (см. JSDoc в
+// photoPublishWorker.js). Причина: тест на "хотя бы пару опросов за 95мс при
+// интервале 20мс" один раз реально упал в CI-подобном прогоне под сторонней
+// нагрузкой (в рабочей директории параллельно шли другие задачи) — гонка с
+// системным таймером, а не баг воркера. Дальше по флоу задания сказано прямо:
+// "если твой тест может зависнуть [или зафлакать], перепиши его" — переписано
+// на управляемый вручную фейковый "таймер", без ожидания реальных миллисекунд
+// и, соответственно, без единого шанса на флаки по нагрузке системы.
+const makeFakeScheduler = () => {
+  let callback = null;
+  let handle = null;
+  let handleSeq = 0;
+  return {
+    setIntervalFn: (fn) => {
+      callback = fn;
+      handleSeq += 1;
+      handle = { id: handleSeq };
+      return handle;
+    },
+    clearIntervalFn: (h) => {
+      if (h === handle) {
+        callback = null;
+        handle = null;
+      }
+    },
+    // "Срабатывание" таймера — синхронный вызов зарегистрированного колбэка,
+    // как это в реальности делает event loop у setInterval (сам колбэк внутри
+    // асинхронный и не awaits'ится вызывающим — это и есть источник риска
+    // пересечения тиков, который проверяет третий тест ниже).
+    fire() { if (callback) callback(); },
+    get isActive() { return callback !== null; }
   };
+};
+
+// Один макротаск-барьер гарантированно дренирует ВСЮ очередь микрозадач
+// (включая те, что были добавлены в процессе дренажа) — надёжнее и без
+// хрупкой зависимости от количества await-хопов внутри tick()/claimBatch().
+const flushMicrotasks = () => new Promise((resolve) => setImmediate(resolve));
+
+test('start() регистрирует опрос через setIntervalFn с заданным pollIntervalMs; stop() снимает его через clearIntervalFn', () => {
+  const scheduler = makeFakeScheduler();
   const worker = createPhotoPublishWorker({
-    store, pool: okPool, pollIntervalMs: 20,
+    store: makeStore([]), pool: okPool, pollIntervalMs: 2345,
     publishOne: async () => ({ fileId: 1 }),
-    limiter: noopLimiter()
+    limiter: noopLimiter(),
+    setIntervalFn: (fn, ms) => { assert.equal(ms, 2345); return scheduler.setIntervalFn(fn); },
+    clearIntervalFn: scheduler.clearIntervalFn
   });
   worker.start();
-  await new Promise((resolve) => setTimeout(resolve, 95));
+  assert.ok(scheduler.isActive, 'start() обязан зарегистрировать колбэк опроса');
   worker.stop();
-  const countAfterStop = calls;
-  assert.ok(countAfterStop >= 2, `ожидали хотя бы пару опросов за 95мс при интервале 20мс, получили ${countAfterStop}`);
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.equal(calls, countAfterStop, 'после stop() опрос не должен продолжаться');
+  assert.ok(!scheduler.isActive, 'stop() обязан снять именно тот таймер, который вернул setIntervalFn');
 });
 
-test('start() идемпотентен — повторный вызов не плодит второй параллельный таймер', async () => {
-  let calls = 0;
-  const store = {
-    async claimBatch() { calls += 1; return []; },
-    async markPublished() {}, async reschedule() {}, async markFailed() {}
-  };
+test('start() идемпотентен — повторные вызовы не регистрируют второй таймер', () => {
+  let registrations = 0;
   const worker = createPhotoPublishWorker({
-    store, pool: okPool, pollIntervalMs: 20,
+    store: makeStore([]), pool: okPool,
     publishOne: async () => ({ fileId: 1 }),
-    limiter: noopLimiter()
+    limiter: noopLimiter(),
+    setIntervalFn: (fn) => { registrations += 1; return { fn }; },
+    clearIntervalFn: () => {}
   });
   worker.start();
   worker.start();
   worker.start();
-  await new Promise((resolve) => setTimeout(resolve, 95));
-  worker.stop();
-  // При одном таймере — около 4-5 опросов за 95мс/20мс; при трёх независимых
-  // таймерах (баг) было бы кратно больше.
-  assert.ok(calls <= 7, `повторный start() породил лишние таймеры: ${calls} опросов`);
+  assert.equal(registrations, 1, 'повторный start() не должен плодить второй таймер');
 });
 
 test('start() не запускает пересекающиеся тики, если предыдущий ещё выполняется', async () => {
+  const scheduler = makeFakeScheduler();
   let inFlight = 0;
   let maxInFlight = 0;
   let tickStarts = 0;
+  let releaseFirstClaim;
   const store = {
     async claimBatch() {
       tickStarts += 1;
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Первый claim зависает, пока тест сам не отпустит его — имитирует
+      // tick(), который не укладывается в pollIntervalMs (например, ждёт на
+      // лимитере). Второе и третье "срабатывание" таймера обязаны застать
+      // предыдущий tick ещё не завершённым.
+      if (tickStarts === 1) {
+        await new Promise((resolve) => { releaseFirstClaim = resolve; });
+      }
       inFlight -= 1;
       return [];
     },
     async markPublished() {}, async reschedule() {}, async markFailed() {}
   };
   const worker = createPhotoPublishWorker({
-    store, pool: okPool, pollIntervalMs: 10,
+    store, pool: okPool,
     publishOne: async () => ({ fileId: 1 }),
-    limiter: noopLimiter()
+    limiter: noopLimiter(),
+    setIntervalFn: scheduler.setIntervalFn,
+    clearIntervalFn: scheduler.clearIntervalFn
   });
   worker.start();
-  await new Promise((resolve) => setTimeout(resolve, 130));
+
+  scheduler.fire(); // первое срабатывание -> tick() запускается и зависает внутри claimBatch
+  await flushMicrotasks();
+  assert.equal(tickStarts, 1);
+  assert.equal(maxInFlight, 1);
+
+  scheduler.fire(); // второе срабатывание, пока первый tick ещё не завершился
+  scheduler.fire(); // и третье, для верности
+  await flushMicrotasks();
+  assert.equal(tickStarts, 1, 'гвард ticking обязан проигнорировать срабатывания, пока предыдущий tick не завершился');
+  assert.equal(maxInFlight, 1, 'тики не должны пересекаться');
+
+  releaseFirstClaim([]);
+  await flushMicrotasks();
+
+  scheduler.fire(); // теперь предыдущий tick завершён -> новое срабатывание обязано запустить второй tick
+  await flushMicrotasks();
+  assert.equal(tickStarts, 2, 'после завершения предыдущего tick следующее срабатывание обязано запустить новый');
+
   worker.stop();
-  assert.equal(maxInFlight, 1, 'тики не должны пересекаться, даже если один выполняется дольше pollIntervalMs');
-  assert.ok(tickStarts >= 2, `ожидали хотя бы пару последовательных тиков, получили ${tickStarts}`);
 });
 
 test('конструктор требует store', () => {

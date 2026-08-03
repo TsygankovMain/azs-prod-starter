@@ -159,6 +159,8 @@ const buildNotRequiredError = (task) =>
  * @param {Function} [deps.syncCrmIfComplete] — (reportId, task) => Promise<any>; зовётся после КАЖДОГО успешного markPublished, best-effort (ошибка не отменяет уже состоявшуюся публикацию). task — второй, необязательный для реализации аргумент, на случай если вызывающему нужен более широкий контекст, чем голый id
  * @param {Function} [deps.now] — инжектируемые часы (мс), как в crmSyncWorker.js; по умолчанию Date.now
  * @param {object} [deps.logger] — по умолчанию console; используется только .error()
+ * @param {Function} [deps.setIntervalFn] — инъекция таймера для start(), как now/sleep в shared/rateLimiter.js; по умолчанию глобальный setInterval. Тестам это даёт детерминированный, управляемый вручную "таймер" вместо гонки с реальными миллисекундами (см. tests/photoPublishWorker.test.js — тесты на start/stop не спят по-настоящему)
+ * @param {Function} [deps.clearIntervalFn] — парная инъекция для stop(); по умолчанию глобальный clearInterval
  */
 export const createPhotoPublishWorker = ({
   store,
@@ -172,7 +174,9 @@ export const createPhotoPublishWorker = ({
   resolveRequiredPhotoCodes = null,
   syncCrmIfComplete = null,
   now = () => Date.now(),
-  logger = console
+  logger = console,
+  setIntervalFn = setInterval,
+  clearIntervalFn = clearInterval
 } = {}) => {
   if (!store) throw new Error('store is required');
   if (typeof publishOne !== 'function') throw new Error('publishOne must be a function');
@@ -328,7 +332,7 @@ export const createPhotoPublishWorker = ({
 
   const start = () => {
     if (timer) return;
-    timer = setInterval(() => {
+    timer = setIntervalFn(() => {
       // Гвард против пересекающихся тиков: если предыдущий tick() всё ещё
       // выполняется (например, ждёт на лимитере), setInterval не должен
       // запускать поверх него ещё один — та самая "бездумная выкачка без
@@ -341,12 +345,12 @@ export const createPhotoPublishWorker = ({
         .catch((error) => logger.error('photo_publish_tick_error', { message: toErrorMessage(error) }))
         .finally(() => { ticking = false; });
     }, pollIntervalMs);
-    if (typeof timer.unref === 'function') timer.unref();
+    if (timer && typeof timer.unref === 'function') timer.unref();
   };
 
   const stop = () => {
     if (timer) {
-      clearInterval(timer);
+      clearIntervalFn(timer);
       timer = null;
     }
   };
