@@ -87,8 +87,8 @@ test('пустой portalKey не кэшируется — ни на запис�
 
 test('набор фото АЗС не течёт между порталами', () => {
   const cache = createRequiredPhotosCache();
-  cache.setAzsSet('m1 a.bitrix24.ru', 12, { photoTypeIds: [1], azsTitle: 'Наша' });
-  assert.equal(cache.getAzsSet('m2 b.bitrix24.ru', 12), null);
+  cache.setAzsSet('m1 a.bitrix24.ru', 12, { photoTypeIds: [1], azsTitle: 'Наша' });
+  assert.equal(cache.getAzsSet('m2 b.bitrix24.ru', 12), null);
 });
 
 test('запись набора протухает по azsTtlMs', () => {
@@ -491,6 +491,16 @@ test('есть индекс под выборку очереди', async () => {
   const all = pool.statements.join(' | ');
   assert.match(all, /CREATE INDEX IF NOT EXISTS ix_report_photo_publish_due/);
 });
+
+test('состояние отчёта — своя таблица, а не колонки в несуществующей report', async () => {
+  const pool = makeFakePool();
+  const store = createReportsStore({ pool, dbType: 'postgres' });
+  await store.ensurePhotoSchema();
+  const all = pool.statements.join(' | ');
+  assert.match(all, /CREATE TABLE IF NOT EXISTS report_local_state/);
+  assert.doesNotMatch(all, /ALTER TABLE report ADD/,
+    'локальной таблицы отчётов нет — отчёты живут элементами CRM в Битриксе');
+});
 ```
 
 - [ ] **Шаг 2: Запустить, убедиться в падении**
@@ -549,19 +559,31 @@ cd backends/node/api && node --test tests/photoPublishSchema.test.js
         created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
-    await pool.query(`
-      ALTER TABLE report ADD COLUMN IF NOT EXISTS operator_completed_at TIMESTAMPTZ NULL
-    `);
-    // Локальная копия списка требуемых фото — JSON-массив кодов.
+    // Локальное состояние отчёта.
     //
-    // Затем, что приём фото не имеет права зависеть от Битрикса ВООБЩЕ. Кэш в
-    // памяти этого не даёт: после рестарта процесса он пуст, и первый же
-    // снимок пошёл бы в портал за списком — то есть приём снова падал бы
-    // ровно тогда, когда портал лежит. Колонка заполняется при открытии
-    // карточки отчёта (список к тому моменту уже получен и оплачен) и дальше
-    // читается из нашей БД.
+    // ОТДЕЛЬНОЙ ТАБЛИЦЕЙ, а не колонками в таблице отчётов, потому что
+    // локальной таблицы отчётов НЕ СУЩЕСТВУЕТ: сами отчёты живут элементами
+    // смарт-процесса в Битриксе, а у нас локальны только report_photo,
+    // dispatch_plan, auth_context, app_settings и report_reason. Ключ —
+    // report_id, то есть id элемента CRM.
+    //
+    // Не в dispatch_plan, хотя там есть report_item_id: отчёт можно создать
+    // вручную через POST /manual, и тогда строки плана у него нет вовсе.
+    //
+    // required_photo_codes — JSON-массив кодов. Нужен затем, что приём фото
+    // не имеет права зависеть от Битрикса ВООБЩЕ. Кэш в памяти этого не даёт:
+    // после рестарта процесса он пуст, и первый же снимок пошёл бы в портал
+    // за списком — то есть приём падал бы ровно тогда, когда портал лежит.
+    // Заполняется при открытии карточки отчёта, когда список уже получен и
+    // оплачен, и дальше читается из нашей БД.
     await pool.query(`
-      ALTER TABLE report ADD COLUMN IF NOT EXISTS required_photo_codes TEXT NULL
+      CREATE TABLE IF NOT EXISTS report_local_state (
+        report_id             BIGINT PRIMARY KEY,
+        operator_completed_at TIMESTAMPTZ NULL,
+        required_photo_codes  TEXT NULL,
+        created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
     `);
     // Слот не проверен против Битрикса: список не был известен в момент
     // приёма. Фото всё равно принято — проверка отложена до публикации.
