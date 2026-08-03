@@ -387,6 +387,60 @@ test('повторный проход проверки при уже полно�
   assert.equal(crmSyncJobStore.jobs.length, 1, 'повторный проход при полном комплекте не должен поставить вторую задачу');
 });
 
+// ---------------------------------------------------------------------------
+// Important 2 (раунд правок 1, ревью Task 8): цепочка через /resync.
+// Ручной /resync ставит задачу в CRM БЕЗУСЛОВНО (см. reportsRoutes.js,
+// /:id/resync), в том числе ДО завершения публикации — тогда diskFolderId в
+// её payload пуст. Старая идемпотентность («есть хоть какая-то задача —
+// значит уже синкнуто») считала бы отчёт навсегда обработанным, даже если
+// та единственная задача никогда не записала ссылку на папку Диска.
+// ---------------------------------------------------------------------------
+
+test('Important 2: существующая задача с ПУСТЫМ diskFolderId (например, ручной /resync до публикации) не блокирует постановку новой, уже с настоящей папкой', async () => {
+  const reportId = 940209;
+  const requiredCodes = ['1'];
+  const reportsStore = {
+    async getRequiredPhotoCodes() { return requiredCodes; },
+    async listPhotos() { return [{ reportId, photoCode: '1', diskFolderId: 999 }]; }
+  };
+  const photoQueueStore = { async listPhotoStates() { return [{ photoCode: '1', publishState: 'published' }]; } };
+  const crmSyncJobStore = makeCrmSyncJobStoreFake();
+  // Симулируем ручной /resync ДО публикации: задача уже стоит, но с пустой папкой.
+  await crmSyncJobStore.enqueue({
+    reportId,
+    payload: { diskFolderId: null, contextKey: '', domain: '', memberId: '' }
+  });
+  assert.equal(crmSyncJobStore.jobs.length, 1, 'подготовка: одна "пустая" задача уже стоит');
+
+  const result = await syncReportToCrmIfComplete({ reportId, reportsStore, photoQueueStore, crmSyncJobStore });
+
+  assert.equal(result.synced, true, 'задача с пустой папкой не должна считаться "уже синкнуто"');
+  assert.equal(crmSyncJobStore.jobs.length, 2, 'обязана появиться новая задача — уже с настоящей папкой');
+  const newJobPayload = JSON.parse(crmSyncJobStore.jobs[1].payload);
+  assert.equal(newJobPayload.diskFolderId, 999, 'новая задача обязана нести настоящий diskFolderId');
+});
+
+test('Important 2: существующая задача с НЕПУСТЫМ diskFolderId по-прежнему блокирует повторную постановку', async () => {
+  const reportId = 940210;
+  const requiredCodes = ['1'];
+  const reportsStore = {
+    async getRequiredPhotoCodes() { return requiredCodes; },
+    async listPhotos() { return [{ reportId, photoCode: '1', diskFolderId: 555 }]; }
+  };
+  const photoQueueStore = { async listPhotoStates() { return [{ photoCode: '1', publishState: 'published' }]; } };
+  const crmSyncJobStore = makeCrmSyncJobStoreFake();
+  await crmSyncJobStore.enqueue({
+    reportId,
+    payload: { diskFolderId: 555, contextKey: '', domain: '', memberId: '' }
+  });
+
+  const result = await syncReportToCrmIfComplete({ reportId, reportsStore, photoQueueStore, crmSyncJobStore });
+
+  assert.equal(result.synced, false);
+  assert.equal(result.reason, 'already_queued');
+  assert.equal(crmSyncJobStore.jobs.length, 1, 'задача с настоящей папкой обязана по-прежнему считаться "уже синкнуто"');
+});
+
 test('syncReportToCrmIfComplete: список обязательных кодов неизвестен локально -> не синкать молча', async () => {
   const reportId = 940203;
   const reportsStore = {

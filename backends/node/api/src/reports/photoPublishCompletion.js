@@ -80,8 +80,27 @@ export const syncReportToCrmIfComplete = async ({
     };
   }
 
+  // Important 2 (раунд правок 1, ревью): «есть хоть какая-то задача — значит
+  // уже синкнуто» недостаточно. /:id/resync (reportsRoutes.js) ставит задачу
+  // БЕЗУСЛОВНО, в том числе ДО завершения публикации — с пустым
+  // diskFolderId в payload. Если считать такую задачу блокирующей, карточка
+  // в CRM навсегда останется без ссылки на папку Диска: та единственная
+  // задача никогда её не запишет (см. buildCrmSyncRunner — если и по
+  // выполнении фото ещё не были готовы), а эта проверка больше никогда не
+  // попытается снова. Блокирующей считаем только задачу, которая реально
+  // несёт непустой diskFolderId — она либо уже записала ссылку, либо вот-вот
+  // запишет свежую (buildCrmSyncRunner теперь тоже пересчитывает его из
+  // свежих photos на момент выполнения, а не берёт замороженный payload).
   const existingJobs = await crmSyncJobStore.listByReport(reportId);
-  if (existingJobs.length > 0) {
+  const hasJobWithFolder = existingJobs.some((job) => {
+    try {
+      const payload = typeof job.payload === 'string' ? JSON.parse(job.payload || '{}') : (job.payload || {});
+      return Boolean(payload?.diskFolderId);
+    } catch {
+      return false;
+    }
+  });
+  if (hasJobWithFolder) {
     return { synced: false, reason: 'already_queued' };
   }
 

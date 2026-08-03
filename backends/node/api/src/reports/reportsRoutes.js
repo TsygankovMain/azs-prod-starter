@@ -829,13 +829,27 @@ export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, 
     }
   }
 
+  // Important 2 (раунд правок 1, ревью Task 8): diskFolderId пересчитывается
+  // из СВЕЖИХ photos (только что прочитаны строкой выше), а не берётся
+  // замороженным на момент ПОСТАНОВКИ задачи (payload.diskFolderId). Раньше
+  // payload.diskFolderId стоял первым в цепочке ?? — то есть побеждал ДАЖЕ
+  // когда photos уже содержали настоящее значение. Ручной /resync,
+  // вызванный ДО завершения публикации, ставит задачу с diskFolderId=null;
+  // если фото опубликуются до того, как задача реально выполнится, старый
+  // код всё равно писал бы в CRM пустую папку — свежее значение из photos
+  // это ловит, замороженное из payload — нет.
+  const freshDiskFolderId = photos
+    .map((photo) => Number(photo.diskFolderId))
+    .find((id) => Number.isFinite(id) && id > 0) ?? null;
+  const diskFolderId = freshDiskFolderId ?? payload.diskFolderId ?? report.diskFolderId ?? null;
+
   await syncReportCrmStrict({
     bitrixClient,
     settings,
     report,
     status: payload.status || report.status,
     photos,
-    diskFolderId: payload.diskFolderId ?? report.diskFolderId ?? null,
+    diskFolderId,
     folderFieldCode,
     context
   });

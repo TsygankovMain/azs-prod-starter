@@ -5,6 +5,52 @@ import { buildCrmSyncRunner } from '../src/reports/reportsRoutes.js';
 const baseSettings = { report: { entityTypeId: 199, fields: { folderId: 'UF_FOLDER' } } };
 
 // ---------------------------------------------------------------------------
+// Important 2 (раунд правок 1, ревью Task 8): payload.diskFolderId
+// замораживается на момент ПОСТАНОВКИ задачи (например, ручной /resync,
+// вызванный до завершения публикации, — там diskFolderId ещё пуст). Раньше
+// раннер брал payload.diskFolderId ?? report.diskFolderId ?? null и никогда
+// не пересчитывал его из уже прочитанных в этой же функции свежих `photos` —
+// хотя все данные для этого уже под рукой. Итог: карточка в CRM могла
+// навсегда остаться без ссылки на папку Диска, даже когда фото давно
+// опубликовались, потому что раннер писал устаревшее значение из payload.
+// ---------------------------------------------------------------------------
+
+test('Important 2: runner пересчитывает diskFolderId из СВЕЖИХ photos, а не берёт устаревший payload.diskFolderId', async () => {
+  const calls = { updates: [] };
+  const reportsStore = {
+    async getById(id) { return { id, reportItemId: 77, status: 'done', diskFolderId: null }; },
+    // Фото опубликовалось ПОСЛЕ постановки задачи (например, ручной /resync
+    // был вызван раньше, пока фото ещё не было опубликовано) — свежий
+    // diskFolderId появился только сейчас, к моменту ВЫПОЛНЕНИЯ задачи.
+    async listPhotos() { return [{ photoCode: 'a', diskFolderId: 4242 }]; }
+  };
+  const settingsStore = { async read() { return baseSettings; } };
+  const singleAdmin = { key: 'mX:solo.bitrix24.ru:1', context: { authId: 'solo-admin-tok', domain: 'solo.bitrix24.ru', memberId: 'mX', isAdmin: true } };
+  const authContextStore = {
+    async getLastAdminContext() { return singleAdmin; },
+    async getLastAdminContextForPortal({ domain, memberId }) {
+      return (domain === 'solo.bitrix24.ru' && memberId === 'mX') ? singleAdmin : null;
+    },
+    async getContextByKey() { return null; }
+  };
+  const bitrixClient = {
+    async updateReportItem(args) { calls.updates.push(args); return { id: 77 }; },
+    // Подтверждает, что записано СВЕЖЕЕ значение (4242), а не устаревшее из payload.
+    async getCrmItem() { return { UF_FOLDER: '4242' }; }
+  };
+
+  const runSync = buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore });
+  // payload.diskFolderId — устаревший null (задача была поставлена ДО публикации).
+  await runSync({
+    report_id: 10,
+    payload: JSON.stringify({ status: 'done', diskFolderId: null, contextKey: 'mX:solo.bitrix24.ru:1', domain: 'solo.bitrix24.ru', memberId: 'mX' })
+  });
+
+  assert.equal(calls.updates.length, 1);
+  assert.equal(calls.updates[0].fields.UF_FOLDER, '4242', 'обязан записать СВЕЖИЙ diskFolderId из photos, а не устаревший null из payload');
+});
+
+// ---------------------------------------------------------------------------
 // BUG-P6: Portal isolation — admin context must come from the JOB's portal
 // ---------------------------------------------------------------------------
 
