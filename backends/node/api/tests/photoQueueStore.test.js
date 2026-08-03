@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPhotoQueueStore } from '../src/reports/photoQueueStore.js';
+import { createPhotoQueueStore, CLAIM_LEASE_MS, MIN_RECLAIM_STALE_MS } from '../src/reports/photoQueueStore.js';
 
 // ---------------------------------------------------------------------------
 // PostgreSQL: минимальный фейк pg.Pool — запоминает SQL и параметры, отдаёт
@@ -155,11 +155,58 @@ test('markFailed переводит фото в failed и запоминает �
 test('reclaimStale возвращает число вернувшихся в оборот строк', async () => {
   const pool = makeFakePool([{ rowCount: 2 }]);
   const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
-  const n = await store.reclaimStale({ staleMs: 10 * 60 * 1000 });
+  // Заведомо безопасный порог — выше MIN_RECLAIM_STALE_MS, не только на грани.
+  const n = await store.reclaimStale({ staleMs: MIN_RECLAIM_STALE_MS + 60_000 });
   assert.equal(n, 2);
   const sql = pool.calls[0].sql;
   assert.match(sql, /publish_state = 'accepted'/);
   assert.match(sql, /updated_at <= /);
+});
+
+// ---------------------------------------------------------------------------
+// reclaimStale — защита от отбора живой аренды (Раунд правок 1, Important 1).
+//
+// Единственный маркер, отличающий "давно забытую" строку от "прямо сейчас в
+// аренде", — updated_at (своего статуса running у этой очереди по конструкции
+// нет). Если staleMs меньше нескольких аренд подряд, только что
+// перезапустившийся экземпляр может отобрать аренду у фото, которое в этот
+// момент публикует другой живой экземпляр — ровно та двойная публикация,
+// против которой построен весь стор. Особо реалистичный сценарий: автор
+// будущего воркера копирует STALE_RUNNING_TIMEOUT_MS = 5 минут из
+// crmSyncWorker.js — то есть ровно CLAIM_LEASE_MS. Обе проверки ниже —
+// именно на этот случай и на границу минимума.
+// ---------------------------------------------------------------------------
+
+test('reclaimStale отклоняет порог размером в одну аренду (типичная ошибка копипаста из crmSyncWorker)', async () => {
+  // reclaimStale — async: синхронный throw внутри нём превращается в отклонённый
+  // промис, а не в исключение, брошенное вызовом напрямую — отсюда assert.rejects,
+  // а не assert.throws(() => store.reclaimStale(...)) (последнее не сработает,
+  // потому что store.reclaimStale(...) сам по себе не бросает, а возвращает
+  // (уже отклонённый) промис).
+  const pool = makeFakePool([{ rowCount: 0 }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await assert.rejects(
+    store.reclaimStale({ staleMs: CLAIM_LEASE_MS }),
+    RangeError,
+    'staleMs в размер одной аренды — самая опасная и самая вероятная ошибка вызывающего'
+  );
+});
+
+test('reclaimStale отклоняет промис и не делает запрос к БД при опасно малом staleMs', async () => {
+  const pool = makeFakePool([{ rowCount: 0 }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await assert.rejects(store.reclaimStale({ staleMs: MIN_RECLAIM_STALE_MS - 1 }));
+  assert.equal(pool.calls.length, 0, 'нельзя даже пытаться выполнить запрос с небезопасным порогом');
+});
+
+test('reclaimStale — граница: ровно MIN_RECLAIM_STALE_MS проходит, на 1мс меньше — нет', async () => {
+  const okPool = makeFakePool([{ rowCount: 0 }]);
+  const okStore = createPhotoQueueStore({ pool: okPool, dbType: 'postgres' });
+  await assert.doesNotReject(okStore.reclaimStale({ staleMs: MIN_RECLAIM_STALE_MS }));
+
+  const badPool = makeFakePool([{ rowCount: 0 }]);
+  const badStore = createPhotoQueueStore({ pool: badPool, dbType: 'postgres' });
+  await assert.rejects(badStore.reclaimStale({ staleMs: MIN_RECLAIM_STALE_MS - 1 }));
 });
 
 test('countByState группирует фото по состоянию публикации', async () => {
@@ -179,6 +226,21 @@ test('listStuck отбирает не опубликованные фото ст
   assert.match(sql, /publish_state <> 'published'/);
   assert.match(sql, /LIMIT \$2/);
   assert.equal(params[1], 5);
+});
+
+test("listStuck показывает 'failed' сразу, не дожидаясь olderThanMs (Раунд правок 1, Important 2)", async () => {
+  // markFailed ставится только на окончательные ошибки (квота Диска, удалённая
+  // папка, нет прав) — это уже точно сломано, а не "ещё ретраится". Ждать
+  // olderThanMs (типично часы), чтобы сторож заметил заведомо мёртвую строку,
+  // не нужно — то же исключение, что уже сделано для строк без байтов.
+  const pool = makeFakePool([{ rows: [] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await store.listStuck({ olderThanMs: 999_999_999, limit: 10 });
+  assert.match(
+    pool.calls[0].sql,
+    /b\.report_photo_id IS NULL OR rp\.publish_state = 'failed' OR rp\.uploaded_at <= /,
+    "'failed' обязан быть в том же OR, что и отсутствие байтов, а не только за порогом возраста"
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -276,9 +338,32 @@ test('MySQL: markFailed переводит фото в failed', async () => {
 test('MySQL: reclaimStale возвращает affectedRows', async () => {
   const pool = makeFakeMysqlPool([[{ affectedRows: 3 }]]);
   const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
-  const n = await store.reclaimStale({ staleMs: 60_000 });
+  // Заведомо безопасный порог — см. PostgreSQL-версию этого теста и
+  // блок про MIN_RECLAIM_STALE_MS выше по файлу.
+  const n = await store.reclaimStale({ staleMs: MIN_RECLAIM_STALE_MS + 60_000 });
   assert.equal(n, 3);
   assert.match(pool.calls[0].sql, /publish_state = 'accepted'/);
+});
+
+test('MySQL: reclaimStale отклоняет порог размером в одну аренду и не делает запрос к БД', async () => {
+  const pool = makeFakeMysqlPool([[{ affectedRows: 0 }]]);
+  const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
+  await assert.rejects(
+    store.reclaimStale({ staleMs: CLAIM_LEASE_MS }),
+    RangeError,
+    'staleMs в размер одной аренды — та же ошибка, что и в PostgreSQL-варианте'
+  );
+  assert.equal(pool.calls.length, 0);
+});
+
+test('MySQL: reclaimStale — граница: ровно MIN_RECLAIM_STALE_MS проходит, на 1мс меньше — нет', async () => {
+  const okPool = makeFakeMysqlPool([[{ affectedRows: 0 }]]);
+  const okStore = createPhotoQueueStore({ pool: okPool, dbType: 'mysql' });
+  await assert.doesNotReject(okStore.reclaimStale({ staleMs: MIN_RECLAIM_STALE_MS }));
+
+  const badPool = makeFakeMysqlPool([[{ affectedRows: 0 }]]);
+  const badStore = createPhotoQueueStore({ pool: badPool, dbType: 'mysql' });
+  await assert.rejects(badStore.reclaimStale({ staleMs: MIN_RECLAIM_STALE_MS - 1 }));
 });
 
 test('MySQL: countByState группирует по состоянию', async () => {
@@ -293,6 +378,16 @@ test('MySQL: listStuck использует LEFT JOIN — фото без бай
   const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
   await store.listStuck({ olderThanMs: 0, limit: 10 });
   assert.match(pool.calls[0].sql, /LEFT JOIN report_photo_blob/);
+});
+
+test("MySQL: listStuck показывает 'failed' сразу, не дожидаясь olderThanMs", async () => {
+  const pool = makeFakeMysqlPool([[[]]]);
+  const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
+  await store.listStuck({ olderThanMs: 999_999_999, limit: 10 });
+  assert.match(
+    pool.calls[0].sql,
+    /b\.report_photo_id IS NULL OR rp\.publish_state = 'failed' OR rp\.uploaded_at <= /
+  );
 });
 
 test('MySQL: purgePublishedBlobs чистит только опубликованные и только старые', async () => {

@@ -20,6 +20,46 @@ const toDateSql = (date) => {
   return d.toISOString().slice(0, 19).replace('T', ' ');
 };
 
+// Длительность аренды claimBatch — единственный источник правды. Раньше "5
+// минут" было захардкожено отдельно в PostgreSQL- и MySQL-SQL и могло
+// разъехаться; оба claimBatch ниже вычисляют интервал из этой константы.
+export const CLAIM_LEASE_MS = 5 * 60 * 1000;
+
+// Минимальный безопасный порог для reclaimStale({ staleMs }) — см. подробное
+// обоснование в комментарии над PostgreSQL-реализацией reclaimStale ниже.
+// Экспортирован, чтобы вызывающий код (и его тесты) мог сверяться с тем же
+// числом, а не заводить собственную копию "утроенной аренды".
+export const MIN_RECLAIM_STALE_MS = CLAIM_LEASE_MS * 3;
+
+// reclaimStale — НЕ аналог crmSyncWorker.recover(), и вешать её на старт
+// процесса с "разумным" порогом вроде STALE_RUNNING_TIMEOUT_MS (те же 5
+// минут) — самая естественная ошибка, которую сделает автор будущего
+// воркера/сторожа по образцу существующего кода. В crmSyncJobStore статус
+// 'running' — самодостаточный маркер "кто-то держит задачу", поэтому там
+// reclaimStale с порогом в размер самой аренды безопасен: если 'running'
+// висит дольше одной аренды, предыдущий процесс определённо мёртв. Здесь
+// такого маркера нет по конструкции (см. комментарий в claimBatch) —
+// 'accepted' означает одновременно и "ещё не забрано", и "забрано и
+// публикуется прямо сейчас", и единственное отличие — updated_at. Если
+// staleMs выставить в размер одной аренды, только что перезапустившийся
+// экземпляр (на Timeweb их может быть несколько) отберёт аренду ровно у
+// фото, которое в этот момент реально публикует другой, всё ещё живой
+// экземпляр — та самая двойная публикация, против которой построен весь
+// стор. Порог обязан быть заведомо больше времени одной аренды и выбираться
+// осознанно (например, "фото не трогали много часов") — отсюда проверка
+// ниже и трёхкратный запас.
+const assertSafeReclaimStaleMs = (staleMs) => {
+  const ms = Number(staleMs);
+  if (!Number.isFinite(ms) || ms < MIN_RECLAIM_STALE_MS) {
+    throw new RangeError(
+      `reclaimStale: staleMs=${staleMs} слишком мал (минимум ${MIN_RECLAIM_STALE_MS} мс — ` +
+      `3× аренды claimBatch, которая равна ${CLAIM_LEASE_MS} мс). Меньший порог может отобрать ` +
+      'аренду у фото, которое прямо сейчас публикует другой живой воркер или экземпляр приложения.'
+    );
+  }
+  return ms;
+};
+
 // ---------------------------------------------------------------------------
 // PostgreSQL store
 // ---------------------------------------------------------------------------
@@ -76,6 +116,7 @@ const createPostgresStore = (pool) => ({
   // Байты приезжают тем же запросом (JOIN report_photo_blob): отдельный поход
   // за содержимым удвоил бы число обращений к БД на каждую задачу.
   async claimBatch({ limit = 3, now = new Date() } = {}) {
+    const leaseMinutes = CLAIM_LEASE_MS / 60_000;
     const result = await pool.query(
       `WITH due AS (
          SELECT rp.id
@@ -87,7 +128,7 @@ const createPostgresStore = (pool) => ({
           FOR UPDATE SKIP LOCKED
        )
        UPDATE report_photo rp
-          SET next_attempt_at = $1 + INTERVAL '5 minutes',
+          SET next_attempt_at = $1 + INTERVAL '${leaseMinutes} minutes',
               updated_at = NOW()
          FROM due
          JOIN report_photo_blob b ON b.report_photo_id = due.id
@@ -154,14 +195,21 @@ const createPostgresStore = (pool) => ({
     );
   },
 
-  // Ручной «рычаг»: сбрасывает next_attempt_at на «сейчас» для фото,
-  // которые давно не трогали. Не путать с восстановлением после падения —
-  // для него отдельный механизм не нужен (см. комментарий в claimBatch).
-  // Нужен для случая, когда reschedule() увёл фото в далёкий backoff
-  // (например, портал был недоступен несколько часов) и после починки
-  // хочется вернуть всё в оборот сразу, не дожидаясь истечения таймеров.
+  // Ручной «рычаг» для осознанного вызова оператором/скриптом, а НЕ аналог
+  // crmSyncWorker.recover() и НЕ то, что можно повесить на старт процесса
+  // без раздумий — полное обоснование см. в комментарии над
+  // assertSafeReclaimStaleMs выше. Коротко: единственный маркер отличия
+  // "давно забытую" строку от "прямо сейчас в аренде" — updated_at
+  // (отдельного статуса running нет по конструкции, см. claimBatch), поэтому
+  // staleMs меньше нескольких аренд подряд рискует отобрать работу у живого
+  // воркера. Нужен для случая, когда reschedule() увёл фото в далёкий
+  // backoff (например, портал был недоступен несколько часов) и после
+  // починки хочется вернуть всё в оборот сразу, не дожидаясь истечения
+  // таймеров, — а не для восстановления после падения процесса, для
+  // которого отдельный механизм и так не нужен.
   async reclaimStale({ staleMs }) {
-    const cutoff = new Date(Date.now() - Number(staleMs));
+    const ms = assertSafeReclaimStaleMs(staleMs);
+    const cutoff = new Date(Date.now() - ms);
     const result = await pool.query(
       `UPDATE report_photo
           SET next_attempt_at = NOW(),
@@ -184,7 +232,14 @@ const createPostgresStore = (pool) => ({
 
   // LEFT JOIN, в отличие от claimBatch, намеренно: сторож обязан увидеть
   // фото, у которого пропали байты (b.report_photo_id IS NULL), а не только
-  // те, что просто долго лежат неопубликованными.
+  // те, что просто долго лежат неопубликованными. По той же причине
+  // publish_state = 'failed' — тоже исключение из порога возраста:
+  // markFailed выставляется только на окончательные ошибки (квота Диска
+  // исчерпана, папка удалена, нет прав) — это "без человека дальше не
+  // поедет" уже в момент отказа, а не "ещё ретраится", и ждать olderThanMs
+  // (типично часы), чтобы сторож наконец заметил заведомо мёртвую строку,
+  // незачем — тем более что 'accepted' в этом же запросе всё ещё может быть
+  // здоровым ретраем и порог возраста ему нужен по-настоящему.
   async listStuck({ olderThanMs, limit = 50 } = {}) {
     const cutoff = new Date(Date.now() - Number(olderThanMs));
     const result = await pool.query(
@@ -192,7 +247,7 @@ const createPostgresStore = (pool) => ({
          FROM report_photo rp
          LEFT JOIN report_photo_blob b ON b.report_photo_id = rp.id
         WHERE rp.publish_state <> 'published'
-          AND (b.report_photo_id IS NULL OR rp.uploaded_at <= $1)
+          AND (b.report_photo_id IS NULL OR rp.publish_state = 'failed' OR rp.uploaded_at <= $1)
         ORDER BY rp.uploaded_at ASC
         LIMIT $2`,
       [cutoff, limit]
@@ -275,6 +330,7 @@ const createMysqlStore = (pool) => ({
   // (проигравший ждёт короткую блокировку строки вместо мгновенного пропуска).
   async claimBatch({ limit = 3, now = new Date() } = {}) {
     const nowSql = toDateSql(now);
+    const leaseMinutes = CLAIM_LEASE_MS / 60_000;
     const [candidates] = await pool.execute(
       `SELECT rp.id
          FROM report_photo rp
@@ -291,7 +347,7 @@ const createMysqlStore = (pool) => ({
     for (const { id } of candidates) {
       const [result] = await pool.execute(
         `UPDATE report_photo
-            SET next_attempt_at = DATE_ADD(?, INTERVAL 5 MINUTE),
+            SET next_attempt_at = DATE_ADD(?, INTERVAL ${leaseMinutes} MINUTE),
                 updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
             AND publish_state = 'accepted'
@@ -357,8 +413,12 @@ const createMysqlStore = (pool) => ({
     );
   },
 
+  // См. комментарий над PostgreSQL-версией reclaimStale и над
+  // assertSafeReclaimStaleMs выше в файле: НЕ аналог crmSyncWorker.recover(),
+  // не вешать на старт процесса без осознанного выбора порога.
   async reclaimStale({ staleMs }) {
-    const cutoffSql = toDateSql(new Date(Date.now() - Number(staleMs)));
+    const ms = assertSafeReclaimStaleMs(staleMs);
+    const cutoffSql = toDateSql(new Date(Date.now() - ms));
     const [result] = await pool.execute(
       `UPDATE report_photo
           SET next_attempt_at = CURRENT_TIMESTAMP,
@@ -379,6 +439,8 @@ const createMysqlStore = (pool) => ({
     return counts;
   },
 
+  // См. комментарий у PostgreSQL-версии listStuck: 'failed' — тоже
+  // исключение из порога возраста, наравне с отсутствующими байтами.
   async listStuck({ olderThanMs, limit = 50 } = {}) {
     const cutoffSql = toDateSql(new Date(Date.now() - Number(olderThanMs)));
     const [rows] = await pool.execute(
@@ -386,7 +448,7 @@ const createMysqlStore = (pool) => ({
          FROM report_photo rp
          LEFT JOIN report_photo_blob b ON b.report_photo_id = rp.id
         WHERE rp.publish_state <> 'published'
-          AND (b.report_photo_id IS NULL OR rp.uploaded_at <= ?)
+          AND (b.report_photo_id IS NULL OR rp.publish_state = 'failed' OR rp.uploaded_at <= ?)
         ORDER BY rp.uploaded_at ASC
         LIMIT ?`,
       [cutoffSql, limit]
