@@ -517,6 +517,8 @@ export const useApiStore = defineStore(
       photoCode: string
       exifAt: string | null
       uploadedAt: string | null
+      /** Task 9: 'accepted' — байты у нас, ещё не в Битриксе; 'published' — в Битриксе; 'failed' — само не доедет, нужен человек */
+      publishState: 'accepted' | 'published' | 'failed'
       remark: { createdAt: string | null; recipientName: string; message: string; senderName: string } | null
     }
 

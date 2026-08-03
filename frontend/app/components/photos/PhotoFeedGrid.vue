@@ -13,6 +13,8 @@ type PhotoFeedItem = {
   photoCode: string
   exifAt: string | null
   uploadedAt: string | null
+  /** Task 9: 'accepted' — байты у нас, ещё не в Битриксе; 'published' — в Битриксе; 'failed' — само не доедет, нужен человек */
+  publishState: 'accepted' | 'published' | 'failed'
   remark: { createdAt: string | null; recipientName: string; message: string; senderName: string } | null
 }
 
@@ -191,6 +193,44 @@ const getAzsLabel = (item: PhotoFeedItem): string => {
   return item.azsTitle || `АЗС ${item.azsId}`
 }
 
+// ── Task 9: плашка состояния публикации ─────────────────────────────────
+// Фоновая публикация в Битрикс занимает время (до ~часа на весь парк при
+// живом портале). Пока фото 'accepted', превью почти наверняка не
+// загрузится (файла в Битриксе физически ещё нет — см. analyticsRoutes.js
+// GET /photos/:reportId/:photoCode/preview, 404 disk_object_id_missing) и
+// тайл покажет overlay «⚠ Не удалось» — визуально неотличимый от реально
+// сломанного фото. Плашка обязана быть видна ПОВЕРХ этого overlay (тот же
+// z-20 и позже него в DOM — см. шаблон), иначе именно в момент, когда она
+// нужнее всего, её не будет видно.
+//
+// 'failed' — отдельная и заведомо другая история: само не доедет (кончилась
+// квота Диска, папку снесли, нет прав), нужен человек. Показать это как
+// «публикуется» — соврать проверяющему, который тогда будет ждать вечно.
+// Поэтому текст, иконка и цвет для failed сделаны намеренно тревожными и
+// не похожими на «подождите» — и никакой pulse-анимации (она читается как
+// «идёт процесс», а здесь процесса нет, есть тупик).
+//
+// 'published' (и любое неизвестное значение) — без плашки: это обычное,
+// уже опубликованное фото, для него ничего не меняется.
+type PublishBadge = { text: string; classes: string; title: string }
+
+const PUBLISH_BADGES: Record<string, PublishBadge> = {
+  accepted: {
+    text: '⏳ Публикуется',
+    classes: 'bg-blue-600/90 animate-pulse',
+    title: 'Фото принято и сохранено у нас, ждёт отправки в Битрикс24 — обычно занимает не больше часа'
+  },
+  failed: {
+    text: '⚠ Ошибка публикации',
+    classes: 'bg-red-600/95',
+    title: 'Автоматическая публикация невозможна (нет места на Диске, удалена папка или нет прав) — нужна проверка вручную'
+  }
+}
+
+const getPublishBadge = (item: PhotoFeedItem): PublishBadge | null => {
+  return PUBLISH_BADGES[item.publishState] ?? null
+}
+
 // ── Форматирование времени ────────────────────────────────────────────
 const fmtTime = (iso: string | null): string => {
   if (!iso) return '—'
@@ -300,14 +340,67 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
             <span class="text-white text-base">⚑</span>
           </button>
 
-          <!-- Подпись «АЗС · категория · время» -->
-          <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
-            <div class="opacity-90 truncate">{{ getAzsLabel(item) }}</div>
-            <div v-if="item.azsAddress" class="text-[10px] font-normal text-blue-200 opacity-90 truncate">{{ item.azsAddress }}</div>
-            <div class="opacity-70 text-[10px] font-normal">
-              <span>{{ getCategoryTitle(item.photoCode) }}</span>
-              <span class="opacity-60"> · </span>
-              <span class="tabular-nums">{{ fmtTime(item.exifAt || item.uploadedAt) }}</span>
+          <!-- Плашка состояния публикации (Task 9) + подпись «АЗС ·
+               категория · время» — потоковые блочные соседи в общей
+               обёртке, а не два независимых absolute-элемента (раскладка
+               из ревью 2, без изменений).
+               ЛОВУШКА, НАЙДЕННАЯ В РЕВЬЮ 3 (два раунда геометрии дали два
+               дефекта — здесь мы перестаём считать пиксели): ряд плашки
+               ("relative z-20 flex justify-center pb-1") — блочный
+               flex-контейнер БЕЗ явной ширины, то есть занимает всю
+               ширину тайла, а не только ширину текста пилюли внутри
+               (та центрирована через justify-center). pointer-events по
+               умолчанию auto — значит его пустая, визуально прозрачная
+               область ТОЖЕ перехватывает тап, а не только видимая
+               пилюля. И это не только про ряд: вертикальная позиция
+               ряда зависит от высоты подписи под ним (обёртка прижата к
+               низу), а высота подписи — от состояния (с адресом АЗС или
+               без), так что «безопасный зазор до кнопки», посчитанный в
+               ревью 1 для independent absolute-позиционирования, тихо
+               перестал быть верным, когда позиционирование стало
+               связано с потоком.
+               ИСПРАВЛЕНИЕ: pointer-events-none на обёртку (наследуется
+               на ряд плашки И на подпись — обоим клики никогда не были
+               нужны, тайл сам ловит клик через свой @click) и явно ещё
+               раз на сам ряд плашки (не только ради наследования, а
+               чтобы это было очевидно локально, без необходимости
+               смотреть на родителя). Это не пересчитанная геометрия
+               "теперь безопасно при такой-то ширине" — это категория
+               "плашка структурно не может перехватить тап, независимо
+               от ширины экрана, длины текста, высоты подписи и будущих
+               изменений раскладки", ровно то, что просили в ревью 3.
+               ПОБОЧНЫЙ ЭФФЕКТ, ОСОЗНАННО ПРИНЯТЫЙ: у пилюли есть :title
+               (тултип по наведению) — pointer-events-none его тоже
+               отключает, `pointer-events-auto` на пилюлю НЕ возвращал:
+               восстановление вернуло бы ту же зависимость от длины
+               текста и ширины тайла, которую эта правка должна убрать
+               навсегда (текст "⚠ Ошибка публикации" на самом узком
+               тайле шире тайла и после центрирования дотягивается почти
+               до кнопки — см. отчёт), а тултип и так не работает по тапу
+               на тех же мобильных экранах, где и был риск. -->
+          <div class="w-full pointer-events-none">
+            <div
+              v-if="getPublishBadge(item)"
+              class="relative z-20 flex justify-center pb-1 pointer-events-none"
+            >
+              <span
+                class="text-white text-[10px] px-2 py-0.5 rounded-full font-bold backdrop-blur-sm whitespace-nowrap"
+                :class="getPublishBadge(item)?.classes"
+                :title="getPublishBadge(item)?.title"
+              >
+                {{ getPublishBadge(item)?.text }}
+              </span>
+            </div>
+
+            <!-- Подпись «АЗС · категория · время» -->
+            <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
+              <div class="opacity-90 truncate">{{ getAzsLabel(item) }}</div>
+              <div v-if="item.azsAddress" class="text-[10px] font-normal text-blue-200 opacity-90 truncate">{{ item.azsAddress }}</div>
+              <div class="opacity-70 text-[10px] font-normal">
+                <span>{{ getCategoryTitle(item.photoCode) }}</span>
+                <span class="opacity-60"> · </span>
+                <span class="tabular-nums">{{ fmtTime(item.exifAt || item.uploadedAt) }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -386,11 +479,31 @@ const handleToggleMark = (e: Event, item: PhotoFeedItem) => {
               <span class="text-white text-base">⚑</span>
             </button>
 
-            <!-- Подпись «категория · время» (АЗС в заголовке группы) -->
-            <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
-              <span>{{ getCategoryTitle(item.photoCode) }}</span>
-              <span class="opacity-60"> · </span>
-              <span class="tabular-nums">{{ fmtTime(item.exifAt || item.uploadedAt) }}</span>
+            <!-- Плашка состояния публикации (Task 9) + подпись «категория ·
+                 время» — потоковые блочные соседи в общей обёртке, оба
+                 pointer-events-none (ревью 3: пустая ширина ряда плашки
+                 перехватывала тап у кнопки «Отметить», см. полный
+                 комментарий с обоснованием в плоском режиме сетки выше) -->
+            <div class="w-full pointer-events-none">
+              <div
+                v-if="getPublishBadge(item)"
+                class="relative z-20 flex justify-center pb-1 pointer-events-none"
+              >
+                <span
+                  class="text-white text-[10px] px-2 py-0.5 rounded-full font-bold backdrop-blur-sm whitespace-nowrap"
+                  :class="getPublishBadge(item)?.classes"
+                  :title="getPublishBadge(item)?.title"
+                >
+                  {{ getPublishBadge(item)?.text }}
+                </span>
+              </div>
+
+              <!-- Подпись «категория · время» (АЗС в заголовке группы) -->
+              <div class="relative z-10 px-2.5 py-2 w-full bg-gradient-to-t from-black/55 to-transparent text-[11px] font-semibold leading-tight">
+                <span>{{ getCategoryTitle(item.photoCode) }}</span>
+                <span class="opacity-60"> · </span>
+                <span class="tabular-nums">{{ fmtTime(item.exifAt || item.uploadedAt) }}</span>
+              </div>
             </div>
           </div>
         </div>

@@ -19,6 +19,8 @@ type PhotoFeedItem = {
   photoCode: string
   exifAt: string | null
   uploadedAt: string | null
+  /** Task 9: 'accepted' — байты у нас, ещё не в Битриксе; 'published' — в Битриксе; 'failed' — само не доедет, нужен человек */
+  publishState: 'accepted' | 'published' | 'failed'
   remark: { createdAt: string | null; recipientName: string; message: string; senderName: string } | null
 }
 
@@ -502,6 +504,34 @@ const isCurrentError = computed(() => {
   return errorSet.value.has(previewKey(current.value))
 })
 
+// ── Task 9: плашка состояния публикации ─────────────────────────────────
+// Тот же смысл и тот же текст, что в PhotoFeedGrid.vue — дублируется,
+// потому что PhotoFeedItem в этом компоненте тоже локальный тип (общего
+// модуля типов фотоленты в проекте нет). Пока фото 'accepted', preview
+// почти всегда 404 (файла в Битриксе физически ещё нет) — здесь это ловит
+// isCurrentError ниже и на весь экран показывает «Не удалось загрузить
+// фото», что для только что принятого фото — прямая ложь. 'failed' —
+// отдельный случай: само не доедет, нужен человек, и это не «подождите».
+type PublishBadge = { text: string; classes: string; title: string }
+
+const PUBLISH_BADGES: Record<string, PublishBadge> = {
+  accepted: {
+    text: '⏳ Публикуется',
+    classes: 'text-blue-300',
+    title: 'Фото принято и сохранено у нас, ждёт отправки в Битрикс24 — обычно занимает не больше часа'
+  },
+  failed: {
+    text: '⚠ Ошибка публикации',
+    classes: 'text-red-300',
+    title: 'Автоматическая публикация невозможна (нет места на Диске, удалена папка или нет прав) — нужна проверка вручную'
+  }
+}
+
+const currentPublishBadge = computed<PublishBadge | null>(() => {
+  if (!current.value) return null
+  return PUBLISH_BADGES[current.value.publishState] ?? null
+})
+
 // ── Маппинг категорий ─────────────────────────────────────────────────────
 const getCategoryTitle = (code: string): string => {
   return props.categoryTitles?.get(code) ?? code
@@ -632,7 +662,40 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
           >
         </div>
 
-        <!-- Ошибка загрузки с кнопкой «Повторить» -->
+        <!-- Ошибка загрузки с кнопкой «Повторить» — Task 9: для accepted/
+             failed это НЕ «файл сломан», это ожидаемое (accepted) или
+             требующее человека (failed) состояние. Показывать одинаковое
+             «Не удалось загрузить фото» всем трём — соврать проверяющему. -->
+        <div
+          v-else-if="isCurrentError && current?.publishState === 'accepted'"
+          class="flex flex-col items-center justify-center gap-3 text-white/70"
+        >
+          <span class="text-4xl opacity-60">⏳</span>
+          <p class="text-sm font-medium text-white/90">Публикуется — фото ещё не в Битриксе</p>
+          <p class="text-xs text-white/50 max-w-[260px] text-center">Оно уже принято и сохранено у нас. Обычно доставка занимает не больше часа — попробуйте открыть позже.</p>
+          <button
+            class="px-5 py-2 rounded-full bg-white/15 hover:bg-white/25 text-white text-sm font-semibold transition-colors"
+            @click.stop="retryCurrentBlob"
+          >
+            ↻ Проверить снова
+          </button>
+        </div>
+
+        <div
+          v-else-if="isCurrentError && current?.publishState === 'failed'"
+          class="flex flex-col items-center justify-center gap-3 text-white/70"
+        >
+          <span class="text-4xl opacity-60">⚠</span>
+          <p class="text-sm font-medium text-red-300">Ошибка публикации</p>
+          <p class="text-xs text-white/50 max-w-[260px] text-center">Само не доедет: кончилась квота Диска, удалена папка или нет прав. Нужна проверка вручную.</p>
+          <button
+            class="px-5 py-2 rounded-full bg-white/15 hover:bg-white/25 text-white text-sm font-semibold transition-colors"
+            @click.stop="retryCurrentBlob"
+          >
+            ↻ Повторить
+          </button>
+        </div>
+
         <div
           v-else-if="isCurrentError"
           class="flex flex-col items-center justify-center gap-3 text-white/70"
@@ -708,6 +771,16 @@ const draftRole = defineModel<'manager' | 'admin'>('draftRole', { default: 'mana
         <span>{{ getCategoryTitle(current.photoCode) }}</span>
         <span class="opacity-50">·</span>
         <span class="tabular-nums">{{ fmtDateTime(current.exifAt || current.uploadedAt) }}</span>
+
+        <!-- Плашка состояния публикации (Task 9) — видна и когда фото само
+             загрузилось (например, только что принятое, но превью
+             подгрузилось из кэша/повтора), не только в состоянии ошибки -->
+        <template v-if="currentPublishBadge">
+          <span class="opacity-50">·</span>
+          <span :class="['font-medium', currentPublishBadge.classes]" :title="currentPublishBadge.title">
+            {{ currentPublishBadge.text }}
+          </span>
+        </template>
 
         <!-- Инфо-строка отправленного замечания -->
         <template v-if="current.remark">
