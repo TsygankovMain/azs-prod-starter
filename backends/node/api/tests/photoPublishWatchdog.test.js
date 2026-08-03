@@ -105,6 +105,37 @@ test('не спамит одним и тем же каждую минуту', as
   assert.equal(notify.calls.length, 1, 'два тика подряд с тем же набором -> ровно один вызов notify');
 });
 
+test('код-ревью Раунд 1: одна и та же проблема с разным текстом ошибки на двух тиках подряд не спамит', async () => {
+  // bitrixRestClient.js бросает нестандартизированный, "сырой" текст ошибки
+  // (тело HTTP-ответа/description), который меняется от попытки к попытке
+  // даже когда сама проблема (то же фото, тот же класс отказа) не изменилась.
+  // Если бы подпись анти-спама включала этот текст буквально, при затяжном
+  // простое портала — ровно том сценарии, ради которого сторож существует —
+  // подпись меняла бы почти на каждом тике, дедуп никогда бы не срабатывал,
+  // и сторож бы спамил в чат вместо того, чтобы молчать между напоминаниями.
+  let attempt = 0;
+  const store = {
+    async listStuck() {
+      attempt += 1;
+      return [makeRow({ id: 1, last_publish_error: `HTTP 503: retry-attempt-body-${attempt}` })];
+    }
+  };
+  const notify = makeNotify();
+  let clock = 0;
+  const watchdog = createPhotoPublishWatchdog({
+    store, notify, logger: silentLogger, now: () => clock, reminderIntervalMs: 30 * 60 * 1000
+  });
+
+  await watchdog.tick();
+  clock += 60_000; // минута спустя — тот же id, но другой текст ошибки
+  await watchdog.tick();
+
+  assert.equal(
+    notify.calls.length, 1,
+    'смена текста ошибки одного и того же фото — не новая проблема, дедуп обязан сработать'
+  );
+});
+
 test('failed попадает в сигнал сразу, не дожидаясь порога', async () => {
   // По контракту listStuck() (photoQueueStore.js) в выборку немедленно
   // попадают фото без байтов и фото в состоянии 'failed', даже если они
@@ -213,6 +244,56 @@ test('после полного исчезновения проблема при
   await watchdog.tick();
 
   assert.equal(notify.calls.length, 2, 'повторное появление после чистого интервала — новый сигнал, не подавленный дубликат');
+});
+
+// ---------------------------------------------------------------------------
+// Код-ревью Раунд 1, Important 2: ссылка на карточку отчёта — дежурный не
+// должен отдельно искать станцию по номеру отчёта, одно касание должно
+// открывать карточку. reportLinks.js уже умеет строить и путь, и полный URL
+// из одного reportId, без JOIN и без нового стора.
+// ---------------------------------------------------------------------------
+
+test('код-ревью Раунд 1: сообщение содержит полную ссылку на карточку, когда задан publicBaseUrl', async () => {
+  const store = makeFakeStore([makeRow({ id: 1, report_id: 777 })]);
+  const notify = makeNotify();
+  const watchdog = createPhotoPublishWatchdog({
+    store, notify, logger: silentLogger, now: () => 10_000_000_000,
+    publicBaseUrl: 'https://portal.example.bitrix24.ru'
+  });
+
+  await watchdog.tick();
+
+  const item = notify.calls[0].items[0];
+  assert.equal(item.reportLink, 'https://portal.example.bitrix24.ru/admin/777');
+  assert.match(notify.calls[0].text, /https:\/\/portal\.example\.bitrix24\.ru\/admin\/777/);
+});
+
+test('код-ревью Раунд 1: без publicBaseUrl сообщение всё равно содержит относительный путь, а не отсутствие ссылки', async () => {
+  const store = makeFakeStore([makeRow({ id: 1, report_id: 777 })]);
+  const notify = makeNotify();
+  const watchdog = createPhotoPublishWatchdog({
+    store, notify, logger: silentLogger, now: () => 10_000_000_000, publicBaseUrl: ''
+  });
+
+  await watchdog.tick();
+
+  const item = notify.calls[0].items[0];
+  assert.equal(item.reportLink, '/admin/777', 'деградация до относительного пути, не до отсутствия ссылки');
+  assert.match(notify.calls[0].text, /\/admin\/777/);
+});
+
+test('код-ревью Раунд 1: некорректный reportId не роняет тик — ссылки для этой строки просто нет', async () => {
+  const store = makeFakeStore([makeRow({ id: 1, report_id: null })]);
+  const notify = makeNotify();
+  const watchdog = createPhotoPublishWatchdog({
+    store, notify, logger: silentLogger, now: () => 10_000_000_000,
+    publicBaseUrl: 'https://portal.example.bitrix24.ru'
+  });
+
+  const result = await watchdog.tick();
+
+  assert.equal(result.notified, true, 'битый reportId не должен помешать остальному сигналу');
+  assert.equal(notify.calls[0].items[0].reportLink, null);
 });
 
 // ---------------------------------------------------------------------------

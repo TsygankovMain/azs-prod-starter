@@ -28,8 +28,8 @@
  * даже по ошибке. Но describeStuckRow() ниже всё равно строит исходящий
  * объект через явный список полей, а не через spread ...row, — тем же
  * приёмом, что не даёт случайно протечь ничему за пределами списка "номер
- * АЗС/отчёта, код слота, сколько висит, последняя ошибка", даже если форма
- * строки когда-нибудь изменится.
+ * АЗС/отчёта, код слота, сколько висит, последняя ошибка, ссылка на карточку",
+ * даже если форма строки когда-нибудь изменится.
  *
  * notify — уже готовая, ВНЕШНЯЯ функция постановки сообщения в чат (образец
  * — diagChatNotifier.js: id бота резолвится в рантайме через
@@ -53,12 +53,24 @@
  * допустить). Решение: "подпись" набора (buildSignature) плюс
  * reminderIntervalMs — тот же набор коротко после сигнала подавляется
  * дедупом, а спустя reminderIntervalMs сигналит снова, пока не решится.
- * Любое изменение набора (новый застрявший файл, другая ошибка у уже
- * известного) считается новой проблемой и сигналит немедленно, не дожидаясь
- * ни дедупа, ни напоминания.
+ * Появление/исчезновение застрявшего id считается новой проблемой и сигналит
+ * немедленно, не дожидаясь ни дедупа, ни напоминания — но смена ТЕКСТА
+ * ошибки у уже известного id таковой не считается (см. buildSignature: этот
+ * текст нестабилен между попытками одной и той же проблемы, см. Код-ревью
+ * Раунд 1 ниже).
+ *
+ * Код-ревью Раунд 1 (2026-08-03) — два предметных исправления, детали у
+ * соответствующего кода:
+ *   - Important 1 — buildSignature раньше включала сырой last_publish_error
+ *     в подпись; при затяжном простое портала (нестандартизированный текст
+ *     ошибки в bitrixRestClient.js меняется от попытки к попытке) это ломало
+ *     дедуп ровно тогда, когда он нужнее всего;
+ *   - Important 2 — сообщение теперь несёт ссылку на карточку отчёта
+ *     (buildItemLink), чтобы дежурный не искал станцию отдельно по номеру.
  */
 
 import { createGuardedTick } from '../shared/guardedTick.js';
+import { buildAppReportPath, buildPublicReportUrl } from '../notifications/reportLinks.js';
 
 const readEnvMs = (name, fallback) => {
   const parsed = Number(process.env[name]);
@@ -108,16 +120,39 @@ const formatDuration = (ms) => {
 };
 
 /**
+ * Код-ревью Раунд 1 (Important 2): ссылка на карточку отчёта — дешёвая цена
+ * за то, чтобы дежурный не искал станцию отдельно по номеру отчёта, а сразу
+ * открыл карточку. buildAppReportPath/buildPublicReportUrl (reportLinks.js)
+ * строят её из одного reportId, без JOIN и без нового стора — reportId и так
+ * уже есть в каждой строке listStuck().
+ *
+ * Полный URL — только если задан publicBaseUrl; если нет, деградируем до
+ * ОТНОСИТЕЛЬНОГО пути (`/admin/{id}`), а не до отсутствия ссылки вовсе —
+ * так и просил ревьюер. buildAppReportPath бросает на некорректном reportId
+ * (0/NaN/строка) — сторож не имеет права уронить из-за этого весь тик ради
+ * одной кривой строки, поэтому try/catch и null как честный "ссылки нет".
+ */
+const buildItemLink = (reportId, publicBaseUrl) => {
+  try {
+    const publicUrl = buildPublicReportUrl({ baseUrl: publicBaseUrl, reportId });
+    if (publicUrl) return publicUrl;
+    return buildAppReportPath(reportId);
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Сырую строку listStuck() превращает в то, что безопасно показать и
  * передать наружу: report_id (единственный идентификатор "какой отчёт/АЗС",
  * который listStuck отдаёт БЕЗ дополнительного join — join на dispatch_log
  * ради настоящего azs_id сюда сознательно не добавлен, см. заголовок файла и
  * "Не переизобретай выборку" в задании), код слота, сколько висит, последняя
- * ошибка. Явный список полей вместо spread ...row — намеренно: так лишнее
- * поле в строке (например, если форма listStuck когда-нибудь расширится)
- * не может протечь наружу незамеченным.
+ * ошибка, ссылка на карточку. Явный список полей вместо spread ...row —
+ * намеренно: так лишнее поле в строке (например, если форма listStuck
+ * когда-нибудь расширится) не может протечь наружу незамеченным.
  */
-const describeStuckRow = (row, nowMs) => {
+const describeStuckRow = (row, nowMs, publicBaseUrl) => {
   const uploadedAtMs = toMillis(row?.uploaded_at);
   const stuckForMs = uploadedAtMs === null ? null : Math.max(0, nowMs - uploadedAtMs);
   return {
@@ -126,21 +161,36 @@ const describeStuckRow = (row, nowMs) => {
     photoCode: row?.photo_code,
     attempts: Number(row?.publish_attempts || 0),
     stuckForMs,
-    lastError: row?.last_publish_error || null
+    lastError: row?.last_publish_error || null,
+    reportLink: buildItemLink(row?.report_id, publicBaseUrl)
   };
 };
 
 /**
  * Стабильная "подпись" текущего набора застрявших фото — основа анти-спама.
- * last_publish_error входит в подпись намеренно: смена ошибки на другую
- * (например, ретрай перестал быть таймаутом и стал окончательным отказом
- * Диска) — новая информация, достойная отдельного сигнала, а не немого
- * поглощения дедупом. sort() — чтобы порядок строк (у listStuck он
- * стабилен по uploaded_at, но это не входит в контракт этого модуля) не
- * менял саму подпись.
+ *
+ * Код-ревью Раунд 1 (Important 1): раньше подпись включала last_publish_error
+ * буквально. Это ломалось ровно в целевом сценарии сторожа — при затяжном
+ * простое портала: bitrixRestClient.js бросает НЕнормализованный текст
+ * (`HTTP ${status}: ${errorBody}`, `Bitrix REST ${method} error: ${code}
+ * ${description}`), где тело/описание меняются от попытки к попытке даже у
+ * одного и того же зависшего фото. Подпись дрожала бы почти на каждом тике,
+ * дедуп никогда бы не совпадал, и сторож спамил бы в чат при каждом ретрае —
+ * то есть ровно тогда, когда молчать между напоминаниями важнее всего.
+ *
+ * Поэтому в подписи — только то, что стабильно между повторами одной и той
+ * же проблемы: id строки report_photo. Он однозначно определяет пару
+ * (report_id, photo_code) и не меняется, пока фото не опубликуется. Текст
+ * ошибки по-прежнему идёт В СООБЩЕНИЕ (см. buildMessageText) — он полезен
+ * человеку, просто не должен управлять решением "спамить или нет". По той
+ * же причине сюда не входит и publish_attempts — оно растёт на каждом
+ * ретрае и было бы столь же шумным ключом, как и сырой текст ошибки.
+ *
+ * sort() — чтобы порядок строк (у listStuck он стабилен по uploaded_at, но
+ * это не входит в контракт этого модуля) не менял саму подпись.
  */
 const buildSignature = (items) => items
-  .map((item) => `${item.id}:${item.lastError || ''}`)
+  .map((item) => String(item.id))
   .sort()
   .join('|');
 
@@ -150,7 +200,8 @@ const buildMessageText = ({ items, totalCount, limitReached }) => {
 
   for (const item of items.slice(0, MAX_DISPLAY_ITEMS)) {
     const errorPart = item.lastError ? `, последняя ошибка: ${item.lastError}` : '';
-    lines.push(`Отчёт ${item.reportId}, слот ${item.photoCode}: висит ${formatDuration(item.stuckForMs)}${errorPart}`);
+    const linkPart = item.reportLink ? ` — ${item.reportLink}` : '';
+    lines.push(`Отчёт ${item.reportId}, слот ${item.photoCode}: висит ${formatDuration(item.stuckForMs)}${errorPart}${linkPart}`);
   }
   if (items.length > MAX_DISPLAY_ITEMS) {
     lines.push('', `…и ещё ${items.length - MAX_DISPLAY_ITEMS}, не показаны`);
@@ -166,6 +217,9 @@ export const createPhotoPublishWatchdog = ({
   intervalMs = DEFAULT_INTERVAL_MS,
   reminderIntervalMs = DEFAULT_REMINDER_INTERVAL_MS,
   limit = DEFAULT_LIST_LIMIT,
+  // Тот же приём и те же переменные, что notificationService.js:78 уже
+  // использует для publicBaseUrl — не новый env var, переиспользование.
+  publicBaseUrl = process.env.APP_PUBLIC_BASE_URL || process.env.VIRTUAL_HOST || '',
   now = () => Date.now(),
   logger = console
 } = {}) => {
@@ -193,7 +247,7 @@ export const createPhotoPublishWatchdog = ({
     }
 
     const nowMs = now();
-    const items = rows.map((row) => describeStuckRow(row, nowMs));
+    const items = rows.map((row) => describeStuckRow(row, nowMs, publicBaseUrl));
     const signature = buildSignature(items);
 
     const sameProblemAsLastTime = signature === lastSignature;
