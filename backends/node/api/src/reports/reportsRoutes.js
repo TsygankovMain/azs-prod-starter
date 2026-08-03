@@ -2,7 +2,8 @@ import express from 'express';
 import multer from 'multer';
 import exifr from 'exifr';
 import { ensureRootFolder, isSupportedPhotoUpload, uploadPhoto } from '../disk/diskService.js';
-import { createFolderIdCache } from '../disk/folderIdCache.js';
+import { createFolderIdCache, buildPortalKey } from '../disk/folderIdCache.js';
+import { createRequiredPhotosCache } from './requiredPhotosCache.js';
 import { updateReportCrmItem } from './reportCrmSync.js';
 import { generateDailyPlan } from '../dispatch/dispatchPlanGenerator.js';
 import { reissueToday } from './reissueTodayService.js';
@@ -413,6 +414,15 @@ export const resolveManualCandidates = async ({
   };
 };
 
+// Живёт на весь процесс: набор требуемых фото — факт уровня АЗС, а не запроса.
+// Прежний createAzsTitleResolver создавал свою Map ВНУТРИ обработчика, поэтому
+// между двумя загрузками не помогал вообще.
+// Модульный синглтон объявлен здесь, а не рядом с photoFolderIdCache (внутри
+// createReportsRouter): readRequiredPhotos — самостоятельный экспорт верхнего
+// уровня, вызываемый и вне роутера, и у него нет доступа к переменным из тела
+// фабрики роутера.
+const requiredPhotosCache = createRequiredPhotosCache();
+
 export const readRequiredPhotos = async ({ bitrixClient, settings, azsId, context = {} }) => {
   const azsEntityTypeId = Number(settings.azs?.entityTypeId || 0);
   const photoSetField = String(settings.azs?.fields?.photoSet || '').trim();
@@ -438,48 +448,77 @@ export const readRequiredPhotos = async ({ bitrixClient, settings, azsId, contex
     );
   }
 
-  const azsItem = await bitrixClient.getCrmItem({
-    entityTypeId: azsEntityTypeId,
-    id: azsItemId,
-    context
-  });
-  if (!azsItem) {
-    const err = new ReportConfigError(
-      `AZS item ${azsItemId} was not found in entityTypeId=${azsEntityTypeId}`,
-      'azs_item_not_found'
-    );
-    err.errorCode = AZS_CARD_NOT_FOUND;
-    err.meta = { azsId: String(azsId) };
-    throw err;
+  const portalKey = buildPortalKey(context);
+
+  const cachedSet = requiredPhotosCache.getAzsSet(portalKey, azsItemId);
+  let photoTypeIds = cachedSet?.photoTypeIds ?? null;
+
+  if (!photoTypeIds) {
+    const azsItem = await bitrixClient.getCrmItem({
+      entityTypeId: azsEntityTypeId,
+      id: azsItemId,
+      context
+    });
+    if (!azsItem) {
+      const err = new ReportConfigError(
+        `AZS item ${azsItemId} was not found in entityTypeId=${azsEntityTypeId}`,
+        'azs_item_not_found'
+      );
+      err.errorCode = AZS_CARD_NOT_FOUND;
+      err.meta = { azsId: String(azsId) };
+      throw err;
+    }
+
+    photoTypeIds = [...new Set(extractMultipleIds(getFieldValue(azsItem, photoSetField)))];
+    if (!photoTypeIds.length) {
+      const err = new ReportConfigError(
+        `AZS item ${azsItemId} has empty required photo set field "${photoSetField}"`,
+        'azs_photo_set_empty'
+      );
+      err.errorCode = AZS_PHOTO_SET_EMPTY;
+      err.meta = { azsId: String(azsId) };
+      throw err;
+    }
+
+    requiredPhotosCache.setAzsSet(portalKey, azsItemId, {
+      photoTypeIds,
+      azsTitle: String(azsItem.title ?? azsItem.TITLE ?? '').trim()
+    });
   }
 
-  const photoTypeIds = [...new Set(extractMultipleIds(getFieldValue(azsItem, photoSetField)))];
-  if (!photoTypeIds.length) {
-    const err = new ReportConfigError(
-      `AZS item ${azsItemId} has empty required photo set field "${photoSetField}"`,
-      'azs_photo_set_empty'
-    );
-    err.errorCode = AZS_PHOTO_SET_EMPTY;
-    err.meta = { azsId: String(azsId) };
-    throw err;
-  }
-
-  const items = await Promise.all(photoTypeIds.map((id) => bitrixClient.getCrmItem({
-    entityTypeId: photoTypeEntityTypeId,
-    id,
-    context
-  })));
-
-  const requiredPhotos = items
-    .filter(Boolean)
-    .map((item) => {
+  // Здесь и был залп: Promise.all по вызову на каждый тип, на каждое фото.
+  // Теперь в Битрикс уходят только промахи — типы фото общие для всего парка
+  // и после первой загрузки дня прогреты для всех АЗС сразу.
+  const missingIds = photoTypeIds.filter((id) => !requiredPhotosCache.getPhotoType(portalKey, id));
+  // Локальный фоллбек на случай пустого portalKey: setPhotoType для него —
+  // осознанный no-op (см. requiredPhotosCache.js), поэтому сборка ниже не
+  // может полагаться только на обратное чтение из кэша — она бы читала то,
+  // что сама же не смогла записать, и всегда получала null.
+  const freshTypesById = new Map();
+  if (missingIds.length) {
+    const fetched = await Promise.all(missingIds.map((id) => bitrixClient.getCrmItem({
+      entityTypeId: photoTypeEntityTypeId,
+      id,
+      context
+    })));
+    for (const item of fetched) {
+      if (!item) continue;
       const id = Number(item.id ?? item.ID ?? 0);
-      const code = id ? String(id) : '';
+      if (!id) continue;
       const standardTitle = String(item.title ?? item.TITLE ?? '').trim();
-      const title = standardTitle || `Фото #${id}`;
-      return { code, title, sort: id };
-    })
-    .filter((item) => item.code)
+      const record = {
+        code: String(id),
+        title: standardTitle || `Фото #${id}`,
+        sort: id
+      };
+      requiredPhotosCache.setPhotoType(portalKey, id, record);
+      freshTypesById.set(id, record);
+    }
+  }
+
+  const requiredPhotos = photoTypeIds
+    .map((id) => requiredPhotosCache.getPhotoType(portalKey, id) ?? freshTypesById.get(id))
+    .filter(Boolean)
     .sort((a, b) => a.sort - b.sort)
     .map(({ code, title, sort }) => ({ code, title, sort }));
 
