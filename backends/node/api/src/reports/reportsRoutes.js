@@ -1,8 +1,8 @@
 import express from 'express';
 import multer from 'multer';
 import exifr from 'exifr';
-import { ensureRootFolder, isSupportedPhotoUpload, uploadPhoto } from '../disk/diskService.js';
-import { createFolderIdCache, buildPortalKey } from '../disk/folderIdCache.js';
+import { isSupportedPhotoUpload } from '../disk/diskService.js';
+import { buildPortalKey } from '../disk/folderIdCache.js';
 import { createRequiredPhotosCache } from './requiredPhotosCache.js';
 import { updateReportCrmItem } from './reportCrmSync.js';
 import { generateDailyPlan } from '../dispatch/dispatchPlanGenerator.js';
@@ -11,7 +11,6 @@ import { clearToday } from './clearTodayService.js';
 import { createAnalyticsRouter } from './analyticsRoutes.js';
 import { assertDispatchAvailable } from '../dispatch/dispatchScheduler.js';
 
-import { RETRYABLE_TRANSIENT_ERROR_PATTERN } from '../shared/transientErrors.js';
 import { classifyDispatchError } from './dispatchErrorReasons.js';
 import {
   AZS_PHOTO_SET_EMPTY,
@@ -26,7 +25,6 @@ import {
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const EXIF_MAX_AGE_MINUTES = Number(process.env.EXIF_MAX_AGE_MINUTES || 720);
-const RETRYABLE_UPLOAD_ERROR_PATTERN = RETRYABLE_TRANSIENT_ERROR_PATTERN;
 
 class ReportConfigError extends Error {
   constructor(message, code = 'report_config_error') {
@@ -417,10 +415,11 @@ export const resolveManualCandidates = async ({
 // Живёт на весь процесс: набор требуемых фото — факт уровня АЗС, а не запроса.
 // Прежний createAzsTitleResolver создавал свою Map ВНУТРИ обработчика, поэтому
 // между двумя загрузками не помогал вообще.
-// Модульный синглтон объявлен здесь, а не рядом с photoFolderIdCache (внутри
-// createReportsRouter): readRequiredPhotos — самостоятельный экспорт верхнего
-// уровня, вызываемый и вне роутера, и у него нет доступа к переменным из тела
-// фабрики роутера.
+// Модульный синглтон объявлен на истинном модульном уровне, а не внутри
+// createReportsRouter: readRequiredPhotos — самостоятельный экспорт верхнего
+// уровня, вызываемый и вне роутера (см. resolveRequiredPhotoSlotLocally ниже,
+// который читает этот же кэш для приёма фото без Битрикса), и у него нет
+// доступа к переменным из тела фабрики роутера.
 const requiredPhotosCache = createRequiredPhotosCache();
 
 export const readRequiredPhotos = async ({ bitrixClient, settings, azsId, context = {} }) => {
@@ -533,6 +532,67 @@ export const readRequiredPhotos = async ({ bitrixClient, settings, azsId, contex
   }
 
   return requiredPhotos;
+};
+
+// Приём фото (POST /:id/photo) обязан пережить полную недоступность
+// Битрикса — это критерий приёмки, а не пожелание. readRequiredPhotos выше
+// сам ходит в Битрикс на промахе кэша, поэтому приём НЕ МОЖЕТ им пользоваться
+// напрямую; вместо этого — три уровня резолвинга списка, строго по порядку,
+// от дешёвого и надёжного к дорогому:
+//
+//   1. report_local_state.required_photo_codes (наша БД) — обычный случай,
+//      переживает рестарт процесса. Заполняется при открытии карточки
+//      отчёта (GET /:id) живым Битриксом — см. там же.
+//   2. requiredPhotosCache (модульный кэш в памяти, см. readRequiredPhotos
+//      выше) — колонка ещё пуста (например, отчёт не открывали после
+//      последнего рестарта), но кэш прогрет чужой загрузкой/просмотром в
+//      рамках текущего процесса. Заодно ЗАПОЛНЯЕТ колонку — следующий приём
+//      для этого отчёта пойдёт уже по уровню 1.
+//   3. Ничего не известно локально — фото ПРИНИМАЕТСЯ на непроверенный слот
+//      (slotVerified=false). Цена ошибки несимметрична: непроверенный слот
+//      всплывёт при публикации и попадёт к сторожу, а отказ в приёме — это
+//      несданная смена у живого человека из-за чужой поломки (Битрикса).
+//
+// НИ ОДНА из трёх веток не делает запросов к bitrixClient — это не
+// оптимизация, а контракт. Настройки (settingsStore.read()) здесь тоже не
+// нужны ни одному из уровней и намеренно не читаются: settingsStore.read()
+// сам может обратиться к порталу (композитный стор пробует Битрикс первым),
+// а это ровно то обращение, которого приём обязан избежать.
+const enrichCodesWithCachedTitles = (codes, portalKey) => codes
+  .map((code) => {
+    const typeId = Number(code);
+    const cached = Number.isFinite(typeId) ? requiredPhotosCache.getPhotoType(portalKey, typeId) : null;
+    return cached || { code: String(code), title: `Фото #${code}`, sort: Number.isFinite(typeId) ? typeId : 0 };
+  })
+  .sort((a, b) => a.sort - b.sort);
+
+const resolveRequiredPhotoSlotLocally = async ({ reportsStore, reportId, azsId, context }) => {
+  const portalKey = buildPortalKey(context);
+
+  const storedCodes = await reportsStore.getRequiredPhotoCodes(reportId);
+  if (Array.isArray(storedCodes) && storedCodes.length) {
+    const requiredPhotos = enrichCodesWithCachedTitles(storedCodes, portalKey);
+    return { requiredPhotos, requiredCodes: requiredPhotos.map((item) => item.code), slotVerified: true };
+  }
+
+  const azsItemId = parseCrmItemId(azsId);
+  const cachedSet = requiredPhotosCache.getAzsSet(portalKey, azsItemId);
+  if (cachedSet?.photoTypeIds?.length) {
+    const requiredPhotos = enrichCodesWithCachedTitles(cachedSet.photoTypeIds.map(String), portalKey);
+    // Заодно заполняем колонку: следующий приём для этого отчёта пойдёт по
+    // уровню 1, даже если кэш к тому моменту протухнет или процесс
+    // перезапустят. Ошибку записи глотаем намеренно — это необязательный
+    // побочный эффект (backfill), а не часть критического пути приёма: если
+    // наша же БД недоступна, accept() ниже всё равно не сможет принять фото,
+    // и это уже вне контракта "пережить недоступность БИТРИКСА".
+    await reportsStore.setRequiredPhotoCodes({
+      reportId,
+      codes: requiredPhotos.map((item) => item.code)
+    }).catch(() => {});
+    return { requiredPhotos, requiredCodes: requiredPhotos.map((item) => item.code), slotVerified: true };
+  }
+
+  return { requiredPhotos: [], requiredCodes: [], slotVerified: false };
 };
 
 const extractUserId = (user) => {
@@ -653,9 +713,6 @@ export const resolveAdminCrmSyncContext = async ({ authContextStore, requestCont
     ...adminContext
   };
 };
-
-
-const isRetryableUploadError = (error) => RETRYABLE_UPLOAD_ERROR_PATTERN.test(String(error?.message || error || ''));
 
 
 const verifyCrmFolderSync = async ({
@@ -985,6 +1042,7 @@ export const createReportsRouter = ({
   getBackgroundContext = null,
   getAdminContext = null,
   brandStore = null,
+  photoQueueStore = null,
 }) => {
   if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService || !authContextStore || !crmSyncJobStore) {
     throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient, notificationService, authContextStore and crmSyncJobStore are required');
@@ -997,15 +1055,6 @@ export const createReportsRouter = ({
       fileSize: MAX_FILE_BYTES
     }
   });
-
-  // Один инстанс на процесс (createReportsRouter вызывается один раз при
-  // старте сервера, см. server.js) — переживает запросы, но не рестарт.
-  // При нескольких инстансах приложения (масштабирование) у каждого будет
-  // свой кэш: это осознанно допустимо (см. задачу) — худший случай — по
-  // несколько лишних резолвингов пути на инстанс после рестарта/деплоя, а не
-  // рассинхронизация данных. portalKey (memberId+domain из req.bitrixContext)
-  // не даёт кэшу отдать id чужого портала — см. folderIdCache.js.
-  const photoFolderIdCache = createFolderIdCache();
 
   router.get('/', async (req, res) => {
     if (!canUseReviewerTools(req)) {
@@ -1552,6 +1601,20 @@ export const createReportsRouter = ({
         }),
         crmSyncJobStore.listByReport(id)
       ]);
+      // Открытие карточки отчёта — источник истины для
+      // report_local_state.required_photo_codes: список только что получен и
+      // оплачен живым Битриксом (см. readRequiredPhotos выше), а приём фото
+      // (POST /:id/photo, resolveRequiredPhotoSlotLocally) дальше читает его
+      // из нашей БД, не обращаясь к порталу вовсе. Необязательный побочный
+      // эффект: не роняем ответ карточки, если запись в нашу БД не удалась,
+      // и не требуем метод от reportsStore-фейков в тестах, не относящихся к
+      // этому сценарию.
+      if (typeof reportsStore.setRequiredPhotoCodes === 'function') {
+        await reportsStore.setRequiredPhotoCodes({
+          reportId: id,
+          codes: requiredPhotos.map((photoItem) => photoItem.code)
+        }).catch(() => {});
+      }
       const azsTitle = await resolveAzsTitle(item.azsId);
       const latestJob = syncJobs.length ? syncJobs[syncJobs.length - 1] : null;
       const syncStatus = latestJob
@@ -1683,18 +1746,26 @@ export const createReportsRouter = ({
 
       const currentUserId = ensureCurrentUserOwnsReport({ req, report });
 
-      const settings = await settingsStore.read();
-      ensureFolderFieldMapping(settings); // guard: throws if folder field not configured
-      const requiredPhotos = await readRequiredPhotos({
-        bitrixClient,
-        settings,
+      if (!photoQueueStore || typeof photoQueueStore.accept !== 'function') {
+        throw new ReportConfigError('photoQueueStore is not configured', 'photo_queue_store_not_configured');
+      }
+
+      // Список требуемых фото — ЛОКАЛЬНО, без единого обращения к Битриксу
+      // (см. resolveRequiredPhotoSlotLocally выше). Именно это и делает
+      // приём независимым от портала: ни settingsStore.read(), ни
+      // readRequiredPhotos здесь больше не вызываются.
+      const { requiredPhotos, requiredCodes, slotVerified } = await resolveRequiredPhotoSlotLocally({
+        reportsStore,
+        reportId,
         azsId: report.azsId,
         context: req.bitrixContext || {}
       });
-      const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });
-      const azsTitle = await resolveAzsTitle(report.azsId);
-      const requiredCodes = requiredPhotos.map((item) => item.code);
-      if (!requiredCodes.includes(photoCode)) {
+
+      // Проверяем принадлежность кода слоту, только когда список реально
+      // известен (slotVerified). При неизвестном списке requiredCodes пуст по
+      // конструкции — .includes(...) отверг бы ЛЮБОЕ фото и свёл бы
+      // устойчивость приёма к нулю ровно в момент, когда она нужнее всего.
+      if (slotVerified && !requiredCodes.includes(photoCode)) {
         return res.status(400).json({
           error: 'photo_code_not_required',
           errorCode: PHOTO_CODE_NOT_REQUIRED,
@@ -1714,121 +1785,71 @@ export const createReportsRouter = ({
         });
       }
 
-      const diskContext = req.bitrixContext || {};
-
-      // S8-B2b: если АЗС принадлежит бренду с настроенной папкой на Диске —
-      // использовать папку бренда как корень (вместо общего AZS-Photo-Reports).
-      // Фоллбек: нет brandStore / АЗС не в бренде / у бренда нет disk_folder_id —
-      // поведение как прежде (общий корень). Регрессии для не-брендовых АЗС нет.
-      let brandRootFolderId = null;
-      if (brandStore && typeof brandStore.getBrandByAzsId === 'function') {
-        const brand = await brandStore.getBrandByAzsId(report.azsId).catch(() => null);
-        if (brand && brand.disk_folder_id) {
-          brandRootFolderId = Number(brand.disk_folder_id);
-        }
-      }
-
-      const rootFolderId = brandRootFolderId
-        ? brandRootFolderId
-        : await ensureRootFolder(bitrixClient.diskApi, {
-            configuredRootFolderId: Number(settings.disk?.rootFolderId || 0),
-            storageRootId: Number(process.env.BITRIX_DISK_STORAGE_ROOT_ID || 1),
-            appFolderName: process.env.BITRIX_DISK_APP_FOLDER || 'AZS-Photo-Reports'
-          }, diskContext);
-
-      const { slotDate, slotHHmm } = parseReportSlotKey(report.slotKey);
-      const requiredTitle = requiredPhotos.find((item) => item.code === photoCode)?.title || '';
-      const uploaded = await uploadPhoto(bitrixClient.diskApi, {
-        rootFolderId,
-        azsId: report.azsId,
-        azsName: azsTitle,
-        slotDate,
-        slotHHmm,
-        photoCode,
-        requiredTitle,
-        originalName: file.originalname,
-        mimeType: file.mimetype,
-        capturedAt: exifValidation.exifAt || new Date(),
-        content: file.buffer,
-        folderNameTemplate: settings.disk?.folderNameTemplate || '{yyyy-mm}/{dd}/{azs}_{azs_name}',
-        // C-perf: путь {yyyy-mm}/{dd}/{azs}_{azs_name} меняется раз в сутки на
-        // АЗС — не на каждое фото. С этим кэшем 2-й и последующие снимки той
-        // же станции в тот же день не тратят 3 REST-вызова (по одному
-        // findChildFolder на сегмент) на его повторный резолвинг.
-        folderIdCache: photoFolderIdCache
-      }, diskContext);
-
-      await reportsStore.upsertPhoto({
+      // Байты — в нашу БД, и на этом синхронная часть кончается. Ни одного
+      // вызова Битрикса: именно ожидание этих вызовов телефон и не переживал,
+      // упираясь в UPLOAD_TIMEOUT_MS = 55_000. Диск, папка бренда и CRM-sync
+      // теперь заботы фонового воркера публикации, а не этого запроса.
+      await photoQueueStore.accept({
         reportId,
         photoCode,
-        fileId: uploaded.fileId,
-        fileName: uploaded.fileName,
-        diskFolderId: uploaded.folderId,
-        diskObjectId: uploaded.diskObjectId,
         uploadedBy: currentUserId,
-        exifAt: exifValidation.exifAt
+        exifAt: exifValidation.exifAt,
+        content: file.buffer,
+        mimeType: file.mimetype,
+        originalName: file.originalname,
+        slotVerified
       });
 
       const currentPhotos = await reportsStore.listPhotos(reportId);
       const uploadedCodes = new Set(currentPhotos.map((photo) => normalizePhotoCode(photo.photoCode)));
-      const allRequiredUploaded = requiredCodes.every((code) => uploadedCodes.has(code));
       const nextStatus = 'in_progress';
       await reportsStore.setReportStatus({
         reportId,
         status: nextStatus
       });
 
-      // Durable CRM sync: persist a job; the background worker performs it with
-      // retry and survives process restarts. /photo stays fast (returns after Disk+DB).
-      await crmSyncJobStore.enqueue({
-        reportId,
-        payload: {
-          status: nextStatus,
-          diskFolderId: uploaded.folderId,
-          contextKey: req.bitrixContext?.key || '',
-          domain: req.bitrixContext?.domain || '',
-          memberId: req.bitrixContext?.memberId || ''
-        }
-      });
-
       return res.json({
         item: {
           reportId,
           photoCode,
-          fileId: uploaded.fileId,
-          diskObjectId: uploaded.diskObjectId,
-          fileName: uploaded.fileName,
-          folderId: uploaded.folderId,
+          publishState: 'accepted',
+          accepted: true,
+          // Контракт меняется намеренно: файла в Битриксе на момент ответа
+          // ещё нет (публикация асинхронна, см. фоновый воркер) — фронт
+          // обязан перестать рассчитывать на эти поля.
+          fileId: null,
+          diskObjectId: null,
+          folderId: null,
           status: nextStatus,
           completed: false,
-          allUploaded: allRequiredUploaded,
+          // На непроверенном слоте (requiredCodes пуст, slotVerified=false)
+          // "всё загружено" не может быть true вакуумно — Array.prototype
+          // .every на пустом массиве и так вернул бы true, а мы попросту не
+          // знаем, что нужно загрузить.
+          allUploaded: requiredCodes.length > 0 && requiredCodes.every((code) => uploadedCodes.has(code)),
           uploadedCount: uploadedCodes.size,
           requiredCount: requiredCodes.length,
-          requiredPhotos,
-          syncQueued: true
+          requiredPhotos
         }
       });
     } catch (error) {
       const statusCode = Number(error?.statusCode || 500);
-      const retryable = isRetryableUploadError(error);
-      // C1c: log every upload failure, not just 5xx/retryable ones — 400/403/409
-      // rejections (bad photoCode, forbidden user, EXIF-too-old, duplicate races,
-      // etc.) were previously silent, making them undiagnosable from logs alone.
-      // 5xx/retryable failures stay at error level (ops-actionable); expected
-      // 4xx client errors log at warn so they don't page anyone.
-      const logMethod = (statusCode >= 500 || retryable) ? 'error' : 'warn';
+      // C1c: log every upload failure, not just 5xx ones — 400/403/409
+      // rejections (bad photoCode, forbidden user, EXIF-too-old, etc.) were
+      // previously silent, making them undiagnosable from logs alone. 5xx
+      // stays at error level (ops-actionable); expected 4xx client errors log
+      // at warn so they don't page anyone.
+      const logMethod = statusCode >= 500 ? 'error' : 'warn';
       console[logMethod]('report_photo_upload_failed', {
         reportId: Number(req.params?.id || 0) || null,
         photoCode: normalizePhotoCode(req.body?.photoCode || ''),
-        slotKey: String(req.body?.slotKey || ''),
         statusCode,
-        retryable,
         code: error?.code || undefined,
         message: String(error?.message || error || '')
       });
       return res.status(statusCode).json({
         error: error?.code || 'report_photo_upload_failed',
-        errorCode: error?.errorCode || (retryable ? 'bitrix_retryable' : undefined),
+        errorCode: error?.errorCode || undefined,
         meta: error?.meta || undefined,
         message: error.message,
         currentUserId: error?.currentUserId,
