@@ -141,6 +141,40 @@ test('accept на повторной загрузке того же кода с�
   assert.match(sql, /next_attempt_at = NULL/);
 });
 
+// ---------------------------------------------------------------------------
+// accept({ slotVerified }) — Task 5 (приём фото без Битрикса) расширяет
+// accept() признаком непроверенного слота: список требуемых фото иногда
+// неизвестен локально (ни в report_local_state, ни в кэше), и тогда фото всё
+// равно принимается, но с slot_verified=false — проверку выполнит воркер
+// публикации. Брифом Task 4 этот параметр не задавался (задача написана
+// раньше Task 5), поэтому тестов на него в исходном файле не было — добавлены
+// здесь вместе с самим параметром.
+// ---------------------------------------------------------------------------
+
+test('accept проставляет slot_verified=false явным параметром запроса, когда слот не проверен', async () => {
+  const pool = makeFakePool([{ rows: [{ id: 1 }] }, { rows: [] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await store.accept({
+    reportId: 1, photoCode: 'FRONT', uploadedBy: 7, exifAt: null,
+    content: Buffer.from('x'), mimeType: 'image/jpeg', originalName: null,
+    slotVerified: false
+  });
+  assert.match(pool.calls[0].sql, /slot_verified/,
+    'INSERT обязан явно проставлять slot_verified — полагаться на DEFAULT колонки нельзя: ретейк идёт через ON CONFLICT DO UPDATE, а не INSERT');
+  assert.deepEqual(pool.calls[0].params, [1, 'FRONT', 7, null, false]);
+});
+
+test('accept по умолчанию (slotVerified не передан) считает слот проверенным', async () => {
+  const pool = makeFakePool([{ rows: [{ id: 2 }] }, { rows: [] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await store.accept({
+    reportId: 1, photoCode: 'BACK', uploadedBy: 7, exifAt: null,
+    content: Buffer.from('y'), mimeType: 'image/jpeg', originalName: null
+  });
+  assert.deepEqual(pool.calls[0].params, [1, 'BACK', 7, null, true],
+    'дефолт slotVerified=true — самый частый случай, список известен локально');
+});
+
 test('markFailed переводит фото в failed и запоминает ошибку', async () => {
   const pool = makeFakePool([{ rowCount: 1 }]);
   const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
@@ -304,6 +338,29 @@ test('MySQL: accept возвращает id и на INSERT, и на конфли
   assert.match(pool.calls[0].sql, /id = LAST_INSERT_ID\(id\)/,
     'без этого трюка insertId будет 0 на ветке обновления, а не вставки');
   assert.match(pool.calls[1].sql, /INSERT INTO report_photo_blob/);
+});
+
+test('MySQL: accept передаёт slot_verified=0 явным параметром, когда слот не проверен', async () => {
+  const pool = makeFakeMysqlPool([[{ insertId: 78 }], [{ affectedRows: 1 }]]);
+  const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
+  await store.accept({
+    reportId: 3, photoCode: 'BACK', uploadedBy: 2, exifAt: null,
+    content: Buffer.from('bytes'), mimeType: 'image/png', originalName: null,
+    slotVerified: false
+  });
+  assert.match(pool.calls[0].sql, /slot_verified/);
+  assert.deepEqual(pool.calls[0].params, [3, 'BACK', 2, null, 0],
+    'MySQL BOOLEAN — алиас TINYINT(1): false обязан попасть в параметры как 0, а не как JS false');
+});
+
+test('MySQL: accept по умолчанию (slotVerified не передан) считает слот проверенным', async () => {
+  const pool = makeFakeMysqlPool([[{ insertId: 79 }], [{ affectedRows: 1 }]]);
+  const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
+  await store.accept({
+    reportId: 3, photoCode: 'FRONT', uploadedBy: 2, exifAt: null,
+    content: Buffer.from('bytes'), mimeType: 'image/png', originalName: null
+  });
+  assert.deepEqual(pool.calls[0].params, [3, 'FRONT', 2, null, 1]);
 });
 
 test('MySQL: markPublished не трогает байты', async () => {

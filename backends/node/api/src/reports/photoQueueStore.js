@@ -65,7 +65,14 @@ const assertSafeReclaimStaleMs = (staleMs) => {
 // ---------------------------------------------------------------------------
 
 const createPostgresStore = (pool) => ({
-  async accept({ reportId, photoCode, uploadedBy, exifAt, content, mimeType, originalName }) {
+  // slotVerified (по умолчанию true) — стык с Task 5 (приём фото без
+  // Битрикса): когда список требуемых фото не удаётся узнать локально ни из
+  // report_local_state, ни из кэша, фото всё равно принимается, но с
+  // slot_verified=false — саму проверку откладываем до публикации (её делает
+  // воркер). Явный параметр запроса, а не расчёт на DEFAULT TRUE колонки:
+  // ретейк идёт через ON CONFLICT DO UPDATE, а не через INSERT, и DEFAULT
+  // колонки на UPDATE-ветке не действует вовсе.
+  async accept({ reportId, photoCode, uploadedBy, exifAt, content, mimeType, originalName, slotVerified = true }) {
     // Две отдельные вставки, не одна транзакция — это намеренно, а не
     // недосмотр. Если процесс упадёт между ними, останется строка
     // report_photo в 'accepted' без пары в report_photo_blob — тот самый
@@ -75,8 +82,8 @@ const createPostgresStore = (pool) => ({
     // (сторож обязан её увидеть и сообщить). Оборачивать в транзакцию незачем:
     // это не убирает дефектные строки, а только меняет, кто их произвёл.
     const photoResult = await pool.query(
-      `INSERT INTO report_photo (report_id, photo_code, uploaded_by, exif_at, publish_state)
-       VALUES ($1, $2, $3, $4, 'accepted')
+      `INSERT INTO report_photo (report_id, photo_code, uploaded_by, exif_at, publish_state, slot_verified)
+       VALUES ($1, $2, $3, $4, 'accepted', $5)
        ON CONFLICT (report_id, photo_code) DO UPDATE
           SET uploaded_by = EXCLUDED.uploaded_by,
               exif_at = EXCLUDED.exif_at,
@@ -85,10 +92,11 @@ const createPostgresStore = (pool) => ({
               next_attempt_at = NULL,
               last_publish_error = NULL,
               published_at = NULL,
+              slot_verified = EXCLUDED.slot_verified,
               uploaded_at = NOW(),
               updated_at = NOW()
        RETURNING id`,
-      [reportId, photoCode, uploadedBy, exifAt ?? null]
+      [reportId, photoCode, uploadedBy, exifAt ?? null, Boolean(slotVerified)]
     );
     const id = photoResult.rows[0].id;
     // content — Buffer с сырыми байтами (тип согласован со схемой BYTEA);
@@ -277,14 +285,17 @@ const createPostgresStore = (pool) => ({
 // ---------------------------------------------------------------------------
 
 const createMysqlStore = (pool) => ({
-  async accept({ reportId, photoCode, uploadedBy, exifAt, content, mimeType, originalName }) {
+  // См. комментарий у PostgreSQL-версии accept: slotVerified — стык с Task 5,
+  // явный параметр запроса (не DEFAULT колонки), потому что ретейк идёт через
+  // ON DUPLICATE KEY UPDATE, а не через чистый INSERT.
+  async accept({ reportId, photoCode, uploadedBy, exifAt, content, mimeType, originalName, slotVerified = true }) {
     const exifAtSql = exifAt ? toDateSql(exifAt) : null;
     // ON DUPLICATE KEY UPDATE ... id = LAST_INSERT_ID(id) — без этого трюка
     // insertId равен 0 на ветке обновления (существующий report_id+photo_code),
     // а не на ветке вставки, и id из результата было бы неоткуда взять.
     const [result] = await pool.execute(
-      `INSERT INTO report_photo (report_id, photo_code, uploaded_by, exif_at, publish_state)
-       VALUES (?, ?, ?, ?, 'accepted')
+      `INSERT INTO report_photo (report_id, photo_code, uploaded_by, exif_at, publish_state, slot_verified)
+       VALUES (?, ?, ?, ?, 'accepted', ?)
        ON DUPLICATE KEY UPDATE
          id = LAST_INSERT_ID(id),
          uploaded_by = VALUES(uploaded_by),
@@ -294,9 +305,12 @@ const createMysqlStore = (pool) => ({
          next_attempt_at = NULL,
          last_publish_error = NULL,
          published_at = NULL,
+         slot_verified = VALUES(slot_verified),
          uploaded_at = CURRENT_TIMESTAMP,
          updated_at = CURRENT_TIMESTAMP`,
-      [reportId, photoCode, uploadedBy, exifAtSql]
+      // MySQL BOOLEAN — алиас TINYINT(1): бинд как 1/0, а не как JS true/false,
+      // тот же приём, что и is_admin в databaseAuthContextStore.js.
+      [reportId, photoCode, uploadedBy, exifAtSql, slotVerified ? 1 : 0]
     );
     const id = result.insertId;
     const byteSize = Buffer.byteLength(content);
