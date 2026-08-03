@@ -156,7 +156,7 @@ const buildNotRequiredError = (task) =>
  * @param {number} [deps.maxAttempts] — после этого числа попыток -> markFailed вместо reschedule
  * @param {number} [deps.pollIntervalMs] — интервал setInterval в start()
  * @param {Function} [deps.resolveRequiredPhotoCodes] — (task) => Promise<string[]>; нужна ТОЛЬКО для задач со slot_verified=false (см. блок комментариев выше)
- * @param {Function} [deps.syncCrmIfComplete] — (reportId) => Promise<any>; зовётся после КАЖДОГО успешного markPublished, best-effort (ошибка не отменяет уже состоявшуюся публикацию)
+ * @param {Function} [deps.syncCrmIfComplete] — (reportId, task) => Promise<any>; зовётся после КАЖДОГО успешного markPublished, best-effort (ошибка не отменяет уже состоявшуюся публикацию). task — второй, необязательный для реализации аргумент, на случай если вызывающему нужен более широкий контекст, чем голый id
  * @param {Function} [deps.now] — инжектируемые часы (мс), как в crmSyncWorker.js; по умолчанию Date.now
  * @param {object} [deps.logger] — по умолчанию console; используется только .error()
  */
