@@ -939,11 +939,10 @@ cd backends/node/api && node --test tests/photoQueueStore.test.js
           SET next_attempt_at = $1 + INTERVAL '5 minutes',
               updated_at = NOW()
          FROM due
+         JOIN report_photo_blob b ON b.report_photo_id = due.id
         WHERE rp.id = due.id
        RETURNING rp.id, rp.report_id, rp.photo_code, rp.publish_attempts, rp.exif_at,
-                 (SELECT b.content FROM report_photo_blob b WHERE b.report_photo_id = rp.id) AS content,
-                 (SELECT b.mime_type FROM report_photo_blob b WHERE b.report_photo_id = rp.id) AS mime_type,
-                 (SELECT b.original_name FROM report_photo_blob b WHERE b.report_photo_id = rp.id) AS original_name`,
+                 rp.slot_verified, b.content, b.mime_type, b.original_name`,
       [now, limit]
     );
     // Сдвиг next_attempt_at на 5 минут в момент взятия — аренда задачи:
@@ -951,13 +950,30 @@ cd backends/node/api && node --test tests/photoQueueStore.test.js
     // пять минут, без отдельного статуса 'running' и без reclaimStale на
     // старте (который в crmSyncWorker существует ровно потому, что там
     // статус 'running' некому снять после падения).
-    return result.rows.filter((row) => row.content);
+    //
+    // JOIN, а не LEFT JOIN, намеренно: фото без байтов опубликовать нечем.
+    // Такая строка — уже дефект (байты удалены раньше срока или приём
+    // прервался между вставками), и её место у сторожа, а не в очереди, где
+    // она вечно бралась бы и вечно падала.
+    return result.rows;
   },
 ```
 
 Остальные методы — по образцу `crmSyncJobStore.js`, включая MySQL-вариант. В MySQL `FOR UPDATE SKIP LOCKED` поддерживается с 8.0; для более старых версий вернуть прежний приём SELECT-затем-UPDATE с проверкой `affectedRows`.
 
-**Тест-заметка для реализующего:** утверждение `assert.match(sql, /JOIN report_photo_blob/)` из шага 1 не совпадёт с подзапросами выше. Это **намеренная развилка**: либо перепиши запрос на `JOIN report_photo_blob b ON b.report_photo_id = rp.id`, либо поправь тест на проверку `report_photo_blob` без слова JOIN. Выбери одно и объясни выбор в отчёте — **молча удалять утверждение нельзя**.
+**Дополнительный тест к шагу 1** — про строки без байтов, раз JOIN их отбрасывает молча:
+
+```js
+test('фото без байтов не попадает в очередь, но и не теряется', async () => {
+  // claimBatch не возвращает такую строку (JOIN её отбрасывает),
+  // а listStuck — возвращает, чтобы сторож о ней сообщил
+  const pool = makeFakePool([{ rows: [] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await store.listStuck({ olderThanMs: 0, limit: 10 });
+  assert.match(pool.calls[0].sql, /LEFT JOIN report_photo_blob/,
+    'сторож обязан видеть фото, у которого пропали байты');
+});
+```
 
 - [ ] **Шаг 4: Прогнать тесты, добиться зелёного**
 
