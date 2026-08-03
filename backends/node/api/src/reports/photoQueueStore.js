@@ -229,9 +229,19 @@ const createPostgresStore = (pool) => ({
     return result.rowCount ?? 0;
   },
 
-  async countByState() {
+  // reportId — опционален. Без него поведение прежнее: глобальная сводка по
+  // всей таблице (используется диагностикой/сторожем). С ним — сводка по
+  // ОДНОМУ отчёту: нужна Task 8/photoPublishCompletion.js, чтобы после
+  // публикации каждого фото проверить, весь ли обязательный комплект ЭТОГО
+  // отчёта уже 'published' — без фильтра по report_id "40 из 40 published"
+  // где угодно в таблице ложно засчитало бы завершённость чужому отчёту.
+  async countByState({ reportId } = {}) {
+    const hasReportId = reportId !== undefined && reportId !== null;
     const result = await pool.query(
-      `SELECT publish_state, COUNT(*) AS count FROM report_photo GROUP BY publish_state`
+      hasReportId
+        ? `SELECT publish_state, COUNT(*) AS count FROM report_photo WHERE report_id = $1 GROUP BY publish_state`
+        : `SELECT publish_state, COUNT(*) AS count FROM report_photo GROUP BY publish_state`,
+      hasReportId ? [reportId] : []
     );
     const counts = {};
     for (const row of result.rows) counts[row.publish_state] = Number(row.count);
@@ -444,9 +454,15 @@ const createMysqlStore = (pool) => ({
     return result?.affectedRows ?? 0;
   },
 
-  async countByState() {
+  // См. комментарий у PostgreSQL-версии countByState выше — тот же контракт:
+  // reportId опционален, без него — прежняя глобальная сводка.
+  async countByState({ reportId } = {}) {
+    const hasReportId = reportId !== undefined && reportId !== null;
     const [rows] = await pool.execute(
-      `SELECT publish_state, COUNT(*) AS count FROM report_photo GROUP BY publish_state`
+      hasReportId
+        ? `SELECT publish_state, COUNT(*) AS count FROM report_photo WHERE report_id = ? GROUP BY publish_state`
+        : `SELECT publish_state, COUNT(*) AS count FROM report_photo GROUP BY publish_state`,
+      hasReportId ? [reportId] : []
     );
     const counts = {};
     for (const row of rows) counts[row.publish_state] = Number(row.count);

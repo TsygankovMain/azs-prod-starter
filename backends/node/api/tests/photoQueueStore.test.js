@@ -249,6 +249,22 @@ test('countByState группирует фото по состоянию пуб�
   const counts = await store.countByState();
   assert.deepEqual(counts, { accepted: 3, published: 40 });
   assert.match(pool.calls[0].sql, /GROUP BY publish_state/);
+  assert.doesNotMatch(pool.calls[0].sql, /WHERE/, 'без reportId — глобальная сводка, без фильтра');
+  assert.deepEqual(pool.calls[0].params, [], 'без reportId — без параметров');
+});
+
+// Task 8: syncReportToCrmIfComplete (photoPublishCompletion.js) обязан
+// проверять комплект ОДНОГО отчёта, а не всей таблицы — иначе "40 из 40
+// published" у одного отчёта ложно засчитает завершённость чужому.
+test('countByState({reportId}) считает только фото этого отчёта', async () => {
+  const pool = makeFakePool([{ rows: [{ publish_state: 'published', count: '2' }] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  const counts = await store.countByState({ reportId: 501 });
+  assert.deepEqual(counts, { published: 2 });
+  const { sql, params } = pool.calls[0];
+  assert.match(sql, /WHERE report_id = \$1/);
+  assert.match(sql, /GROUP BY publish_state/);
+  assert.deepEqual(params, [501]);
 });
 
 test('listStuck отбирает не опубликованные фото старше порога, лимитируя выборку', async () => {
@@ -428,6 +444,17 @@ test('MySQL: countByState группирует по состоянию', async (
   const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
   const counts = await store.countByState();
   assert.deepEqual(counts, { failed: 2 });
+  assert.doesNotMatch(pool.calls[0].sql, /WHERE/, 'без reportId — глобальная сводка, без фильтра');
+});
+
+test('MySQL: countByState({reportId}) считает только фото этого отчёта', async () => {
+  const pool = makeFakeMysqlPool([[[{ publish_state: 'published', count: 2 }]]]);
+  const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
+  const counts = await store.countByState({ reportId: 501 });
+  assert.deepEqual(counts, { published: 2 });
+  const { sql, params } = pool.calls[0];
+  assert.match(sql, /WHERE report_id = \?/);
+  assert.deepEqual(params, [501]);
 });
 
 test('MySQL: listStuck использует LEFT JOIN — фото без байтов не теряется', async () => {

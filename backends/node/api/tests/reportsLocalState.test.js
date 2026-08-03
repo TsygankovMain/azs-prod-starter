@@ -88,6 +88,39 @@ test('PostgreSQL: getRequiredPhotoCodes возвращает null, когда re
 });
 
 // ---------------------------------------------------------------------------
+// setOperatorCompletedAt — Task 8 (чинит CRITICAL Task 5: POST /:id/submit
+// проставляет момент, когда ОПЕРАТОР закончил, а не когда фото доехали до
+// Битрикса). Тот же upsert-приём и та же ЛОВУШКА СХЕМЫ, что и у
+// setRequiredPhotoCodes выше — updated_at в PostgreSQL не обновляется сам.
+// ---------------------------------------------------------------------------
+
+test('PostgreSQL: setOperatorCompletedAt — upsert по report_id, явный updated_at = NOW()', async () => {
+  const pool = makeFakePool([{ rows: [] }]);
+  const store = createReportsStore({ pool, dbType: 'postgres' });
+  const at = new Date('2026-08-03T09:59:00.000Z');
+  await store.setOperatorCompletedAt({ reportId: 501, at });
+
+  assert.equal(pool.calls.length, 1, 'один upsert, не отдельные INSERT/UPDATE');
+  const { sql, params } = pool.calls[0];
+  assert.match(sql, /INSERT INTO report_local_state/);
+  assert.match(sql, /operator_completed_at/);
+  assert.match(sql, /ON CONFLICT\s*\(report_id\)\s*DO UPDATE/);
+  assert.match(sql, /updated_at = NOW\(\)/,
+    'PostgreSQL не имеет ON UPDATE CURRENT_TIMESTAMP — без явного NOW() поле тихо перестанет обновляться в проде');
+  assert.equal(params[0], 501);
+  assert.equal(params[1].toISOString(), at.toISOString());
+});
+
+test('PostgreSQL: setOperatorCompletedAt принимает не-Date значение и приводит его к Date', async () => {
+  const pool = makeFakePool([{ rows: [] }]);
+  const store = createReportsStore({ pool, dbType: 'postgres' });
+  await store.setOperatorCompletedAt({ reportId: 501, at: '2026-08-03T09:59:00.000Z' });
+  const { params } = pool.calls[0];
+  assert.ok(params[1] instanceof Date);
+  assert.equal(params[1].toISOString(), '2026-08-03T09:59:00.000Z');
+});
+
+// ---------------------------------------------------------------------------
 // MySQL
 // ---------------------------------------------------------------------------
 
@@ -119,4 +152,21 @@ test('MySQL: getRequiredPhotoCodes возвращает null, когда стр�
   const store = createReportsStore({ pool, dbType: 'mysql' });
   const codes = await store.getRequiredPhotoCodes(11);
   assert.equal(codes, null);
+});
+
+test('MySQL: setOperatorCompletedAt — upsert по report_id, явный updated_at = CURRENT_TIMESTAMP', async () => {
+  const pool = makeFakeMysqlPool([[{ affectedRows: 1 }]]);
+  const store = createReportsStore({ pool, dbType: 'mysql' });
+  const at = new Date('2026-08-03T09:59:00.000Z');
+  await store.setOperatorCompletedAt({ reportId: 501, at });
+
+  assert.equal(pool.calls.length, 1);
+  const { sql, params } = pool.calls[0];
+  assert.match(sql, /INSERT INTO report_local_state/);
+  assert.match(sql, /operator_completed_at/);
+  assert.match(sql, /ON DUPLICATE KEY UPDATE/);
+  assert.match(sql, /updated_at = CURRENT_TIMESTAMP/,
+    'MySQL обновляет updated_at и через триггер, но код не должен молчаливо полагаться на асимметрию движков');
+  assert.equal(params[0], 501);
+  assert.equal(params[1], '2026-08-03 09:59:00');
 });

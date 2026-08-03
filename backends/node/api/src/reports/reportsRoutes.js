@@ -1043,6 +1043,7 @@ export const createReportsRouter = ({
   getAdminContext = null,
   brandStore = null,
   photoQueueStore = null,
+  now = () => new Date(),
 }) => {
   if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService || !authContextStore || !crmSyncJobStore) {
     throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient, notificationService, authContextStore and crmSyncJobStore are required');
@@ -1909,35 +1910,43 @@ export const createReportsRouter = ({
         });
       }
 
+      // disk_folder_id — только для отображения (best-effort), НЕ условие
+      // сдачи. Раньше здесь стоял throw ReportSyncError('report_folder_missing',
+      // 502), когда ни у одного фото не было disk_folder_id — CRITICAL,
+      // внесённый Task 5: приём фото (photoQueueStore.accept) больше не
+      // публикует в Битрикс синхронно и не заполняет эту колонку — её
+      // заполняет только markPublished(), то есть УЖЕ СОСТОЯВШАЯСЯ публикация.
+      // Оператор грузил фото (200), тут же жал «сдать» — и получал 502
+      // навсегда: заполнить disk_folder_id значит сходить в Битрикс, а во
+      // время простоя портала это не произойдёт никогда. Сдача смены обязана
+      // считаться по ЛОКАЛЬНОМУ признаку — missingCodes выше уже проверил, что
+      // все обязательные слоты приняты (report_photo существует для каждого
+      // кода, независимо от publish_state) — доехали ли байты до Битрикса не
+      // имеет права блокировать закрытие смены.
       const diskFolderId = currentPhotos
         .map((photo) => Number(photo.diskFolderId))
-        .find((folderId) => Number.isFinite(folderId) && folderId > 0);
+        .find((folderId) => Number.isFinite(folderId) && folderId > 0) ?? null;
 
-      if (!diskFolderId) {
-        throw new ReportSyncError(
-          'Cannot submit report: uploaded photos do not contain Bitrix24 Disk folder id',
-          'report_folder_missing'
-        );
-      }
+      // operator_completed_at — момент, когда ОПЕРАТОР закончил, а не когда
+      // фото доехали до Битрикса (report_photo.published_at). Дедлайн
+      // сверяется по этому полю: оператор, закончивший в 09:59, сдал вовремя,
+      // даже если фактическая публикация в Битрикс (воркер) случится позже.
+      await reportsStore.setOperatorCompletedAt({
+        reportId,
+        at: now()
+      });
 
       await reportsStore.setReportStatus({
         reportId,
         status: 'done'
       });
 
-      // Durable CRM sync: persist a job; the background worker performs it with
-      // retry and survives process restarts.
-      await crmSyncJobStore.enqueue({
-        reportId,
-        payload: {
-          status: 'done',
-          diskFolderId,
-          contextKey: req.bitrixContext?.key || '',
-          domain: req.bitrixContext?.domain || '',
-          memberId: req.bitrixContext?.memberId || ''
-        }
-      });
-
+      // CRM-синк здесь БОЛЬШЕ НЕ ставится. Перевод отчёта в CRM — отдельный
+      // факт с отдельным моментом: он произойдёт, когда ВСЕ обязательные фото
+      // будут реально ОПУБЛИКОВАНЫ (см. photoPublishCompletion.js,
+      // syncReportToCrmIfComplete — её вызывает воркер публикации после
+      // каждого успешного markPublished). Путать сдачу смены и публикацию в
+      // CRM — ровно то, что сломало Task 5.
       const reviewerId = Number(process.env.REPORT_REVIEWER_USER_ID || 0);
       if (reviewerId > 0) {
         const resolveAzsTitle = createAzsTitleResolver({ bitrixClient, settings, context: req.bitrixContext || {} });

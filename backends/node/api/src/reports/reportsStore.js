@@ -210,6 +210,28 @@ const createPostgresStore = (pool) => ({
     }
   },
 
+  // Task 8 (чинит CRITICAL Task 5): момент, когда ОПЕРАТОР закончил — а не
+  // когда фото доехали до Битрикса (report_photo.published_at). POST
+  // /:id/submit проставляет это поле, как только все обязательные слоты
+  // приняты ЛОКАЛЬНО, независимо от факта публикации; дедлайн сверяется по
+  // этому полю, а не по published_at (см. обоснование в reportsRoutes.js,
+  // POST /:id/submit).
+  //
+  // Тот же upsert-приём и та же ЛОВУШКА СХЕМЫ, что и у setRequiredPhotoCodes
+  // выше: updated_at обновляется автоматически ТОЛЬКО в MySQL — в PostgreSQL
+  // явный NOW() обязателен.
+  async setOperatorCompletedAt({ reportId, at }) {
+    const completedAt = at instanceof Date ? at : new Date(at);
+    await pool.query(
+      `INSERT INTO report_local_state (report_id, operator_completed_at)
+       VALUES ($1, $2)
+       ON CONFLICT (report_id) DO UPDATE
+          SET operator_completed_at = EXCLUDED.operator_completed_at,
+              updated_at = NOW()`,
+      [reportId, completedAt]
+    );
+  },
+
   async list({ dateFrom, dateTo, status, azsId, azsIds = [], limit = 200 } = {}) {
     const where = [];
     const params = [];
@@ -821,6 +843,22 @@ const createMysqlStore = (pool) => ({
     } catch {
       return null;
     }
+  },
+
+  // См. комментарий у PostgreSQL-варианта выше — тот же контракт. Дата
+  // форматируется вручную (тот же приём, что и exifAt в upsertPhoto ниже),
+  // отдельного toDateSql в этом файле нет.
+  async setOperatorCompletedAt({ reportId, at }) {
+    const completedAt = at instanceof Date ? at : new Date(at);
+    const completedAtSql = completedAt.toISOString().slice(0, 19).replace('T', ' ');
+    await pool.execute(
+      `INSERT INTO report_local_state (report_id, operator_completed_at)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE
+         operator_completed_at = VALUES(operator_completed_at),
+         updated_at = CURRENT_TIMESTAMP`,
+      [reportId, completedAtSql]
+    );
   },
 
   async list({ dateFrom, dateTo, status, azsId, azsIds = [], limit = 200 } = {}) {
