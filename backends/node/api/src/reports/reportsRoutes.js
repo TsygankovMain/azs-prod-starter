@@ -824,34 +824,108 @@ const loadEnabledAzsCandidates = async ({ settings, bitrixClient, context }) => 
     .filter((item) => item.azsId && Number(item.adminUserId) > 0);
 };
 
+// rehydrateReasonsIfEmpty — бэкафилл кэша report_reason из CRM.
+//
+// БАГ (см. отчёт reason-rehydrate-report.md): «в кэше пусто» и «бэкафилл ни
+// разу не запускали» — два разных факта. Раньше их не различали: countEmpty()
+// в вызывающем коде (GET /reasons) считал пустую таблицу сигналом «надо
+// бэкафиллить», а если в CRM ни у одного отчёта ещё не проставлена причина
+// (нормальное состояние, когда все сдают вовремя), бэкафилл ничего не
+// вставлял — таблица оставалась пустой, и следующий же заход на экран снова
+// запускал его. Раз навсегда чинится маркером reasonStore.isBackfillDone —
+// он фиксирует именно факт «прогон состоялся», а не «в кэше есть строки».
+//
+// БАГ №2 (тот же отчёт): даже один прогон раньше делал по одному
+// crm.item.get на каждый из до 500 отчётов — последовательно, внутри
+// запроса, которого ждал проверяющий. Теперь один batched crm.item.list с
+// фильтром '@id' (IN) по всем нужным id разом — bitrixRestClient сам
+// постранично (по 50, см. crm.item.list в доках Bitrix) соберёт результат;
+// см. loadEnabledAzsCandidates/batchResolveAzsTitles выше — тот же приём.
 const rehydrateReasonsIfEmpty = async ({ reasonStore, reportsStore, bitrixClient, settings, context }) => {
   const reasonFieldCode = String(settings?.report?.fields?.reason || '').trim();
   const entityTypeId = Number(settings?.report?.entityTypeId || 0);
   if (!reasonFieldCode || !entityTypeId) return;
 
-  const reasons = Array.isArray(settings.report?.reasons) ? settings.report.reasons : [];
-  const { createReasonCatalog } = await import('./reasonCatalog.js');
-  const catalog = createReasonCatalog(reasons);
+  // Факт уже зафиксирован для этого портала — повторно не бэкафиллим, даже
+  // если кэш почему-то снова выглядит пустым (это и есть исходный баг).
+  if (typeof reasonStore.isBackfillDone === 'function') {
+    const alreadyDone = await reasonStore.isBackfillDone({ context });
+    if (alreadyDone) return;
+  }
 
-  const items = await reportsStore.list({ limit: 500 });
-  for (const item of items) {
-    if (!item.reportItemId) continue;
-    try {
-      const crmItem = await bitrixClient.getCrmItem({ entityTypeId, id: item.reportItemId, context });
-      const rawValue = crmItem ? getFieldValue(crmItem, reasonFieldCode) : null;
-      if (!rawValue) continue;
-      const { code, text } = catalog.decodeValue(String(rawValue));
-      await reasonStore.upsert({
-        reportId: item.id,
-        azsId: String(item.azsId || ''),
-        adminUserId: Number(item.adminUserId || 0),
-        reasonCode: code,
-        reasonText: text,
-        source: 'app'
-      });
-    } catch {
-      // best-effort rehydrate, пропускаем ошибки
+  try {
+    const reasons = Array.isArray(settings.report?.reasons) ? settings.report.reasons : [];
+    const { createReasonCatalog } = await import('./reasonCatalog.js');
+    const catalog = createReasonCatalog(reasons);
+
+    const items = await reportsStore.list({ limit: 500 });
+    // Map → массив: reportItemId в теории должен быть уникален на отчёт, но на
+    // всякий случай не теряем отчёт, если два локальных item ссылаются на один
+    // и тот же CRM item (в исходном поштучном цикле такого ограничения не было).
+    const itemsByReportItemId = new Map();
+    for (const item of items) {
+      const reportItemId = parseCrmItemId(item.reportItemId);
+      if (!reportItemId) continue;
+      const bucket = itemsByReportItemId.get(reportItemId);
+      if (bucket) bucket.push(item);
+      else itemsByReportItemId.set(reportItemId, [item]);
     }
+
+    if (itemsByReportItemId.size > 0) {
+      if (typeof bitrixClient.listCrmItems !== 'function') {
+        // Старый/тестовый клиент без crm.item.list — батчами бэкафиллить
+        // нечем. НЕ помечаем «выполнено»: попытка не состоялась вовсе, а не
+        // состоялась-и-ничего-не-нашла — это разные вещи (см. шапку файла).
+        return;
+      }
+
+      // select с алиасами camelCase/UPPER — Bitrix отдаёт UF-поля в camelCase
+      // при useOriginalUfNames:'N' (дефолт), а getFieldValue ищет по всем
+      // регистрам разом; тот же приём, что в loadEnabledAzsCandidates выше.
+      const selectSet = new Set(['id', 'ID']);
+      for (const alias of [reasonFieldCode, reasonFieldCode.toLowerCase(), reasonFieldCode.toUpperCase()]) {
+        if (alias) selectSet.add(alias);
+      }
+
+      const ids = [...itemsByReportItemId.keys()];
+      const rows = await bitrixClient.listCrmItems({
+        entityTypeId,
+        select: [...selectSet],
+        filter: { '@id': ids },
+        order: { id: 'ASC' },
+        limit: ids.length,
+        useOriginalUfNames: 'N',
+        context
+      });
+
+      for (const row of rows) {
+        const rowId = parseCrmItemId(row?.id ?? row?.ID);
+        const matchedItems = rowId ? itemsByReportItemId.get(rowId) : null;
+        if (!matchedItems) continue;
+        const rawValue = getFieldValue(row, reasonFieldCode);
+        if (!rawValue) continue;
+        const { code, text } = catalog.decodeValue(String(rawValue));
+        for (const item of matchedItems) {
+          await reasonStore.upsert({
+            reportId: item.id,
+            azsId: String(item.azsId || ''),
+            adminUserId: Number(item.adminUserId || 0),
+            reasonCode: code,
+            reasonText: text,
+            source: 'app'
+          });
+        }
+      }
+    }
+
+    // Прогон состоялся успешно — даже если ни одной причины не нашли и не
+    // вставили: «прогнали и пусто» теперь тоже зафиксированный факт.
+    if (typeof reasonStore.markBackfillDone === 'function') {
+      await reasonStore.markBackfillDone({ context });
+    }
+  } catch {
+    // best-effort rehydrate, пропускаем ошибки — и намеренно НЕ помечаем как
+    // выполненный: попытка не удалась, следующий заход должен повторить её.
   }
 };
 
