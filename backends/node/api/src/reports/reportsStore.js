@@ -94,6 +94,80 @@ const createPostgresStore = (pool) => ({
     await pool.query(`
       ALTER TABLE report_photo ADD COLUMN IF NOT EXISTS disk_object_id BIGINT NULL
     `);
+    // Очередь публикации живёт прямо в report_photo, отдельной таблицы задач
+    // нет: состояние фото и состояние его публикации — один и тот же факт, и
+    // разносить их значит заводить второй источник правды и рассинхрон.
+    //
+    // DEFAULT 'published' намеренно: строки, уже лежащие в таблице, попали
+    // сюда ПОСЛЕ успешной загрузки в Битрикс. Дефолт 'accepted' поставил бы
+    // весь исторический архив в очередь на повторную публикацию — то есть
+    // устроил бы ровно тот шторм запросов, который эта задача и лечит.
+    await pool.query(`
+      ALTER TABLE report_photo ADD COLUMN IF NOT EXISTS publish_state TEXT NOT NULL DEFAULT 'published'
+    `);
+    await pool.query(`
+      ALTER TABLE report_photo ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ NULL
+    `);
+    await pool.query(`
+      ALTER TABLE report_photo ADD COLUMN IF NOT EXISTS publish_attempts INT NOT NULL DEFAULT 0
+    `);
+    await pool.query(`
+      ALTER TABLE report_photo ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NULL
+    `);
+    await pool.query(`
+      ALTER TABLE report_photo ADD COLUMN IF NOT EXISTS last_publish_error TEXT NULL
+    `);
+    // Частичный индекс: в очереди всегда меньшинство строк, а сканировать
+    // весь архив опубликованных на каждый тик воркера незачем.
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS ix_report_photo_publish_due
+        ON report_photo (next_attempt_at)
+        WHERE publish_state = 'accepted'
+    `);
+    // Байты отдельной таблицей: обычные выборки по фото не должны тянуть
+    // мегабайты, а удаление байтов после публикации не должно трогать
+    // метаданные, на которые ссылается фотолента.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS report_photo_blob (
+        report_photo_id BIGINT PRIMARY KEY REFERENCES report_photo(id) ON DELETE CASCADE,
+        content         BYTEA NOT NULL,
+        mime_type       TEXT  NOT NULL,
+        byte_size       INT   NOT NULL,
+        original_name   TEXT  NULL,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    // Локальное состояние отчёта.
+    //
+    // ОТДЕЛЬНОЙ ТАБЛИЦЕЙ, а не колонками в таблице отчётов, потому что
+    // локальной таблицы отчётов НЕ СУЩЕСТВУЕТ: сами отчёты живут элементами
+    // смарт-процесса в Битриксе, а у нас локальны только report_photo,
+    // dispatch_plan, auth_context, app_settings и report_reason. Ключ —
+    // report_id, то есть id элемента CRM.
+    //
+    // Не в dispatch_plan, хотя там есть report_item_id: отчёт можно создать
+    // вручную через POST /manual, и тогда строки плана у него нет вовсе.
+    //
+    // required_photo_codes — JSON-массив кодов. Нужен затем, что приём фото
+    // не имеет права зависеть от Битрикса ВООБЩЕ. Кэш в памяти этого не даёт:
+    // после рестарта процесса он пуст, и первый же снимок пошёл бы в портал
+    // за списком — то есть приём падал бы ровно тогда, когда портал лежит.
+    // Заполняется при открытии карточки отчёта, когда список уже получен и
+    // оплачен, и дальше читается из нашей БД.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS report_local_state (
+        report_id             BIGINT PRIMARY KEY,
+        operator_completed_at TIMESTAMPTZ NULL,
+        required_photo_codes  TEXT NULL,
+        created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    // Слот не проверен против Битрикса: список не был известен в момент
+    // приёма. Фото всё равно принято — проверка отложена до публикации.
+    await pool.query(`
+      ALTER TABLE report_photo ADD COLUMN IF NOT EXISTS slot_verified BOOLEAN NOT NULL DEFAULT TRUE
+    `);
   },
 
   async list({ dateFrom, dateTo, status, azsId, azsIds = [], limit = 200 } = {}) {
@@ -549,6 +623,130 @@ const createMysqlStore = (pool) => ({
     if (Number(colRows[0]?.c || 0) === 0) {
       await pool.execute(
         `ALTER TABLE report_photo ADD COLUMN disk_object_id BIGINT NULL`
+      );
+    }
+    // Очередь публикации живёт прямо в report_photo — см. комментарий в
+    // PostgreSQL-варианте выше: состояние фото и состояние его публикации —
+    // один и тот же факт, разносить их по разным таблицам значит заводить
+    // второй источник правды и рассинхрон.
+    //
+    // DEFAULT 'published' намеренно: строки, уже лежащие в таблице, попали
+    // сюда ПОСЛЕ успешной загрузки в Битрикс. Дефолт 'accepted' поставил бы
+    // весь исторический архив в очередь на повторную публикацию — то есть
+    // устроил бы ровно тот шторм запросов, который эта задача и лечит.
+    // Новые строки проставляют 'accepted' явно.
+    //
+    // MySQL lacks ADD COLUMN IF NOT EXISTS — тот же приём information_schema,
+    // что и для disk_object_id выше, по одному на колонку.
+    const [publishStateRows] = await pool.execute(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'report_photo'
+         AND COLUMN_NAME = 'publish_state'`
+    );
+    if (Number(publishStateRows[0]?.c || 0) === 0) {
+      await pool.execute(
+        `ALTER TABLE report_photo ADD COLUMN publish_state VARCHAR(16) NOT NULL DEFAULT 'published'`
+      );
+    }
+    const [publishedAtRows] = await pool.execute(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'report_photo'
+         AND COLUMN_NAME = 'published_at'`
+    );
+    if (Number(publishedAtRows[0]?.c || 0) === 0) {
+      await pool.execute(
+        `ALTER TABLE report_photo ADD COLUMN published_at DATETIME NULL`
+      );
+    }
+    const [publishAttemptsRows] = await pool.execute(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'report_photo'
+         AND COLUMN_NAME = 'publish_attempts'`
+    );
+    if (Number(publishAttemptsRows[0]?.c || 0) === 0) {
+      await pool.execute(
+        `ALTER TABLE report_photo ADD COLUMN publish_attempts INT NOT NULL DEFAULT 0`
+      );
+    }
+    const [nextAttemptAtRows] = await pool.execute(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'report_photo'
+         AND COLUMN_NAME = 'next_attempt_at'`
+    );
+    if (Number(nextAttemptAtRows[0]?.c || 0) === 0) {
+      await pool.execute(
+        `ALTER TABLE report_photo ADD COLUMN next_attempt_at DATETIME NULL`
+      );
+    }
+    const [lastPublishErrorRows] = await pool.execute(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'report_photo'
+         AND COLUMN_NAME = 'last_publish_error'`
+    );
+    if (Number(lastPublishErrorRows[0]?.c || 0) === 0) {
+      await pool.execute(
+        `ALTER TABLE report_photo ADD COLUMN last_publish_error LONGTEXT NULL`
+      );
+    }
+    // Частичный индекс (WHERE publish_state = 'accepted') недоступен в MySQL —
+    // CREATE INDEX там не принимает предикат. Составной индекс — тот же приём,
+    // что и ix_crm_sync_jobs_due (status, next_attempt_at) в crmSyncJobStore.js.
+    // CREATE INDEX в MySQL не поддерживает IF NOT EXISTS, поэтому проверяем
+    // information_schema.STATISTICS — тот же стиль guard'а, что и для колонок.
+    const [dueIndexRows] = await pool.execute(
+      `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'report_photo'
+         AND INDEX_NAME = 'ix_report_photo_publish_due'`
+    );
+    if (Number(dueIndexRows[0]?.c || 0) === 0) {
+      await pool.execute(
+        `CREATE INDEX ix_report_photo_publish_due ON report_photo (publish_state, next_attempt_at)`
+      );
+    }
+    // Байты отдельной таблицей — см. комментарий в PostgreSQL-варианте выше.
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS report_photo_blob (
+        report_photo_id BIGINT PRIMARY KEY,
+        content         LONGBLOB NOT NULL,
+        mime_type       VARCHAR(128) NOT NULL,
+        byte_size       INT NOT NULL,
+        original_name   VARCHAR(512) NULL,
+        created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_report_photo_blob FOREIGN KEY (report_photo_id)
+          REFERENCES report_photo(id) ON DELETE CASCADE
+      )
+    `);
+    // Локальное состояние отчёта — своя таблица, а не колонки в несуществующей
+    // таблице отчётов (полное обоснование — в комментарии PostgreSQL-варианта
+    // выше: локальной таблицы отчётов не существует, отчёты живут элементами
+    // смарт-процесса в Битриксе).
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS report_local_state (
+        report_id             BIGINT PRIMARY KEY,
+        operator_completed_at DATETIME NULL,
+        required_photo_codes  LONGTEXT NULL,
+        created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+    // Слот не проверен против Битрикса — см. комментарий в PostgreSQL-варианте
+    // выше. MySQL BOOLEAN — алиас TINYINT(1); DEFAULT TRUE хранится как 1
+    // (тот же приём, что и is_admin в databaseAuthContextStore.js).
+    const [slotVerifiedRows] = await pool.execute(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'report_photo'
+         AND COLUMN_NAME = 'slot_verified'`
+    );
+    if (Number(slotVerifiedRows[0]?.c || 0) === 0) {
+      await pool.execute(
+        `ALTER TABLE report_photo ADD COLUMN slot_verified TINYINT(1) NOT NULL DEFAULT 1`
       );
     }
   },
