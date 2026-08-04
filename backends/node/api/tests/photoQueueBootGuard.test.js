@@ -466,3 +466,81 @@ test('обёртка notify сторожа: ведущий экземпляр о
   await watchdog.tick();
   assert.equal(sentMessages.length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Пункт 1: остановка воркера ОБЯЗАНА идти до закрытия пула. Смоделированный
+// pg.Pool: как настоящий pg.Pool, .end() не резолвится, пока не вернутся ВСЕ
+// чек-аутнутые через .connect() клиенты — это задокументированное поведение
+// pg (см. заголовочный комментарий photoPublishWorker.js: "проверено на
+// живом Postgres"), а не выдумка теста. Фейк моделирует ровно это единственное
+// свойство, не больше — "подделываем пул объектом", как и остальные тесты
+// этого проекта.
+// ---------------------------------------------------------------------------
+
+const makeCheckoutTrackingPool = () => {
+  let checkedOut = 0;
+  let onAllReleased = null;
+  return {
+    async connect() {
+      checkedOut += 1;
+      return {
+        async query() { return { rows: [{ locked: true }] }; },
+        on() {},
+        release() {
+          checkedOut = Math.max(0, checkedOut - 1);
+          if (checkedOut === 0 && onAllReleased) onAllReleased();
+        }
+      };
+    },
+    // Как настоящий pg.Pool.end(): ждёт возврата ВСЕХ чек-аутнутых клиентов.
+    async end() {
+      if (checkedOut === 0) return;
+      await new Promise((resolve) => { onAllReleased = resolve; });
+    },
+    get checkedOut() { return checkedOut; }
+  };
+};
+
+const raceWithTimeout = (promise, ms) => Promise.race([
+  promise.then(() => 'resolved'),
+  new Promise((resolve) => setTimeout(() => resolve('timeout'), ms))
+]);
+
+test('правильный порядок: await worker.stop() ДО pool.end() — pool.end() резолвится быстро', async () => {
+  const pool = makeCheckoutTrackingPool();
+  const worker = createPhotoPublishWorker({
+    store: { async claimBatch() { return []; } },
+    publishOne: async () => ({}),
+    limiter: { acquire: async () => {}, penalize() {} },
+    pool
+  });
+
+  await worker.tick(); // становится лидером -> pool.connect() чек-аутит клиента
+  assert.equal(pool.checkedOut, 1, 'тест бессмыслен, если клиент не был реально чек-аутнут');
+
+  await worker.stop(); // ОБЯЗАН вернуть клиента пулу ДО следующей строки
+
+  const result = await raceWithTimeout(pool.end(), 200);
+  assert.equal(result, 'resolved', 'pool.end() обязан резолвиться быстро, если stop() уже вернул клиента');
+});
+
+test('ДЕМОНСТРАЦИЯ ОШИБКИ: pool.end() БЕЗ предварительного await worker.stop() виснет навсегда — ровно то, что запрещает пункт 1', async () => {
+  const pool = makeCheckoutTrackingPool();
+  const worker = createPhotoPublishWorker({
+    store: { async claimBatch() { return []; } },
+    publishOne: async () => ({}),
+    limiter: { acquire: async () => {}, penalize() {} },
+    pool
+  });
+
+  await worker.tick();
+  assert.equal(pool.checkedOut, 1);
+
+  // Неправильный порядок (то, что было бы в server.js без пункта 1) —
+  // pool.end() вызван БЕЗ worker.stop() перед ним.
+  const result = await raceWithTimeout(pool.end(), 200);
+  assert.equal(result, 'timeout',
+    'без stop() клиент воркера никогда не вернётся сам — pool.end() виснет навсегда, именно это чинит проводка server.js');
+
+  await worker.stop(); // уборка за тестом, не должна бросать
+});
