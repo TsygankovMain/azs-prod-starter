@@ -434,6 +434,38 @@ test('countByState({reportId}) считает только фото этого �
   assert.deepEqual(params, [501]);
 });
 
+// ---------------------------------------------------------------------------
+// Минор (раунд правок 2, финальное ревью ветки, подтверждено живьём) —
+// countByState() без reportId сканирует ВСЮ таблицу (оба существующих
+// индекса частичные, ни один не обслуживает запрос без предиката). Метод
+// специально под periodic-лог глубины очереди (photoPublishBoot.js):
+// считает только НЕ-published строки — тот же предикат, что уже есть у
+// ix_report_photo_stuck, планировщик способен использовать индекс.
+// ---------------------------------------------------------------------------
+
+test('countPendingByState фильтрует publish_state <> \'published\' — под индекс ix_report_photo_stuck, без полного скана', async () => {
+  const pool = makeFakePool([{ rows: [
+    { publish_state: 'accepted', count: '3' },
+    { publish_state: 'failed', count: '1' }
+  ] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  const counts = await store.countPendingByState();
+  assert.deepEqual(counts, { accepted: 3, failed: 1 });
+  const { sql, params } = pool.calls[0];
+  assert.match(sql, /publish_state <> 'published'/,
+    'обязан фильтровать по тому же предикату, что и ix_report_photo_stuck — иначе снова полный скан');
+  assert.match(sql, /GROUP BY publish_state/);
+  assert.ok(!params || params.length === 0, 'countPendingByState не принимает reportId — это глобальный диагностический счётчик, без параметров запроса');
+});
+
+test('countPendingByState никогда не запрашивает published напрямую (WHERE, а не фильтрация в JS)', async () => {
+  const pool = makeFakePool([{ rows: [] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await store.countPendingByState();
+  assert.doesNotMatch(pool.calls[0].sql, /publish_state = 'published'/,
+    'фильтрация обязана быть в самом SQL (WHERE), не постфактум в JS — иначе строки published всё равно читаются с диска');
+});
+
 // Важно 3 (раунд правок 1): агрегат (countByState) недостаточен для проверки
 // комплекта отчёта построчно — количество может совпасть, а конкретные коды
 // не совпасть (лишний код на непроверенном слоте; сменившийся состав
@@ -713,6 +745,18 @@ test('MySQL: countByState({reportId}) считает только фото эт�
   const { sql, params } = pool.calls[0];
   assert.match(sql, /WHERE report_id = \?/);
   assert.deepEqual(params, [501]);
+});
+
+test('MySQL: countPendingByState фильтрует publish_state <> \'published\'', async () => {
+  const pool = makeFakeMysqlPool([[[
+    { publish_state: 'accepted', count: 3 },
+    { publish_state: 'failed', count: 1 }
+  ]]]);
+  const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
+  const counts = await store.countPendingByState();
+  assert.deepEqual(counts, { accepted: 3, failed: 1 });
+  assert.match(pool.calls[0].sql, /publish_state <> 'published'/);
+  assert.match(pool.calls[0].sql, /GROUP BY publish_state/);
 });
 
 test('MySQL: listPhotoStates({reportId}) отдаёт коды с их publish_state построчно', async () => {

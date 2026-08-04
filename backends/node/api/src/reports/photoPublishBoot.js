@@ -6,7 +6,9 @@
 // мутационная проверка обязана бить по НАСТОЯЩЕМУ коду, который реально
 // исполняется в проде, а не по его копии, переписанной в теле теста — иначе
 // проверка декоративна (в этом проекте это уже случалось восемь раз).
-//
+
+import { createPhotoPublishWatchdog as createPhotoPublishWatchdogImpl } from './photoPublishWatchdog.js';
+
 // ---------------------------------------------------------------------------
 // Защита загрузки (server.js использует эти функции ДО монтирования
 // /api/reports и ДО старта воркеров):
@@ -150,6 +152,194 @@ export const buildPhotoQueueRuntime = ({ isEmbeddedPostgres, createStore, logger
     logger.error(JSON.stringify({ event: 'photo_publish_queue_disabled', reason: error.message }));
     return { store: createPhotoQueueUnavailableStore(error.message), enabled: false, reason: error.message };
   }
+};
+
+// ---------------------------------------------------------------------------
+// C2 / C3, РАУНД ПРАВОК 2 (финальное ревью ветки) — извлечено из server.js в
+// этот же модуль.
+//
+// До этой правки notify-обёртка сторожа и решение "строить ли сторожа" жили
+// ТОЛЬКО в server.js, а photoQueueBootGuard.test.js проверял их через
+// buildNotifyWrapperMirror — переписанную В ТЕЛЕ ТЕСТА копию той же логики.
+// Переревью измерило цену этого буквально: пять мутаций, сделанных ПРЯМО в
+// server.js (пустой chat id -> тихий return; проверка лидерства без гейта
+// workerStarted; .finally -> .then у старта сторожа; сторож снова только при
+// живом воркере; лог глубины очереди выключен целиком), прошли зелёными по
+// всем 1330 тестам — "мутационная эквивалентность через транскрипцию" не
+// была эквивалентностью. Тот же диагноз, что уже стоит в заголовке этого
+// файла: мутационная проверка обязана бить по НАСТОЯЩЕМУ коду.
+//
+// Решение — то же самое лекарство, что уже применено выше в этом файле для
+// isEmbeddedPostgresEnabled/buildPhotoQueueRuntime/isPhotoPublishWorkerSupported:
+// вынести саму логику сюда, оставив server.js вызывающей стороной с
+// минимумом собственного, непроверяемого кода.
+// ---------------------------------------------------------------------------
+
+/**
+ * Notify-функция сторожа — чистая, тестируемая без Express/Битрикса.
+ *
+ * getWorker/isWorkerStarted — ГЕТТЕРЫ, а не значения: worker в server.js
+ * появляется (не null) и стартует (workerStarted: false -> true)
+ * АСИНХРОННО, уже ПОСЛЕ того, как эта notify-функция собрана и передана
+ * сторожу. Если бы это были плоские значения, зафиксированные один раз при
+ * сборке, notify навсегда видела бы состояние на момент конструирования —
+ * тот самый геттер здесь не формальность, а единственный способ видеть
+ * АКТУАЛЬНОЕ состояние на каждый вызов.
+ *
+ * @param {object} deps
+ * @param {Function} deps.getDialogId — () => string; обычно
+ *   () => process.env.PHOTO_WATCHDOG_CHAT_ID || process.env.DIAG_CHAT_ID || ''
+ * @param {Function} deps.getWorker — () => (photoPublishWorker | null)
+ * @param {Function} deps.isWorkerStarted — () => boolean; true, ТОЛЬКО когда
+ *   worker.start() реально был вызван (см. buildPhotoPublishWatchdog ниже и
+ *   server.js — photoPublishWorkerStarted)
+ * @param {Function} deps.getContext — async () => bitrixContext
+ * @param {Function} deps.resolveBotId — async (context) => botId
+ * @param {Function} deps.sendChatMessage — async ({botId, dialogId, text, context}) => any
+ * @returns {Function} async ({text}) => Promise<void>
+ */
+export const createPhotoPublishWatchdogNotifier = ({
+  getDialogId,
+  getWorker,
+  isWorkerStarted,
+  getContext,
+  resolveBotId,
+  sendChatMessage
+}) => async ({ text }) => {
+  const dialogId = String(getDialogId() || '').trim();
+  if (!dialogId) {
+    // C2: раньше — тихий return (успешный резолв), сторож считал
+    // предупреждение доставленным и включал антиспам, хотя в чат ничего не
+    // ушло. Теперь — явный отказ: photoPublishWatchdog.js (runOnce) обязан
+    // залогировать его и НЕ обновлять антиспам-память.
+    throw new Error('photo_watchdog_chat_not_configured');
+  }
+  // C3: лидерство проверяем ТОЛЬКО когда оно реально что-то значит — воркер
+  // существует И реально стартовал. isLeader() без единого вызова start()
+  // читает константный false навсегда (leader выставляется исключительно
+  // внутри tick()) — слепая проверка задушила бы КАЖДОЕ уведомление сторожа
+  // ровно в сценарии C3 (воркер не поднялся, а сторож обязан работать).
+  const worker = getWorker();
+  if (worker && isWorkerStarted() && !worker.isLeader()) {
+    throw new Error('photo_publish_watchdog_not_leader');
+  }
+  const context = await getContext();
+  const botId = await resolveBotId(context);
+  if (!botId) {
+    throw new Error('photo_publish_watchdog_no_bot_id');
+  }
+  await sendChatMessage({ botId, dialogId, text, context });
+};
+
+/**
+ * Решение "строить ли сторожа" + сборка + отложенный старт — ОДНА функция,
+ * ОДИН гейт (enabled), структурно не имеющий доступа к
+ * photoPublishWorkerSupported или к самому воркеру публикации: минимальная
+ * поверхность для будущей мутации "сторож снова только при живом воркере" —
+ * такую мутацию пришлось бы делать явной правкой ВЫЗЫВАЮЩЕГО кода
+ * (передать другой enabled), а не тихой правкой одной строки здесь.
+ *
+ * schemaReady.finally(), а не .then(): сторож обязан стартовать НЕЗАВИСИМО
+ * от того, готова ли схема успешно (C3, отказ reportPhotoSchemaReady —
+ * неконкурентный CREATE INDEX, живая ветка именно на Postgres) — как только
+ * попытка вообще ЗАВЕРШИЛАСЬ, а не только когда она удалась.
+ *
+ * .catch() ПОСЛЕ .finally() — минор (раунд правок 2, финальное ревью,
+ * подтверждено живьём: unhandledRejection воспроизведён прямо в тесте на
+ * эту функцию при отклонённом schemaReady). .finally(cb) сам по себе НЕ
+ * "гасит" отклонение промиса — он лишь выполняет побочный эффект (здесь —
+ * старт сторожа) и ПРОБРАСЫВАЕТ исходное отклонение в промис, который сам
+ * возвращает. Без завершающего .catch() этот проброшенный промис остаётся
+ * неперехваченным. Лог здесь не декоративен: на MySQL
+ * (photoPublishWorkerSupported=false в server.js) этот .catch() —
+ * ЕДИНСТВЕННЫЙ подписчик на reportPhotoSchemaReady вообще (у воркера там
+ * своих .then()/.catch() нет, он не собирается) — без него отказ схемы был
+ * бы виден только как процессный unhandledRejection, без структурированного
+ * события.
+ *
+ * @param {object} deps
+ * @param {boolean} deps.enabled — photoQueueRuntime.enabled; сторож обязан
+ *   работать всегда, когда работает приём, независимо от воркера публикации
+ * @param {object} deps.store — photoQueueStore (listStuck)
+ * @param {Function} deps.notify — см. createPhotoPublishWatchdogNotifier выше
+ * @param {Promise} deps.schemaReady — reportPhotoSchemaReady
+ * @param {object} [deps.logger] — по умолчанию console
+ * @param {Function} [deps.createWatchdog] — инъекция createPhotoPublishWatchdog; по умолчанию — сам импорт из photoPublishWatchdog.js
+ * @returns {object|null} — сторож ({tick,start,stop}), либо null, если intake выключен
+ */
+export const buildPhotoPublishWatchdog = ({
+  enabled,
+  store,
+  notify,
+  schemaReady,
+  logger = console,
+  createWatchdog = createPhotoPublishWatchdogImpl
+}) => {
+  if (!enabled) return null;
+  const watchdog = createWatchdog({ store, notify });
+  schemaReady
+    .finally(() => {
+      watchdog.start();
+      logger.log(JSON.stringify({ event: 'photo_publish_watchdog_started' }));
+    })
+    .catch((error) => {
+      logger.error(JSON.stringify({
+        event: 'photo_publish_watchdog_schema_wait_failed',
+        message: error?.message || String(error)
+      }));
+    });
+  return watchdog;
+};
+
+/**
+ * Периодический лог глубины очереди по состояниям (C3) — НЕЗАВИСИМ от
+ * сторожа, от advisory-лока воркера, от лидерства: работает на каждом
+ * экземпляре безусловно, единственное число, которое поймало бы и C1
+ * (accepted растёт бесконечно, ничего не публикуется), и C3 (сторожа тоже
+ * нет — но этот лог всё равно тикает). Оркестровка таймера — тем же приёмом
+ * инъекции setIntervalFn/clearIntervalFn, что уже применяет
+ * photoPublishWorker.js.
+ *
+ * store.countPendingByState() (photoQueueStore.js), НЕ countByState() —
+ * минор (раунд правок 2, финальное ревью, подтверждено живьём): countByState()
+ * без reportId — GROUP BY по ВСЕЙ таблице, а оба существующих индекса
+ * частичные и ни один не обслуживает запрос без предиката, значит полное
+ * сканирование report_photo на КАЖДЫЙ тик. Таблица не чистится никогда — при
+ * 71 АЗС это ~1 млн строк в год, и periodic-лог не имеет права быть
+ * источником растущего полного скана. countPendingByState() считает только
+ * publish_state <> 'published' — предикат, под который уже есть индекс
+ * (ix_report_photo_stuck) — и это ровно то, что нужно ДЛЯ ЦЕЛИ этого лога
+ * (поймать растущий accepted/failed; published не несёт сигнала здесь).
+ *
+ * @param {object} deps
+ * @param {boolean} deps.enabled — photoQueueRuntime.enabled, тот же гейт, что у сторожа
+ * @param {object} deps.store — photoQueueStore (countPendingByState)
+ * @param {number} deps.intervalMs
+ * @param {object} [deps.logger] — по умолчанию console
+ * @param {Function} [deps.setIntervalFn] — по умолчанию глобальный setInterval
+ * @param {Function} [deps.clearIntervalFn] — по умолчанию глобальный clearInterval
+ * @returns {{stop: Function}} — stop() безопасен, даже если enabled было false (no-op)
+ */
+export const startPhotoQueueDepthLog = ({
+  enabled,
+  store,
+  intervalMs,
+  logger = console,
+  setIntervalFn = setInterval,
+  clearIntervalFn = clearInterval
+}) => {
+  if (!enabled) return { stop: () => {} };
+  const timer = setIntervalFn(() => {
+    store.countPendingByState()
+      .then((counts) => {
+        logger.log(JSON.stringify({ event: 'photo_queue_depth', counts }));
+      })
+      .catch((error) => {
+        logger.error(JSON.stringify({ event: 'photo_queue_depth_failed', message: error.message }));
+      });
+  }, intervalMs);
+  if (timer && typeof timer.unref === 'function') timer.unref();
+  return { stop: () => clearIntervalFn(timer) };
 };
 
 export default buildPhotoQueueRuntime;

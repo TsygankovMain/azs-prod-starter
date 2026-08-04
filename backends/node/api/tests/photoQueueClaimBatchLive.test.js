@@ -227,3 +227,71 @@ test('claimBatch: два конкурентных вызова не забира
   assert.equal(overlap.length, 0, 'ни одна строка не должна быть забрана дважды двумя конкурентными вызовами');
   assert.equal(idsA.length + idsB.length, ids.length, 'все 6 строк должны разойтись между двумя вызовами без потерь');
 });
+
+// ---------------------------------------------------------------------------
+// Минор (раунд правок 2, финальное ревью ветки) — countPendingByState()
+// заменил countByState() в периодическом логе глубины очереди именно
+// потому, что последний без reportId сканирует ВСЮ таблицу report_photo
+// (ни один из двух существующих частичных индексов не обслуживает запрос
+// без предиката). Ниже — не только корректность результата, но и EXPLAIN
+// на живом Postgres: запрос обязан использовать Index Scan/Bitmap Index Scan
+// по ix_report_photo_stuck, а НЕ Seq Scan.
+// ---------------------------------------------------------------------------
+
+test('countPendingByState: считает только НЕ-published строки, published не искажает результат', { skip }, async () => {
+  await resetRows();
+  // 5 строк за один вызов seedHealthy (она не поддерживает накопление между
+  // вызовами в одном тесте — report_id/photo_code внутри неё всегда
+  // начинаются с одного и того же смещения, повторный вызов после первого
+  // столкнётся по уникальному индексу (report_id, photo_code)).
+  await seedHealthy(5);
+  const claimed = await store.claimBatch({ limit: 3, now: new Date() });
+  assert.equal(claimed.length, 3, 'тест бессмыслен, если не забрали ровно 3 из 5');
+  for (const row of claimed) {
+    await pool.query(`UPDATE report_photo SET publish_state = 'published' WHERE id = $1`, [row.id]);
+  }
+  // Оставшиеся 2 строки из тех же 5 так и не были claimBatch'нуты — остались 'accepted'.
+
+  const counts = await store.countPendingByState();
+  assert.deepEqual(counts, { accepted: 2 }, 'published не должен попасть в результат вовсе (не 0 — отсутствующий ключ)');
+});
+
+test('countPendingByState: EXPLAIN подтверждает использование ix_report_photo_stuck при РЕАЛИСТИЧНОМ распределении (много published, мало pending)', { skip }, async () => {
+  await resetRows();
+  // Реалистичное распределение — вот что именно чинит этот минор: таблица,
+  // где подавляющее большинство строк УЖЕ published (не удаляются никогда,
+  // растут без предела — см. комментарий над countPendingByState в
+  // photoQueueStore.js), и лишь единицы pending в любой момент времени. При
+  // 100% pending (как было бы, если засеять только accepted-строки) Seq Scan
+  // ЗАКОНОМЕРНО дешевле индекса — читать почти всё равно пришлось бы читать
+  // почти всю таблицу. Именно раздутый published и делает индекс выгодным.
+  const PUBLISHED_COUNT = 2000;
+  const PENDING_COUNT = 5;
+  for (let batch = 0; batch < PUBLISHED_COUNT / 100; batch += 1) {
+    const values = [];
+    const params = [];
+    for (let i = 0; i < 100; i += 1) {
+      const n = batch * 100 + i;
+      values.push(`($${params.length + 1}, $${params.length + 2}, 'published', 1)`);
+      params.push(90000 + n, `PUB_${n}`);
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await pool.query(
+      `INSERT INTO report_photo (report_id, photo_code, publish_state, uploaded_by) VALUES ${values.join(', ')}`,
+      params
+    );
+  }
+  await seedHealthy(PENDING_COUNT);
+
+  const { rows: countRows } = await pool.query('SELECT COUNT(*)::int AS n FROM report_photo');
+  assert.equal(countRows[0].n, PUBLISHED_COUNT + PENDING_COUNT, 'тест бессмыслен, если распределение не установилось как задумано');
+
+  await pool.query('ANALYZE report_photo'); // планировщик должен знать актуальную статистику, не только что вставленную
+
+  const { rows } = await pool.query(
+    `EXPLAIN SELECT publish_state, COUNT(*) AS count FROM report_photo WHERE publish_state <> 'published' GROUP BY publish_state`
+  );
+  const plan = rows.map((r) => r['QUERY PLAN']).join('\n');
+  assert.doesNotMatch(plan, /Seq Scan on report_photo/,
+    `при ${PUBLISHED_COUNT} published и ${PENDING_COUNT} pending планировщик обязан выбрать индекс ix_report_photo_stuck, а не читать всю таблицу. План:\n${plan}`);
+});

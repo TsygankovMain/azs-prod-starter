@@ -5,7 +5,10 @@ import {
   readPhotoPublishNumberEnv,
   createPhotoQueueUnavailableStore,
   buildPhotoQueueRuntime,
-  isPhotoPublishWorkerSupported
+  isPhotoPublishWorkerSupported,
+  createPhotoPublishWatchdogNotifier,
+  buildPhotoPublishWatchdog,
+  startPhotoQueueDepthLog
 } from '../src/reports/photoPublishBoot.js';
 import { createRateLimiter } from '../src/shared/rateLimiter.js';
 import { createPhotoPublisher } from '../src/reports/photoPublisher.js';
@@ -535,53 +538,51 @@ test('обёртка notify сторожа: не-ведущий экземпля
 });
 
 // ---------------------------------------------------------------------------
-// C2 + C3 (финальное ревью ветки) — server.js сам не импортируется тестами
-// (см. заголовок файла), поэтому ниже — буквальный мирроринг обновлённой
-// notifyPhotoPublishWatchdog из server.js (та же логика, тот же порядок
-// проверок: dialogId -> лидерство -> botId -> отправка), а не копия старого
-// поведения. Мутационная защита: если кто-то в будущем случайно вернёт
-// server.js к старому `if (!dialogId) return;` или уберёт условие
-// workerStarted, соответствующий тест ниже обязан покраснеть.
+// C2 + C3, РАУНД ПРАВОК 2 (финальное ревью ветки).
+//
+// До этой правки здесь жил buildNotifyWrapperMirror — переписанная В ТЕЛЕ
+// ТЕСТА копия логики server.js. Переревью измерило цену буквально: пять
+// мутаций ПРЯМО в server.js прошли зелёными по всем 1330 тестам, потому что
+// mirror дублирует логику, а не проверяет настоящий код. Ниже тесты вызывают
+// РЕАЛЬНЫЕ createPhotoPublishWatchdogNotifier/buildPhotoPublishWatchdog/
+// startPhotoQueueDepthLog, импортированные из photoPublishBoot.js (см.
+// импорт вверху файла) — ту же функцию, что теперь вызывает server.js.
 // ---------------------------------------------------------------------------
 
-const buildNotifyWrapperMirror = ({ dialogId, worker, workerStarted, botId, send }) => async ({ text }) => {
-  const trimmedDialogId = String(dialogId || '').trim();
-  if (!trimmedDialogId) {
-    // C2: раньше — тихий `return` (успешный резолв). Теперь — явный отказ.
-    throw new Error('photo_watchdog_chat_not_configured');
-  }
-  // C3: лидерство проверяем ТОЛЬКО когда воркер реально стартовал — иначе
-  // isLeader()===false навсегда (worker существует, но start() ни разу не
-  // вызывался) задушило бы каждое уведомление молча.
-  if (worker && workerStarted && !worker.isLeader()) {
-    throw new Error('photo_publish_watchdog_not_leader');
-  }
-  if (!botId) {
-    throw new Error('photo_publish_watchdog_no_bot_id');
-  }
-  await send({ text, dialogId: trimmedDialogId, botId });
-};
-
-test('C2: notify бросает явную ошибку при пустом PHOTO_WATCHDOG_CHAT_ID/DIAG_CHAT_ID (не тихий успех)', async () => {
-  const notify = buildNotifyWrapperMirror({
-    dialogId: '',
-    worker: { isLeader: () => true },
-    workerStarted: true,
-    botId: 42,
-    send: async () => { throw new Error('send must not be called'); }
+test('C2: createPhotoPublishWatchdogNotifier бросает явную ошибку при пустом dialogId (не тихий успех)', async () => {
+  const notify = createPhotoPublishWatchdogNotifier({
+    getDialogId: () => '',
+    getWorker: () => ({ isLeader: () => true }),
+    isWorkerStarted: () => true,
+    getContext: async () => ({}),
+    resolveBotId: async () => 42,
+    sendChatMessage: async () => { throw new Error('sendChatMessage must not be called'); }
   });
   await assert.rejects(notify({ text: 'x' }), /photo_watchdog_chat_not_configured/,
     'пустой chat id обязан быть явным отказом — раньше он резолвился успешно, и сторож засчитывал предупреждение доставленным');
 });
 
-test('C3: воркера нет вовсе (null — MySQL или отказ конструктора) -> notify НЕ душится проверкой лидерства, уведомляет как обычно', async () => {
+test('C2: пустой dialogId — пробелы тоже считаются пустыми (getDialogId возвращает " ")', async () => {
+  const notify = createPhotoPublishWatchdogNotifier({
+    getDialogId: () => '   ',
+    getWorker: () => null,
+    isWorkerStarted: () => false,
+    getContext: async () => ({}),
+    resolveBotId: async () => 42,
+    sendChatMessage: async () => { throw new Error('sendChatMessage must not be called'); }
+  });
+  await assert.rejects(notify({ text: 'x' }), /photo_watchdog_chat_not_configured/);
+});
+
+test('C3: воркера нет вовсе (getWorker -> null, MySQL или отказ конструктора) -> notify НЕ душится проверкой лидерства, уведомляет как обычно', async () => {
   const sent = [];
-  const notify = buildNotifyWrapperMirror({
-    dialogId: 'chat123',
-    worker: null,
-    workerStarted: false,
-    botId: 42,
-    send: async ({ text }) => { sent.push(text); }
+  const notify = createPhotoPublishWatchdogNotifier({
+    getDialogId: () => 'chat123',
+    getWorker: () => null,
+    isWorkerStarted: () => false,
+    getContext: async () => ({}),
+    resolveBotId: async () => 42,
+    sendChatMessage: async ({ text }) => { sent.push(text); }
   });
   await notify({ text: 'застряло 3' });
   assert.deepEqual(sent, ['застряло 3'],
@@ -591,45 +592,214 @@ test('C3: воркера нет вовсе (null — MySQL или отказ к�
 test('C3: воркер существует, но НИ РАЗУ не стартовал (отказ reportPhotoSchemaReady) -> notify НЕ душится isLeader()===false навсегда', async () => {
   const sent = [];
   let isLeaderCalls = 0;
-  const notify = buildNotifyWrapperMirror({
-    dialogId: 'chat123',
+  const notify = createPhotoPublishWatchdogNotifier({
+    getDialogId: () => 'chat123',
     // worker существует (объект есть), но start() ни разу не вызывался —
     // isLeader() в реальном photoPublishWorker.js в этом случае возвращает
     // константный false (leader выставляется только внутри tick()).
-    worker: { isLeader: () => { isLeaderCalls += 1; return false; } },
-    workerStarted: false, // ключевое отличие от обычного "не лидер"
-    botId: 42,
-    send: async ({ text }) => { sent.push(text); }
+    getWorker: () => ({ isLeader: () => { isLeaderCalls += 1; return false; } }),
+    isWorkerStarted: () => false, // ключевое отличие от обычного "не лидер"
+    getContext: async () => ({}),
+    resolveBotId: async () => 42,
+    sendChatMessage: async ({ text }) => { sent.push(text); }
   });
   await notify({ text: 'застряло 5' });
   assert.deepEqual(sent, ['застряло 5'],
-    'photoPublishWorkerStarted=false обязан пропускать проверку isLeader() целиком — иначе КАЖДОЕ уведомление тихо гасится навсегда (C3)');
+    'isWorkerStarted()===false обязан пропускать проверку isLeader() целиком — иначе КАЖДОЕ уведомление тихо гасится навсегда (C3)');
   assert.equal(isLeaderCalls, 0, 'isLeader() не должен даже вызываться, если воркер не стартовал — читать его в этом состоянии бессмысленно');
 });
 
 test('C3: воркер СТАРТОВАЛ, но не лидер -> notify всё ещё бросает (обычное поведение НЕ регрессировало)', async () => {
-  const notify = buildNotifyWrapperMirror({
-    dialogId: 'chat123',
-    worker: { isLeader: () => false },
-    workerStarted: true,
-    botId: 42,
-    send: async () => { throw new Error('send must not be called'); }
+  const notify = createPhotoPublishWatchdogNotifier({
+    getDialogId: () => 'chat123',
+    getWorker: () => ({ isLeader: () => false }),
+    isWorkerStarted: () => true,
+    getContext: async () => ({}),
+    resolveBotId: async () => 42,
+    sendChatMessage: async () => { throw new Error('sendChatMessage must not be called'); }
   });
   await assert.rejects(notify({ text: 'x' }), /photo_publish_watchdog_not_leader/,
     'воркер стартовал и реально не лидер — прежняя защита от N потоков уведомлений при нескольких экземплярах обязана остаться в силе');
 });
 
-test('C3: воркер СТАРТОВАЛ и лидер -> notify отправляет как обычно', async () => {
+test('C3: воркер СТАРТОВАЛ и лидер -> notify отправляет как обычно, botId и context доходят до sendChatMessage', async () => {
   const sent = [];
-  const notify = buildNotifyWrapperMirror({
-    dialogId: 'chat123',
-    worker: { isLeader: () => true },
-    workerStarted: true,
-    botId: 42,
-    send: async ({ text }) => { sent.push(text); }
+  const notify = createPhotoPublishWatchdogNotifier({
+    getDialogId: () => 'chat123',
+    getWorker: () => ({ isLeader: () => true }),
+    isWorkerStarted: () => true,
+    getContext: async () => ({ domain: 'x.bitrix24.ru' }),
+    resolveBotId: async (context) => { assert.deepEqual(context, { domain: 'x.bitrix24.ru' }); return 42; },
+    sendChatMessage: async (args) => { sent.push(args); }
   });
   await notify({ text: 'застряло 1' });
-  assert.deepEqual(sent, ['застряло 1']);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0], { botId: 42, dialogId: 'chat123', text: 'застряло 1', context: { domain: 'x.bitrix24.ru' } });
+});
+
+test('нет botId (бот не смог зарегистрироваться) -> notify бросает photo_publish_watchdog_no_bot_id, sendChatMessage не вызван', async () => {
+  const notify = createPhotoPublishWatchdogNotifier({
+    getDialogId: () => 'chat123',
+    getWorker: () => ({ isLeader: () => true }),
+    isWorkerStarted: () => true,
+    getContext: async () => ({}),
+    resolveBotId: async () => 0,
+    sendChatMessage: async () => { throw new Error('sendChatMessage must not be called'); }
+  });
+  await assert.rejects(notify({ text: 'x' }), /photo_publish_watchdog_no_bot_id/);
+});
+
+// ---------------------------------------------------------------------------
+// buildPhotoPublishWatchdog — решение "строить ли сторожа" ОДНИМ гейтом
+// (enabled), плюс отложенный старт через .finally() на schemaReady.
+// ---------------------------------------------------------------------------
+
+test('buildPhotoPublishWatchdog: enabled=false -> null, createWatchdog НЕ вызывается вовсе', () => {
+  let createWatchdogCalls = 0;
+  const result = buildPhotoPublishWatchdog({
+    enabled: false,
+    store: {},
+    notify: async () => {},
+    schemaReady: Promise.resolve(),
+    logger: { log() {}, error() {} },
+    createWatchdog: () => { createWatchdogCalls += 1; return { start() {}, stop() {}, tick: async () => {} }; }
+  });
+  assert.equal(result, null, 'C3: при выключенном intake (photoQueueRuntime.enabled=false) сторожа не должно быть вовсе');
+  assert.equal(createWatchdogCalls, 0);
+});
+
+test('buildPhotoPublishWatchdog: enabled=true -> реальный сторож возвращён, стартует НЕЗАВИСИМО от исхода schemaReady (успех)', async () => {
+  const startCalls = [];
+  const logs = [];
+  const fakeWatchdog = { start: () => startCalls.push('start'), stop() {}, tick: async () => {} };
+  const result = buildPhotoPublishWatchdog({
+    enabled: true,
+    store: { async listStuck() { return []; } },
+    notify: async () => {},
+    schemaReady: Promise.resolve(),
+    logger: { log: (line) => logs.push(line), error() {} },
+    createWatchdog: () => fakeWatchdog
+  });
+  assert.equal(result, fakeWatchdog, 'enabled=true обязан вернуть реально построенный сторож');
+  await new Promise((resolve) => setImmediate(resolve)); // дать .finally() отработать
+  assert.deepEqual(startCalls, ['start'], 'старт обязан произойти после того, как schemaReady УСПЕШНО завершилась');
+  assert.ok(logs.some((line) => JSON.parse(line).event === 'photo_publish_watchdog_started'));
+});
+
+test('C3 (главный сценарий): buildPhotoPublishWatchdog стартует сторожа, ДАЖЕ когда schemaReady ОТКЛОНЕНА (.finally, не .then), и не оставляет unhandledRejection', async () => {
+  // Это и есть живая на Postgres ветка C3: неконкурентный CREATE INDEX,
+  // таймаут блокировки роняет reportPhotoSchemaReady. .then() здесь НЕ
+  // сработал бы вовсе — мутация ".finally -> .then", которую переревью
+  // применило прямо к server.js и получило зелёный набор, обязана ловиться
+  // именно этим тестом.
+  const startCalls = [];
+  const errors = [];
+  const fakeWatchdog = { start: () => startCalls.push('start'), stop() {}, tick: async () => {} };
+  const result = buildPhotoPublishWatchdog({
+    enabled: true,
+    store: {},
+    notify: async () => {},
+    schemaReady: Promise.reject(new Error('CREATE INDEX lock timeout')),
+    logger: { log() {}, error: (line) => errors.push(line) },
+    createWatchdog: () => fakeWatchdog
+  });
+  assert.equal(result, fakeWatchdog, 'сторож обязан существовать, даже если схема не готова');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(startCalls, ['start'], 'сторож обязан СТАРТОВАТЬ, даже когда reportPhotoSchemaReady отклонена — иначе он существует, но никогда не тикает (C3)');
+  // Минор (раунд правок 2): .finally() пробрасывает отклонение дальше — без
+  // завершающего .catch() ЭТОТ тест сам воспроизводит unhandledRejection
+  // (что и произошло при первом прогоне до фикса). Проверяем, что отказ
+  // реально пойман и залогирован, а не просто "тест не упал по случайности".
+  const logged = errors.map((line) => JSON.parse(line)).find((entry) => entry.event === 'photo_publish_watchdog_schema_wait_failed');
+  assert.ok(logged, 'отклонение schemaReady обязано быть поймано и залогировано, а не улететь как unhandledRejection');
+  assert.match(logged.message, /CREATE INDEX lock timeout/);
+});
+
+// ---------------------------------------------------------------------------
+// startPhotoQueueDepthLog — периодический лог глубины очереди, независимый
+// от сторожа/воркера/лидерства.
+// ---------------------------------------------------------------------------
+
+test('startPhotoQueueDepthLog: enabled=false -> таймер не создаётся вовсе, stop() безопасен', () => {
+  let setIntervalCalls = 0;
+  const result = startPhotoQueueDepthLog({
+    enabled: false,
+    store: { async countPendingByState() { return {}; } },
+    intervalMs: 1000,
+    logger: { log() {}, error() {} },
+    setIntervalFn: () => { setIntervalCalls += 1; return 1; }
+  });
+  assert.equal(setIntervalCalls, 0, 'выключенная очередь не должна заводить таймер вовсе');
+  assert.doesNotThrow(() => result.stop());
+});
+
+test('startPhotoQueueDepthLog: enabled=true -> таймер создан с нужным интервалом, тик реально зовёт countPendingByState и логирует', async () => {
+  let capturedCallback = null;
+  let capturedInterval = null;
+  const countCalls = [];
+  const logs = [];
+
+  startPhotoQueueDepthLog({
+    enabled: true,
+    store: {
+      // Минор (раунд правок 2): countPendingByState(), НЕ countByState() —
+      // countByState() без reportId сканирует всю таблицу целиком (оба
+      // индекса частичные, ни один не обслуживает запрос без предиката).
+      // 'published' сознательно ОТСУТСТВУЕТ в результате (не "0", а нет
+      // такого ключа) — это не баг фикстуры, а прямое следствие
+      // WHERE publish_state <> 'published' в самом запросе.
+      async countPendingByState() {
+        countCalls.push(1);
+        return { accepted: 3, failed: 1 };
+      }
+    },
+    intervalMs: 900000,
+    logger: { log: (line) => logs.push(line), error() {} },
+    setIntervalFn: (cb, ms) => { capturedCallback = cb; capturedInterval = ms; return { unref() {} }; }
+  });
+
+  assert.equal(capturedInterval, 900000, 'обязан использовать переданный интервал, а не какой-то свой');
+  assert.equal(typeof capturedCallback, 'function', 'мутация "лог глубины очереди выключен целиком" — обязан быть реально зарегистрирован колбэк');
+
+  // Тик — то, что реально произойдёт каждые intervalMs в проде.
+  capturedCallback();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(countCalls.length, 1, 'тик обязан реально вызвать countPendingByState()');
+  const logged = logs.map((line) => JSON.parse(line)).find((entry) => entry.event === 'photo_queue_depth');
+  assert.ok(logged, 'обязана быть залогирована строка photo_queue_depth');
+  assert.deepEqual(logged.counts, { accepted: 3, failed: 1 });
+});
+
+test('startPhotoQueueDepthLog: тик, упавший на countPendingByState(), логирует ошибку отдельным событием, а не роняет процесс', async () => {
+  let capturedCallback = null;
+  const errors = [];
+  startPhotoQueueDepthLog({
+    enabled: true,
+    store: { async countPendingByState() { throw new Error('db down'); } },
+    intervalMs: 1000,
+    logger: { log() {}, error: (line) => errors.push(line) },
+    setIntervalFn: (cb) => { capturedCallback = cb; return { unref() {} }; }
+  });
+  capturedCallback();
+  await new Promise((resolve) => setImmediate(resolve));
+  const logged = errors.map((line) => JSON.parse(line)).find((entry) => entry.event === 'photo_queue_depth_failed');
+  assert.ok(logged, 'сбой countPendingByState() обязан быть залогирован, а не проглочен молча');
+});
+
+test('startPhotoQueueDepthLog: stop() реально останавливает таймер (clearIntervalFn вызван с тем же хендлом)', () => {
+  const fakeTimerHandle = { id: 'timer-1', unref() {} };
+  let clearedWith = null;
+  const result = startPhotoQueueDepthLog({
+    enabled: true,
+    store: { async countPendingByState() { return {}; } },
+    intervalMs: 1000,
+    logger: { log() {}, error() {} },
+    setIntervalFn: () => fakeTimerHandle,
+    clearIntervalFn: (handle) => { clearedWith = handle; }
+  });
+  result.stop();
+  assert.equal(clearedWith, fakeTimerHandle);
 });
 
 test('обёртка notify сторожа: ведущий экземпляр отправляет сообщение как обычно', async () => {

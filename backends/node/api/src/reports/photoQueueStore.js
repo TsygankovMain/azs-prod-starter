@@ -391,6 +391,36 @@ const createPostgresStore = (pool) => ({
     return counts;
   },
 
+  // Минор (раунд правок 2, финальное ревью ветки, подтверждено живьём) —
+  // countByState() БЕЗ reportId — GROUP BY по ВСЕЙ таблице, а оба
+  // существующих индекса (ix_report_photo_publish_due, ix_report_photo_stuck)
+  // ЧАСТИЧНЫЕ (WHERE publish_state = 'accepted' / <> 'published') и ни один
+  // не обслуживает запрос без предиката — планировщик обязан читать таблицу
+  // целиком. report_photo НЕ чистится никогда (см. purgePublishedBlobs —
+  // удаляет только байты, не строки); при 71 АЗС это ~1 млн строк в год, и
+  // periodic-лог глубины очереди (photoPublishBoot.js, каждые 15 минут по
+  // умолчанию) не имеет права быть источником растущего полного скана.
+  //
+  // Этот метод — специально под этот periodic-лог: считает ТОЛЬКО
+  // publish_state <> 'published' — именно тот предикат, что уже есть у
+  // ix_report_photo_stuck, и планировщик способен использовать этот индекс
+  // вместо полного скана. Осознанная потеря: published в результате не
+  // будет вовсе (не "0", а отсутствующий ключ) — приемлемо, потому что для
+  // ЦЕЛИ этого лога ("поймать C1 — accepted растёт бесконечно; поймать
+  // системный failed") published не несёт сигнала, только растущую цену
+  // скана. countByState() выше остаётся как есть, с published, для
+  // остальных потребителей (например, ручной диагностики конкретного
+  // report_id, где таблица отфильтрована по report_id и полного скана нет
+  // независимо от предиката).
+  async countPendingByState() {
+    const result = await pool.query(
+      `SELECT publish_state, COUNT(*) AS count FROM report_photo WHERE publish_state <> 'published' GROUP BY publish_state`
+    );
+    const counts = {};
+    for (const row of result.rows) counts[row.publish_state] = Number(row.count);
+    return counts;
+  },
+
   // Важно 3 (раунд правок 1, ревью Task 8): агрегат countByState недостаточен
   // для проверки комплекта ОДНОГО отчёта — количество совпавших строк не
   // гарантирует, что совпали именно ТЕ коды, что сейчас обязательны. Два
@@ -671,6 +701,20 @@ const createMysqlStore = (pool) => ({
         ? `SELECT publish_state, COUNT(*) AS count FROM report_photo WHERE report_id = ? GROUP BY publish_state`
         : `SELECT publish_state, COUNT(*) AS count FROM report_photo GROUP BY publish_state`,
       hasReportId ? [reportId] : []
+    );
+    const counts = {};
+    for (const row of rows) counts[row.publish_state] = Number(row.count);
+    return counts;
+  },
+
+  // См. комментарий у PostgreSQL-версии countPendingByState выше — тот же
+  // контракт и тот же смысл (только незавершённые состояния, специально под
+  // periodic-лог глубины очереди). MySQL не имеет партиционных индексов в
+  // том же смысле, что Postgres, но запрос всё равно ýже полного скана всех
+  // publish_state, включая постоянно растущий 'published'.
+  async countPendingByState() {
+    const [rows] = await pool.execute(
+      `SELECT publish_state, COUNT(*) AS count FROM report_photo WHERE publish_state <> 'published' GROUP BY publish_state`
     );
     const counts = {};
     for (const row of rows) counts[row.publish_state] = Number(row.count);
