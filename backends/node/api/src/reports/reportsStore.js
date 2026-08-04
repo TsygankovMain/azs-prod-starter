@@ -130,6 +130,22 @@ const createPostgresStore = (pool) => ({
         ON report_photo (next_attempt_at)
         WHERE publish_state = 'accepted'
     `);
+    // Task 11 (пункт 8, найдено ревью): у сторожа (photoPublishWatchdog.js ->
+    // listStuck) условие ДРУГОЕ — `publish_state <> 'published' AND (...)`, а
+    // не `= 'accepted'` индекса выше. `<> 'published'` не влечёт предикат
+    // `= 'accepted'` буквально (строка может быть и 'failed') — планировщик
+    // Postgres не может воспользоваться партиционным индексом, чей предикат
+    // не подпадает под условие запроса. report_photo не чистится целиком
+    // (только report_photo_blob, через N дней после публикации, см.
+    // purgePublishedBlobs) — опубликованные строки остаются в таблице
+    // навсегда, и по мере роста архива каждый тик сторожа читал бы её
+    // целиком. Отдельный партиционный индекс с СОБСТВЕННЫМ, совпадающим
+    // предикатом решает это тем же приёмом, что и индекс очереди выше.
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS ix_report_photo_stuck
+        ON report_photo (uploaded_at)
+        WHERE publish_state <> 'published'
+    `);
     // Байты отдельной таблицей: обычные выборки по фото не должны тянуть
     // мегабайты, а удаление байтов после публикации не должно трогать
     // метаданные, на которые ссылается фотолента.
@@ -776,6 +792,25 @@ const createMysqlStore = (pool) => ({
     if (Number(dueIndexRows[0]?.c || 0) === 0) {
       await pool.execute(
         `CREATE INDEX ix_report_photo_publish_due ON report_photo (publish_state, next_attempt_at)`
+      );
+    }
+    // Task 11 (пункт 8) — см. полное обоснование в PostgreSQL-варианте выше:
+    // у сторожа условие (`publish_state <> 'published'`) другое, чем у
+    // очереди (`= 'accepted'`), индекс выше ему не подходит. MySQL не
+    // поддерживает предикатные индексы — тот же приём, что и у
+    // ix_report_photo_publish_due: составной индекс, ведущая колонка
+    // publish_state, вместо предиката; тот же guard через
+    // information_schema.STATISTICS, потому что CREATE INDEX в MySQL не
+    // поддерживает IF NOT EXISTS.
+    const [stuckIndexRows] = await pool.execute(
+      `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'report_photo'
+         AND INDEX_NAME = 'ix_report_photo_stuck'`
+    );
+    if (Number(stuckIndexRows[0]?.c || 0) === 0) {
+      await pool.execute(
+        `CREATE INDEX ix_report_photo_stuck ON report_photo (publish_state, uploaded_at)`
       );
     }
     // Байты отдельной таблицей — см. комментарий в PostgreSQL-варианте выше.

@@ -45,6 +45,29 @@ test('есть индекс под выборку очереди', async () => {
   assert.match(all, /CREATE INDEX IF NOT EXISTS ix_report_photo_publish_due/);
 });
 
+// ---------------------------------------------------------------------------
+// Task 11 (пункт 8, найдено ревью): ix_report_photo_publish_due — партиционный
+// индекс ПОД УСЛОВИЕ claimBatch (publish_state = 'accepted'). У сторожа
+// (photoPublishWatchdog.js -> photoQueueStore.listStuck) условие ДРУГОЕ:
+// `publish_state <> 'published' AND (...)`. `<> 'published'` НЕ подпадает под
+// предикат `= 'accepted'` того индекса (может быть и 'failed') — Postgres не
+// может использовать партиционный индекс, когда условие запроса не влечёт его
+// предикат буквально. По мере роста report_photo (публикованные строки не
+// удаляются, чистится только report_photo_blob) каждый тик сторожа читал бы
+// таблицу целиком.
+// ---------------------------------------------------------------------------
+
+test('есть отдельный индекс под выборку сторожа (пункт 8) — своё условие, не переиспользует индекс очереди', async () => {
+  const pool = makeFakePool();
+  const store = createReportsStore({ pool, dbType: 'postgres' });
+  await store.ensurePhotoSchema();
+  const all = pool.statements.join(' | ');
+  assert.match(all, /CREATE INDEX IF NOT EXISTS ix_report_photo_stuck/);
+  const stuckIndexStatement = pool.statements.find((s) => s.includes('ix_report_photo_stuck'));
+  assert.match(stuckIndexStatement, /WHERE publish_state <> 'published'/,
+    "предикат обязан совпадать с условием listStuck (publish_state <> 'published'), а не с claimBatch ('accepted') — иначе планировщик всё равно не сможет использовать этот индекс");
+});
+
 test('состояние отчёта — своя таблица, а не колонки в несуществующей report', async () => {
   const pool = makeFakePool();
   const store = createReportsStore({ pool, dbType: 'postgres' });
@@ -166,6 +189,10 @@ test('MySQL: первый проход добавляет недостающие
   assert.match(all, /ALTER TABLE report_photo ADD COLUMN last_publish_error LONGTEXT NULL/);
   assert.match(all, /ALTER TABLE report_photo ADD COLUMN slot_verified TINYINT\(1\) NOT NULL DEFAULT 1/);
   assert.match(all, /CREATE INDEX ix_report_photo_publish_due ON report_photo \(publish_state, next_attempt_at\)/);
+  // Пункт 8: MySQL не поддерживает предикатные индексы (CREATE INDEX не
+  // принимает WHERE) — тот же приём, что и у ix_report_photo_publish_due
+  // выше: составной индекс, ведущая колонка publish_state, вместо предиката.
+  assert.match(all, /CREATE INDEX ix_report_photo_stuck ON report_photo \(publish_state, uploaded_at\)/);
   assert.match(all, /CREATE TABLE IF NOT EXISTS report_photo_blob/);
   assert.match(all, /CREATE TABLE IF NOT EXISTS report_local_state/);
 });
@@ -183,8 +210,11 @@ test('MySQL: повторный вызов ensurePhotoSchema идемпотен�
 
   const repeatedAlters = pool.statements.filter((s) => /^ALTER TABLE report_photo ADD COLUMN/.test(s));
   const repeatedIndexes = pool.statements.filter((s) => /^CREATE INDEX ix_report_photo_publish_due/.test(s));
+  const repeatedStuckIndexes = pool.statements.filter((s) => /^CREATE INDEX ix_report_photo_stuck/.test(s));
   assert.equal(repeatedAlters.length, 0,
     'второй проход не должен пытаться добавить уже существующие колонки — на реальном MySQL это ER_DUP_FIELDNAME (Duplicate column)');
   assert.equal(repeatedIndexes.length, 0,
     'второй проход не должен пытаться создать уже существующий индекс — на реальном MySQL это ER_DUP_KEYNAME (Duplicate key name)');
+  assert.equal(repeatedStuckIndexes.length, 0,
+    'то же самое обязано быть верно и для нового индекса сторожа (пункт 8)');
 });
