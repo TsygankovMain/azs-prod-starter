@@ -182,7 +182,11 @@ test('submit проставляет operator_completed_at и возвращае�
       async notifyReportDone() {}, async notifyDispatch() {}, async notifyReportExpired() {}
     },
     authContextStore: makeAuthContextStore(),
-    crmSyncJobStore
+    crmSyncJobStore,
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — POST /:id/submit его не трогает,
+    // поэтому нужна только валидная форма, а не рабочая реализация.
+    photoQueueStore: { async accept() {} }
   });
 
   const handler = findHandler(router, 'post', '/:id/submit');
@@ -237,7 +241,11 @@ test('дедлайн считается по operator_completed_at, а не по
     },
     authContextStore: makeAuthContextStore(),
     crmSyncJobStore,
-    now: () => operatorCompletedAt
+    now: () => operatorCompletedAt,
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — POST /:id/submit его не трогает,
+    // поэтому нужна только валидная форма, а не рабочая реализация.
+    photoQueueStore: { async accept() {} }
   });
 
   const handler = findHandler(router, 'post', '/:id/submit');
@@ -295,7 +303,11 @@ test('Important 1: список обязательных фото неизвес
         async notifyReportDone() {}, async notifyDispatch() {}, async notifyReportExpired() {}
       },
       authContextStore: makeAuthContextStore(),
-      crmSyncJobStore
+      crmSyncJobStore,
+      // Task 11: photoQueueStore теперь обязательный параметр конструктора
+      // роутера (см. reportsRoutes.js) — POST /:id/submit его не трогает,
+      // поэтому нужна только валидная форма, а не рабочая реализация.
+      photoQueueStore: { async accept() {} }
     });
 
     const handler = findHandler(router, 'post', '/:id/submit');

@@ -404,10 +404,10 @@ test('список неизвестен и Битрикс лежит — фот�
 test('открытие карточки отчёта заполняет required_photo_codes', async () => {
   const context = { memberId: 'm-t8', domain: 't8.bitrix24.ru' };
   const working = makeWorkingBitrixClient();
-  const { reportsStore, setRequiredPhotoCodesCalls } = makeDeps({
+  const { reportsStore, photoQueueStore, setRequiredPhotoCodesCalls } = makeDeps({
     reports: new Map([[60801, { id: 60801, azsId: '608', adminUserId: 10 }]])
   });
-  const router = buildRouter({ reportsStore, photoQueueStore: null, bitrixClient: working.client });
+  const router = buildRouter({ reportsStore, photoQueueStore, bitrixClient: working.client });
   const handler = findHandler(router, 'get', '/:id');
 
   const req = {

@@ -393,6 +393,9 @@ function makeMinimalDeps(overrides = {}) {
       async enqueue() { return { id: 1 }; },
       async listByReport() { return []; }
     },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — этот файл не трогает приём фото.
+    photoQueueStore: { async accept() {} },
     ...overrides
   };
 }

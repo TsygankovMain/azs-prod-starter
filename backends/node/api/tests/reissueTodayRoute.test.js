@@ -26,6 +26,10 @@ const baseDeps = () => ({
   authContextStore: {},
   crmSyncJobStore: {},
   dispatchPlanStore: { async ensureSchema() {}, upsertPlanned() {}, async listByDate() { return []; } },
+  // Task 11: photoQueueStore теперь обязательный параметр конструктора
+  // роутера (см. reportsRoutes.js) — этот файл не трогает фото вовсе,
+  // поэтому нужна только валидная форма, а не рабочая реализация.
+  photoQueueStore: { async accept() {} },
 });
 
 test('POST /today/reissue: 403 без capabilities.settings', async () => {

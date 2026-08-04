@@ -1057,6 +1057,21 @@ export const createReportsRouter = ({
   if (!reportsStore || !dispatchService || !settingsStore || !bitrixClient || !notificationService || !authContextStore || !crmSyncJobStore) {
     throw new Error('reportsStore, dispatchService, settingsStore, bitrixClient, notificationService, authContextStore and crmSyncJobStore are required');
   }
+  // Task 11 (проводка server.js, раунд ревью): photoQueueStore раньше был
+  // необязательным (default null) — POST /:id/photo сам проверял его наличие
+  // и на отсутствии бросал ReportConfigError('photo_queue_store_not_configured')
+  // только на первой РЕАЛЬНОЙ загрузке фото живым оператором. Если сборщик
+  // роутера (server.js) забывал прокинуть стор, это молчало до тех пор, пока
+  // кто-то не попытался сдать смену. Проверка здесь — та же дисциплина, что и
+  // у остальных обязательных зависимостей выше: забытая проводка обязана
+  // ронять СТАРТ приложения, а не всплывать на живом операторе. server.js
+  // держит photoQueueStore truthy ВСЕГДА (см. photoPublishBoot.js —
+  // buildPhotoQueueRuntime отдаёт рабочую заглушку вместо null, когда очередь
+  // недоступна или выключена на эфемерной БД), поэтому этот throw не сужает
+  // прод-путь — он ловит только регресс проводки.
+  if (!photoQueueStore || typeof photoQueueStore.accept !== 'function') {
+    throw new Error('photoQueueStore with accept() is required');
+  }
 
   const router = express.Router();
   const upload = multer({

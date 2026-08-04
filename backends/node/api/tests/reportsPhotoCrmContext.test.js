@@ -306,7 +306,13 @@ test('photo upload returns PHOTO_EXIF_TOO_OLD errorCode with ageMinutes meta whe
   const router = createReportsRouter({
     reportsStore, dispatchService: {}, settingsStore, bitrixClient,
     notificationService: { async notifyReportDone() {}, async notifyDispatch() {}, async notifyReportExpired() {} },
-    authContextStore, crmSyncJobStore: { async enqueue() {} }
+    authContextStore, crmSyncJobStore: { async enqueue() {} },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js). Этот тест сейчас не доходит до
+    // реальной загрузки (см. комментарии ниже — EXIF-сценарий недостижим
+    // без настоящего EXIF-JPEG), но конструктор роутера всё равно требует
+    // валидную форму.
+    photoQueueStore: { async accept() {} }
   });
 
   const layer = router.stack.find((l) => l?.route?.path === '/:id/photo');
@@ -377,7 +383,10 @@ test('report submit returns REPORT_PHOTOS_MISSING errorCode when required photos
   const router = createReportsRouter({
     reportsStore, dispatchService: {}, settingsStore, bitrixClient,
     notificationService: { async notifyReportDone() {}, async notifyDispatch() {}, async notifyReportExpired() {} },
-    authContextStore, crmSyncJobStore: { async enqueue() {} }
+    authContextStore, crmSyncJobStore: { async enqueue() {} },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — POST /:id/submit его не трогает.
+    photoQueueStore: { async accept() {} }
   });
 
   const layer = router.stack.find((l) => l?.route?.path === '/:id/submit');

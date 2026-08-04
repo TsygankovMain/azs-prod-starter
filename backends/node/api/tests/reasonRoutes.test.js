@@ -82,6 +82,9 @@ test('POST /:id/reason: 400 при невалидном reasonCode', async () =>
     notificationService: { async notifyReportExpired() {} },
     authContextStore: { async getLastAdminContext() { return null; } },
     crmSyncJobStore: { async enqueue() { return { id: 1 }; }, async listByReport() { return []; } },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — этот файл не трогает приём фото.
+    photoQueueStore: { async accept() {} },
     reasonStore: {
       ...makeReasonStore(),
       upsert: async (args) => { upsertCalls.push(args); return { ...args, id: 1 }; }
@@ -125,6 +128,9 @@ test('POST /:id/reason: 400 если other без reasonText', async () => {
     notificationService: { async notifyReportExpired() {} },
     authContextStore: { async getLastAdminContext() { return null; } },
     crmSyncJobStore: { async enqueue() { return { id: 1 }; }, async listByReport() { return []; } },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — этот файл не трогает приём фото.
+    photoQueueStore: { async accept() {} },
     reasonStore: {
       ...makeReasonStore(),
       upsert: async (args) => { upsertCalls.push(args); return { ...args, id: 1 }; }
@@ -170,6 +176,9 @@ test('POST /:id/reason: 403 если текущий пользователь н�
     notificationService: { async notifyReportExpired() {} },
     authContextStore: { async getLastAdminContext() { return null; } },
     crmSyncJobStore: { async enqueue() { return { id: 1 }; }, async listByReport() { return []; } },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — этот файл не трогает приём фото.
+    photoQueueStore: { async accept() {} },
     reasonStore: {
       ...makeReasonStore(),
       upsert: async (args) => { upsertCalls.push(args); return { ...args, id: 1 }; }
@@ -224,6 +233,9 @@ test('POST /:id/reason: 200 ok при валидных данных, CRM + кэ�
     notificationService: { async notifyReportExpired() {} },
     authContextStore: { async getLastAdminContext() { return null; } },
     crmSyncJobStore: { async enqueue() { return { id: 1 }; }, async listByReport() { return []; } },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — этот файл не трогает приём фото.
+    photoQueueStore: { async accept() {} },
     reasonStore: {
       ...makeReasonStore(),
       upsert: async (args) => { upsertCalls.push(args); return { ...args, id: 1 }; }
@@ -294,6 +306,9 @@ test('POST /:id/reason: 200 даже если пересылка упала (bes
     notificationService: { async notifyReportExpired() {} },
     authContextStore: { async getLastAdminContext() { return null; } },
     crmSyncJobStore: { async enqueue() { return { id: 1 }; }, async listByReport() { return []; } },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — этот файл не трогает приём фото.
+    photoQueueStore: { async accept() {} },
     reasonStore: {
       ...makeReasonStore(),
       upsert: async (args) => { upsertCalls.push(args); return { ...args, id: 1 }; }
@@ -357,6 +372,9 @@ test('GET /reasons: возвращает counts из reasonStore', async () => {
     notificationService: { async notifyReportExpired() {} },
     authContextStore: { async getLastAdminContext() { return null; } },
     crmSyncJobStore: { async enqueue() { return { id: 1 }; }, async listByReport() { return []; } },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — этот файл не трогает приём фото.
+    photoQueueStore: { async accept() {} },
     reasonStore: fakeReasonStore,
     reasonForwardingService: makeForwardingService()
   });
@@ -449,6 +467,9 @@ test('GET /reasons: бэкафилл помечается выполненным
     notificationService: { async notifyReportExpired() {} },
     authContextStore: { async getLastAdminContext() { return null; } },
     crmSyncJobStore: { async enqueue() { return { id: 1 }; }, async listByReport() { return []; } },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — этот файл не трогает приём фото.
+    photoQueueStore: { async accept() {} },
     reasonStore: fakeReasonStore,
     reasonForwardingService: makeForwardingService()
   });
@@ -517,6 +538,9 @@ test('GET /reasons: бэкафилл, который ещё ни разу не �
     notificationService: { async notifyReportExpired() {} },
     authContextStore: { async getLastAdminContext() { return null; } },
     crmSyncJobStore: { async enqueue() { return { id: 1 }; }, async listByReport() { return []; } },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — этот файл не трогает приём фото.
+    photoQueueStore: { async accept() {} },
     reasonStore: fakeReasonStore,
     reasonForwardingService: makeForwardingService()
   });
@@ -578,6 +602,9 @@ test('GET /reasons: для 500 отчётов число вызовов Bitrix �
     notificationService: { async notifyReportExpired() {} },
     authContextStore: { async getLastAdminContext() { return null; } },
     crmSyncJobStore: { async enqueue() { return { id: 1 }; }, async listByReport() { return []; } },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — этот файл не трогает приём фото.
+    photoQueueStore: { async accept() {} },
     reasonStore: fakeReasonStore,
     reasonForwardingService: makeForwardingService()
   });
@@ -625,6 +652,9 @@ test('GET /reasons: падение Bitrix при бэкафилле не лом�
     notificationService: { async notifyReportExpired() {} },
     authContextStore: { async getLastAdminContext() { return null; } },
     crmSyncJobStore: { async enqueue() { return { id: 1 }; }, async listByReport() { return []; } },
+    // Task 11: photoQueueStore теперь обязательный параметр конструктора
+    // роутера (см. reportsRoutes.js) — этот файл не трогает приём фото.
+    photoQueueStore: { async accept() {} },
     reasonStore: fakeReasonStore,
     reasonForwardingService: makeForwardingService()
   });
