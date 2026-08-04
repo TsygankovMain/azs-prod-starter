@@ -534,6 +534,104 @@ test('обёртка notify сторожа: не-ведущий экземпля
   assert.equal(sentMessages.length, 1, 'после смены лидерства тот же набор застрявших фото обязан наконец уйти в чат');
 });
 
+// ---------------------------------------------------------------------------
+// C2 + C3 (финальное ревью ветки) — server.js сам не импортируется тестами
+// (см. заголовок файла), поэтому ниже — буквальный мирроринг обновлённой
+// notifyPhotoPublishWatchdog из server.js (та же логика, тот же порядок
+// проверок: dialogId -> лидерство -> botId -> отправка), а не копия старого
+// поведения. Мутационная защита: если кто-то в будущем случайно вернёт
+// server.js к старому `if (!dialogId) return;` или уберёт условие
+// workerStarted, соответствующий тест ниже обязан покраснеть.
+// ---------------------------------------------------------------------------
+
+const buildNotifyWrapperMirror = ({ dialogId, worker, workerStarted, botId, send }) => async ({ text }) => {
+  const trimmedDialogId = String(dialogId || '').trim();
+  if (!trimmedDialogId) {
+    // C2: раньше — тихий `return` (успешный резолв). Теперь — явный отказ.
+    throw new Error('photo_watchdog_chat_not_configured');
+  }
+  // C3: лидерство проверяем ТОЛЬКО когда воркер реально стартовал — иначе
+  // isLeader()===false навсегда (worker существует, но start() ни разу не
+  // вызывался) задушило бы каждое уведомление молча.
+  if (worker && workerStarted && !worker.isLeader()) {
+    throw new Error('photo_publish_watchdog_not_leader');
+  }
+  if (!botId) {
+    throw new Error('photo_publish_watchdog_no_bot_id');
+  }
+  await send({ text, dialogId: trimmedDialogId, botId });
+};
+
+test('C2: notify бросает явную ошибку при пустом PHOTO_WATCHDOG_CHAT_ID/DIAG_CHAT_ID (не тихий успех)', async () => {
+  const notify = buildNotifyWrapperMirror({
+    dialogId: '',
+    worker: { isLeader: () => true },
+    workerStarted: true,
+    botId: 42,
+    send: async () => { throw new Error('send must not be called'); }
+  });
+  await assert.rejects(notify({ text: 'x' }), /photo_watchdog_chat_not_configured/,
+    'пустой chat id обязан быть явным отказом — раньше он резолвился успешно, и сторож засчитывал предупреждение доставленным');
+});
+
+test('C3: воркера нет вовсе (null — MySQL или отказ конструктора) -> notify НЕ душится проверкой лидерства, уведомляет как обычно', async () => {
+  const sent = [];
+  const notify = buildNotifyWrapperMirror({
+    dialogId: 'chat123',
+    worker: null,
+    workerStarted: false,
+    botId: 42,
+    send: async ({ text }) => { sent.push(text); }
+  });
+  await notify({ text: 'застряло 3' });
+  assert.deepEqual(sent, ['застряло 3'],
+    'без воркера (MySQL, либо отказ его сборки) лидерство нечем проверить — сторож обязан уведомлять безусловно, а не молчать');
+});
+
+test('C3: воркер существует, но НИ РАЗУ не стартовал (отказ reportPhotoSchemaReady) -> notify НЕ душится isLeader()===false навсегда', async () => {
+  const sent = [];
+  let isLeaderCalls = 0;
+  const notify = buildNotifyWrapperMirror({
+    dialogId: 'chat123',
+    // worker существует (объект есть), но start() ни разу не вызывался —
+    // isLeader() в реальном photoPublishWorker.js в этом случае возвращает
+    // константный false (leader выставляется только внутри tick()).
+    worker: { isLeader: () => { isLeaderCalls += 1; return false; } },
+    workerStarted: false, // ключевое отличие от обычного "не лидер"
+    botId: 42,
+    send: async ({ text }) => { sent.push(text); }
+  });
+  await notify({ text: 'застряло 5' });
+  assert.deepEqual(sent, ['застряло 5'],
+    'photoPublishWorkerStarted=false обязан пропускать проверку isLeader() целиком — иначе КАЖДОЕ уведомление тихо гасится навсегда (C3)');
+  assert.equal(isLeaderCalls, 0, 'isLeader() не должен даже вызываться, если воркер не стартовал — читать его в этом состоянии бессмысленно');
+});
+
+test('C3: воркер СТАРТОВАЛ, но не лидер -> notify всё ещё бросает (обычное поведение НЕ регрессировало)', async () => {
+  const notify = buildNotifyWrapperMirror({
+    dialogId: 'chat123',
+    worker: { isLeader: () => false },
+    workerStarted: true,
+    botId: 42,
+    send: async () => { throw new Error('send must not be called'); }
+  });
+  await assert.rejects(notify({ text: 'x' }), /photo_publish_watchdog_not_leader/,
+    'воркер стартовал и реально не лидер — прежняя защита от N потоков уведомлений при нескольких экземплярах обязана остаться в силе');
+});
+
+test('C3: воркер СТАРТОВАЛ и лидер -> notify отправляет как обычно', async () => {
+  const sent = [];
+  const notify = buildNotifyWrapperMirror({
+    dialogId: 'chat123',
+    worker: { isLeader: () => true },
+    workerStarted: true,
+    botId: 42,
+    send: async ({ text }) => { sent.push(text); }
+  });
+  await notify({ text: 'застряло 1' });
+  assert.deepEqual(sent, ['застряло 1']);
+});
+
 test('обёртка notify сторожа: ведущий экземпляр отправляет сообщение как обычно', async () => {
   const sentMessages = [];
   const notify = async ({ text }) => { sentMessages.push(text); };

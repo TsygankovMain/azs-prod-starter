@@ -1291,7 +1291,18 @@ const getPhotoPublishBackgroundContext = async () => {
 };
 
 let photoPublishWorker = null;
+// C3 (финальное ревью ветки) — true ТОЛЬКО между тем моментом, когда
+// photoPublishWorker.start() реально вызван, и остановкой процесса. worker
+// может существовать (не null), но так и не стартовать (см. ветку
+// reportPhotoSchemaReady.catch() ниже) — isLeader() в этом случае навсегда
+// вернёт false, потому что лидерство берётся только внутри tick(), а tick()
+// без start() никогда не планируется. Этот флаг — единственный способ для
+// сторожа отличить «воркер существует, но никогда не станет лидером» от
+// «воркер — реальный, но временно не лидер» (см. notifyPhotoPublishWatchdog
+// ниже).
+let photoPublishWorkerStarted = false;
 let photoPublishWatchdog = null;
+let photoQueueDepthLogTimer = null;
 
 // isPhotoPublishWorkerSupported (photoPublishBoot.js): photoQueueStore.js
 // поддерживает и Postgres, и MySQL (у каждого метода есть оба варианта), но
@@ -1307,12 +1318,23 @@ const photoPublishWorkerSupported = photoQueueRuntime.enabled && isPhotoPublishW
 
 if (photoPublishWorkerSupported) {
   // try/catch вокруг ВСЕЙ синхронной сборки — защита загрузки в глубину.
-  // Ни один из этих четырёх конструкторов не должен быть способен уронить
+  // Ни один из этих трёх конструкторов не должен быть способен уронить
   // процесс (все их собственные обязательные проверки параметров уже
   // выполнены аргументами, которые собраны здесь и должны быть корректны),
   // но если что-то непредвиденное всё же бросит — приём фото
   // (photoQueueStore.accept(), уже проверен и работает выше) не должен
-  // зависеть от этого: воркер и сторож просто останутся null.
+  // зависеть от этого: воркер просто останется null.
+  //
+  // C3 (финальное ревью ветки): сторож (photoPublishWatchdog) БОЛЬШЕ НЕ
+  // строится здесь — он вынесен в отдельный, независимый блок ниже, вне
+  // этого if. Раньше он существовал и стартовал ТОЛЬКО внутри этого try,
+  // а значит выключался вместе с воркером в каждой ветке, выключающей
+  // публикацию при живом приёме — включая ветку reportPhotoSchemaReady
+  // ниже, живую именно на Postgres (неконкурентный CREATE INDEX, таймаут
+  // блокировки роняет промис). Единственная страховка от тихой потери
+  // выключалась ровно тогда, когда была нужнее всего, и компенсации не
+  // было никакой (countByState — ноль вызовов в проде, /api/healthz знает
+  // только SELECT 1).
   try {
     // Кэш id папок Диска (Task 13) — та же логика и тот же образец «один
     // инстанс на процесс», что и у photoFolderIdCache в reportsRoutes.js до
@@ -1391,34 +1413,104 @@ if (photoPublishWorkerSupported) {
       syncCrmIfComplete: syncPhotoReportToCrmIfComplete
     });
 
-    // Сторож застрявших фото (Task 10) — обязан работать под тем же ведущим
-    // экземпляром, что и воркер: его собственная защита от повторных
-    // уведомлений живёт в памяти ЭТОГО процесса, и при нескольких экземплярах
-    // приложения на Timeweb несколько независимых сторожей дали бы несколько
-    // независимых потоков уведомлений в один чат. Не заводим второй механизм
-    // лидерства — переиспользуем advisory-лок воркера через isLeader().
+    // Старт — ПОСЛЕ готовности схемы (report_photo.slot_verified,
+    // report_photo_blob, индексы — reportPhotoSchemaReady определён выше),
+    // тем же приёмом .then()/.catch() без top-level await, что и остальная
+    // проводка стартов в этом файле. Отказ схемы (например, недостаточные
+    // права DDL) не должен ронять процесс — воркер просто не стартует;
+    // приём фото (photoQueueStore.accept()) от этого не зависит, и сторож
+    // (см. независимый блок ниже) тоже — он подписан на тот же промис
+    // отдельно и запускается независимо от исхода воркера.
+    reportPhotoSchemaReady
+      .then(() => {
+        photoPublishWorker.start();
+        photoPublishWorkerStarted = true;
+        console.log(JSON.stringify({ event: 'photo_publish_queue_started' }));
+      })
+      .catch((error) => {
+        console.error(JSON.stringify({
+          event: 'photo_publish_queue_start_failed',
+          reason: error.message
+        }));
+      });
+  } catch (error) {
+    // Защита загрузки в глубину (см. комментарий выше try): если сборка
+    // всё-таки бросила, откатываем ссылку на null — shutdown() и остальной
+    // код ниже проверяют её через ?. и не должны увидеть наполовину
+    // собранный воркер.
+    photoPublishWorker = null;
+    console.error(JSON.stringify({
+      event: 'photo_publish_workers_disabled',
+      reason: error.message
+    }));
+  }
+} else {
+  console.log(JSON.stringify({
+    event: 'photo_publish_queue_workers_skipped',
+    reason: photoQueueRuntime.enabled
+      ? 'pool does not support advisory-lock session affinity (pool.connect() missing — see photoPublishBoot.js: isPhotoPublishWorkerSupported); photo intake keeps working via photoQueueStore.accept(), publishing will not run'
+      : photoQueueRuntime.reason
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Сторож застрявших фото (Task 10) + периодический лог глубины очереди
+// (C3, финальное ревью ветки) — НЕЗАВИСИМО от того, поднялся ли воркер
+// публикации (photoPublishWorkerSupported/photoPublishWorker выше). Условие
+// здесь — photoQueueRuntime.enabled, то же самое, что гейтит приём фото и
+// очистку байтов ниже по файлу: сторож обязан работать всегда, когда
+// работает приём, потому что именно приём — источник строк, за которыми он
+// следит. Три реальные ветки, которые раньше гасили сторожа вместе с
+// воркером (все три остаются возможны и после C3, разница — сторож их
+// переживает):
+//   - MySQL (нет pool.connect(), photoPublishWorkerSupported=false) —
+//     photoPublishWorker навсегда null;
+//   - исключение при сборке воркера (try/catch выше) — photoPublishWorker
+//     откатывается в null;
+//   - отказ reportPhotoSchemaReady (неконкурентный CREATE INDEX, таймаут
+//     блокировки роняет промис — ЖИВАЯ ветка именно на Postgres, то есть в
+//     проде) — photoPublishWorker существует, но НИКОГДА не стартует
+//     (photoPublishWorkerStarted остаётся false навсегда).
+// ---------------------------------------------------------------------------
+if (photoQueueRuntime.enabled) {
+  try {
+    // Сторож в идеале работает под тем же ведущим экземпляром, что и
+    // воркер (его собственная защита от повторных уведомлений живёт в
+    // памяти ЭТОГО процесса, и при нескольких экземплярах приложения на
+    // Timeweb несколько независимых сторожей дали бы несколько независимых
+    // потоков уведомлений в один чат) — поэтому лидерство ПРОВЕРЯЕТСЯ, если
+    // есть чем проверять. Но лидерство есть ТОЛЬКО у реально СТАРТОВАВШЕГО
+    // воркера: photoPublishWorker.isLeader() без единого вызова start()
+    // читает константный false навсегда (leader выставляется исключительно
+    // внутри tick(), см. photoPublishWorker.js), и слепая проверка
+    // `!photoPublishWorker.isLeader()` задушила бы КАЖДОЕ уведомление
+    // сторожа ровно в сценарии C3 — тот самый тихий отказ, который этот
+    // модуль обязан не допускать. Поэтому гейт — photoPublishWorkerStarted:
+    //   - воркер стартовал -> проверяем isLeader() как раньше, без изменений
+    //     для обычного (Postgres, схема готова) прода;
+    //   - воркера нет вовсе, или он есть, но не стартовал (обе ветки C3) ->
+    //     лидерство нечем проверить — уведомляем БЕЗУСЛОВНО. Плата — риск
+    //     дубля сообщения от другого экземпляра в этом деградированном
+    //     режиме (одно сообщение в чат, а не поток запросов к порталу,
+    //     который и защищал advisory-лок воркера) — категорически дешевле
+    //     тишины.
     //
-    // "Не настроено" (пустой PHOTO_WATCHDOG_CHAT_ID и DIAG_CHAT_ID) — тихий
-    // no-op, тот же контракт, что и enabled=false в diagChatNotifier.js:
-    // фича осознанно выключена, а не сломана.
-    //
-    // "Не лидер" — БРОСАЕТ, а не тихо резолвится. Антиспам-память сторожа
-    // (lastSignature/lastNotifiedAtMs в photoPublishWatchdog.js) обновляется
-    // ТОЛЬКО на успешный notify(). Если follower тихо "успешно" ничего не
-    // отправит, его собственная память всё равно отметится как "уже
-    // предупредили" — и после смены лидерства (прежний лидер упал или его
-    // передеплоили) новый лидер унаследует чужую, никогда не доставленную
-    // память и промолчит про уже известную проблему до истечения
-    // reminderIntervalMs. Throw здесь ловится try/catch внутри самого
-    // photoPublishWatchdog.js (runOnce) — тик не падает, просто ничего не
-    // отправляется, и следующая попытка (в том числе от нового лидера) не
-    // подавлена чужой памятью.
+    // "Не настроено" (пустой PHOTO_WATCHDOG_CHAT_ID и DIAG_CHAT_ID) — C2
+    // (финальное ревью ветки): раньше был тихий no-op (return), который
+    // резолвился успешно, и сторож засчитывал предупреждение доставленным
+    // (антиспам включался, хотя в чат ничего не ушло). Теперь — явный
+    // отказ: бросаем, photoPublishWatchdog.js (runOnce) обязан залогировать
+    // ошибку и НЕ обновлять антиспам-память (lastSignature/lastNotifiedAtMs
+    // остаются прежними, следующий тик пробует снова). Тот же контракт,
+    // которого diagChatNotifier.js добивался явным флагом enabled — его
+    // заголовок прямо предупреждает, что этот модуль уже один раз "молча
+    // считал себя выключенным в проде"; та же ловушка, уже оплаченная.
     const notifyPhotoPublishWatchdog = async ({ text }) => {
       const dialogId = String(process.env.PHOTO_WATCHDOG_CHAT_ID || process.env.DIAG_CHAT_ID || '').trim();
       if (!dialogId) {
-        return;
+        throw new Error('photo_watchdog_chat_not_configured');
       }
-      if (!photoPublishWorker.isLeader()) {
+      if (photoPublishWorker && photoPublishWorkerStarted && !photoPublishWorker.isLeader()) {
         throw new Error('photo_publish_watchdog_not_leader');
       }
       const context = await getPhotoPublishBackgroundContext();
@@ -1438,43 +1530,66 @@ if (photoPublishWorkerSupported) {
       notify: notifyPhotoPublishWatchdog
     });
 
-    // Старт — ПОСЛЕ готовности схемы (report_photo.slot_verified,
-    // report_photo_blob, индексы — reportPhotoSchemaReady определён выше),
-    // тем же приёмом .then()/.catch() без top-level await, что и остальная
-    // проводка стартов в этом файле. Отказ схемы (например, недостаточные
-    // права DDL) не должен ронять процесс — воркер и сторож просто не
-    // стартуют; приём фото (photoQueueStore.accept()) от этого не зависит.
-    reportPhotoSchemaReady
-      .then(() => {
-        photoPublishWorker.start();
-        photoPublishWatchdog.start();
-        console.log(JSON.stringify({ event: 'photo_publish_queue_started' }));
-      })
-      .catch((error) => {
-        console.error(JSON.stringify({
-          event: 'photo_publish_queue_start_failed',
-          reason: error.message
-        }));
-      });
+    // .finally(), не .then(): сторож обязан стартовать НЕЗАВИСИМО от того,
+    // готова ли схема успешно (C3) — как только попытка вообще ЗАВЕРШИЛАСЬ
+    // (успехом или отказом), а не только когда она удалась. reportPhotoSchemaReady
+    // поддерживает несколько независимых подписчиков (этот .finally() и
+    // .then()/.catch() воркера выше) — оба получают уведомление о своём
+    // исходе независимо друг от друга, это стандартная семантика промисов,
+    // а не гонка за одним и тем же обработчиком.
+    reportPhotoSchemaReady.finally(() => {
+      photoPublishWatchdog.start();
+      console.log(JSON.stringify({ event: 'photo_publish_watchdog_started' }));
+    });
+
+    if (!String(process.env.PHOTO_WATCHDOG_CHAT_ID || process.env.DIAG_CHAT_ID || '').trim()) {
+      // C2: предупреждение при старте, не только по факту первого
+      // недоставленного уведомления — дежурный узнаёт о дыре из лога
+      // деплоя, а не спустя часы простоя портала, когда сторожу впервые
+      // будет что сказать.
+      console.warn(JSON.stringify({
+        event: 'photo_publish_watchdog_not_configured',
+        reason: 'PHOTO_WATCHDOG_CHAT_ID (и фоллбек DIAG_CHAT_ID) не заданы — застрявшие фото никого не предупредят, только останутся в логах'
+      }));
+    }
   } catch (error) {
-    // Защита загрузки в глубину (см. комментарий выше try): если сборка
-    // всё-таки бросила, откатываем обе ссылки на null — shutdown() и
-    // остальной код ниже проверяют их через ?. и не должны увидеть
-    // наполовину собранный воркер без сторожа или наоборот.
-    photoPublishWorker = null;
     photoPublishWatchdog = null;
     console.error(JSON.stringify({
-      event: 'photo_publish_workers_disabled',
+      event: 'photo_publish_watchdog_disabled',
       reason: error.message
     }));
   }
-} else {
-  console.log(JSON.stringify({
-    event: 'photo_publish_queue_workers_skipped',
-    reason: photoQueueRuntime.enabled
-      ? 'pool does not support advisory-lock session affinity (pool.connect() missing — see photoPublishBoot.js: isPhotoPublishWorkerSupported); photo intake keeps working via photoQueueStore.accept(), publishing will not run'
-      : photoQueueRuntime.reason
-  }));
+}
+
+// C3: единственное число, которое ловит и застрявшую очередь при живом
+// сторожем (C1-подобный сценарий — 'accepted' растёт, ничего не публикуется),
+// И полное отсутствие всей защиты (сторож тоже не смог подняться — catch
+// выше). countByState() уже написан и не имеет ни одного вызова в проде
+// (см. финальное ревью) — независимый от сторожа, от advisory-лока и от
+// leader-election периодический лог глубины очереди по состояниям.
+// Интервал, не cron: то же соображение, что и у watchdog (DEFAULT_INTERVAL_MS
+// в photoPublishWatchdog.js) — лёгкий SELECT ... GROUP BY, частый опрос
+// ничего не стоит. Работает на КАЖДОМ экземпляре безусловно (в отличие от
+// сторожа) — это просто строка в собственном логе процесса, а не сообщение
+// во внешний чат, поэтому N экземпляров, пишущих N раз, не создают ни
+// нагрузки на портал, ни дублирующего шума для человека.
+if (photoQueueRuntime.enabled) {
+  const depthLogIntervalMs = readPhotoPublishNumberEnv({
+    rawValue: process.env.PHOTO_QUEUE_DEPTH_LOG_INTERVAL_MS,
+    fallback: 15 * 60 * 1000,
+    isValid: (n) => n >= 60_000,
+    name: 'PHOTO_QUEUE_DEPTH_LOG_INTERVAL_MS'
+  });
+  photoQueueDepthLogTimer = setInterval(() => {
+    photoQueueStore.countByState()
+      .then((counts) => {
+        console.log(JSON.stringify({ event: 'photo_queue_depth', counts }));
+      })
+      .catch((error) => {
+        console.error(JSON.stringify({ event: 'photo_queue_depth_failed', message: error.message }));
+      });
+  }, depthLogIntervalMs);
+  if (typeof photoQueueDepthLogTimer.unref === 'function') photoQueueDepthLogTimer.unref();
 }
 
 const tokenRefreshScheduler = createTokenRefreshScheduler({
@@ -1578,7 +1693,16 @@ async function shutdown(signal) {
     // photoPublishWatchdog.stop() — синхронный, как и остальные .stop?.()
     // выше (просто снимает setInterval); может быть null, если очередь
     // публикации выключена (эфемерная БД или отказ создания стора — Task 11).
+    // C3: сторож больше не завязан на photoPublishWorkerSupported, поэтому
+    // "может быть null" здесь означает ровно "photoQueueRuntime.enabled
+    // === false", а не "воркер не поднялся" — с воркером его судьба больше
+    // не связана.
     photoPublishWatchdog?.stop?.();
+    // Периодический лог глубины очереди (C3) — тот же unref'd setInterval,
+    // что и остальные диагностические таймеры; явная остановка здесь просто
+    // не даёт ему тикнуть ещё раз в окне между stop() остального и
+    // process.exit() ниже.
+    if (photoQueueDepthLogTimer) clearInterval(photoQueueDepthLogTimer);
     // photoPublishWorker.stop() — ОБЯЗАН быть awaited и ОБЯЗАН идти строго
     // ДО шага 4 (pool.end()) ниже. Пока лидер, воркер держит выделенный,
     // чек-аутнутый из pool клиент (advisory-лок Postgres) всю жизнь процесса
