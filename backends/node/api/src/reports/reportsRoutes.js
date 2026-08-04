@@ -5,6 +5,7 @@ import { isSupportedPhotoUpload } from '../disk/diskService.js';
 import { buildPortalKey } from '../disk/folderIdCache.js';
 import { createRequiredPhotosCache } from './requiredPhotosCache.js';
 import { updateReportCrmItem } from './reportCrmSync.js';
+import { createSettingsCache } from '../shared/settingsCache.js';
 import { generateDailyPlan } from '../dispatch/dispatchPlanGenerator.js';
 import { reissueToday } from './reissueTodayService.js';
 import { clearToday } from './clearTodayService.js';
@@ -809,7 +810,49 @@ const parsePortalFromContextKey = (contextKey) => {
 // бы либо тратить токен на пустой "старт задачи" (лишний расход сверх
 // реальных вызовов), либо дублировать защиту, которая уже есть на уровне,
 // где она физически имеет смысл — на самих HTTP-обращениях.
-export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, authContextStore, logger = console, limiter = null }) => async (job) => {
+//
+// I1 (РАУНД ПРАВОК 2, финальное ревью — измерено ревьюером на настоящем
+// buildCrmSyncRunner): settingsStore.read() ниже кэшируется тем же приёмом,
+// что photoPublisher.js уже применяет для publishOne (createSettingsCache,
+// вынесен в src/shared/settingsCache.js специально ради этого второго
+// потребителя). Композитный стор пробует ПОРТАЛ первым (app.option.get,
+// compositeSettingsStore.js) и кэша не имеет вовсе — БЕЗ обёртки ниже
+// КАЖДАЯ задача синка делала свой собственный, НЕОПЛАЧЕННЫЙ лимитером запрос
+// к порталу здесь, до какой-либо другой логики (limiter выше защищает только
+// вызовы ВНУТРИ syncReportCrmStrict, до которых эта строка идёт раньше).
+// Ревьюер посчитал реальные походы к порталу против взятых токенов на
+// настоящем раннере: обычная задача — 3 похода / 2 токена (1 неоплаченный);
+// задача status='done' с 3 фото — 6/5 (тот же 1); а на ветке "нет
+// admin-контекста" (см. ниже, skip+warn) — 1 поход / 0 токенов: задача не
+// делает НИ ОДНОГО реального вызова после этой строки, но сама эта строка
+// уже сходила в портал. Именно там настоящий всплеск: while(worked) в
+// crmSyncWorker.drain() крутит такие задачи на скорости базы, без единого
+// токена на весь проход — залп в момент, когда контексты уже отвалились,
+// то есть когда портал уже нездоров.
+// Кэш строится ОДИН раз здесь, в замыкании buildCrmSyncRunner (сама эта
+// внешняя функция вызывается один раз при старте процесса — server.js), и
+// разделяется ВСЕМИ последующими job. Инстанс СВОЙ, приватный, НЕ общий с
+// photoPublisher.js — разный жизненный цикл и разная частота чтения этих
+// двух подсистем не должны зависеть друг от друга (та же причина, по
+// которой этот кэш не общий на всё приложение).
+const DEFAULT_CRM_SYNC_SETTINGS_CACHE_TTL_MS = (() => {
+  const parsed = Number(process.env.CRM_SYNC_SETTINGS_CACHE_TTL_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5 * 60 * 1000;
+})();
+
+export const buildCrmSyncRunner = ({
+  reportsStore,
+  settingsStore,
+  bitrixClient,
+  authContextStore,
+  logger = console,
+  limiter = null,
+  settingsCacheTtlMs = DEFAULT_CRM_SYNC_SETTINGS_CACHE_TTL_MS,
+  now = () => Date.now()
+}) => {
+  const settingsCache = createSettingsCache({ settingsStore, ttlMs: settingsCacheTtlMs, now });
+
+  return async (job) => {
   const reportId = Number(job.report_id ?? job.reportId);
   const payload = typeof job.payload === 'string' ? JSON.parse(job.payload || '{}') : (job.payload || {});
   const report = await reportsStore.getById(reportId);
@@ -817,7 +860,7 @@ export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, 
     // Report no longer exists — nothing to sync; resolve normally so the worker marks the job done.
     return;
   }
-  const settings = await settingsStore.read();
+  const settings = await settingsCache.read();
   const photos = await reportsStore.listPhotos(reportId);
   const folderFieldCode = String(settings.report?.fields?.folderId || '').trim();
 
@@ -883,6 +926,7 @@ export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, 
     context,
     limiter
   });
+  };
 };
 
 

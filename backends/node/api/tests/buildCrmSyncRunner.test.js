@@ -500,3 +500,123 @@ test('I1: buildCrmSyncRunner БЕЗ limiter (не передан) работае
   });
   assert.equal(calls.updates.length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// I1, РАУНД ПРАВОК 2 (финальное ревью ветки) — settingsStore.read() внутри
+// runSync теперь кэшируется (createSettingsCache, src/shared/settingsCache.js
+// — тот же приём, что photoPublisher.js уже применяет для publishOne).
+// Композитный стор пробует ПОРТАЛ первым и кэша не имеет вовсе — переревью
+// посчитало реальные походы к порталу против взятых токенов на настоящем
+// раннере и нашло 1 неоплаченный запрос на КАЖДУЮ задачу (settingsStore.read()
+// шёл ДО какой-либо другой логики, включая ветку "нет admin-контекста", где
+// это оставался ЕДИНСТВЕННЫЙ запрос задачи — while(worked) в
+// crmSyncWorker.drain() крутит такие на скорости базы, залп в момент, когда
+// портал уже нездоров). Ниже — прямое доказательство: несколько job подряд
+// делают ОДИН settingsStore.read(), а не по одному на каждую.
+// ---------------------------------------------------------------------------
+
+const makeSingleAdminDeps = ({ settingsStore, getCrmItemResult = { UF_FOLDER: '555' } } = {}) => ({
+  reportsStore: {
+    async getById(id) { return { id, reportItemId: 77, status: 'in_progress', diskFolderId: 555 }; },
+    async listPhotos() { return []; }
+  },
+  settingsStore,
+  authContextStore: {
+    async getLastAdminContext() { return { key: 'mX:solo.bitrix24.ru:1', context: { authId: 'solo-admin-tok', domain: 'solo.bitrix24.ru', memberId: 'mX', isAdmin: true } }; },
+    async getLastAdminContextForPortal({ domain, memberId }) {
+      return (domain === 'solo.bitrix24.ru' && memberId === 'mX')
+        ? { key: 'mX:solo.bitrix24.ru:1', context: { authId: 'solo-admin-tok', domain: 'solo.bitrix24.ru', memberId: 'mX', isAdmin: true } }
+        : null;
+    },
+    async getContextByKey() { return null; }
+  },
+  bitrixClient: {
+    async updateReportItem() { return { id: 77 }; },
+    async getCrmItem() { return getCrmItemResult; }
+  }
+});
+
+const makeJobPayload = (reportId) => ({
+  report_id: reportId,
+  payload: JSON.stringify({ status: 'in_progress', diskFolderId: 555, contextKey: 'mX:solo.bitrix24.ru:1', domain: 'solo.bitrix24.ru', memberId: 'mX' })
+});
+
+test('I1/раунд2: buildCrmSyncRunner кэширует settingsStore.read() — два job подряд делают ОДИН реальный запрос настроек, а не два', async () => {
+  let settingsReadCalls = 0;
+  const settingsStore = { async read() { settingsReadCalls += 1; return baseSettings; } };
+
+  const runSync = buildCrmSyncRunner(makeSingleAdminDeps({ settingsStore }));
+  await runSync(makeJobPayload(10));
+  await runSync(makeJobPayload(11));
+
+  assert.equal(settingsReadCalls, 1,
+    'до фикса КАЖДАЯ задача делала свой собственный, неоплаченный лимитером запрос настроек — второй job обязан переиспользовать кэш');
+});
+
+test('I1/раунд2: кэш настроек реально закрывает залп на ветке "нет admin-контекста" — несколько job подряд, НОЛЬ походов к порталу за настройками после первого', async () => {
+  // Именно та ветка, где ревьюер нашёл настоящий всплеск: задача тратит НОЛЬ
+  // токенов лимитера (skip+warn до единого реального вызова Битрикса) и БЕЗ
+  // кэша делала бы РОВНО ОДИН неоплаченный запрос каждая — while(worked) крутит
+  // такие на скорости базы. С кэшем — один реальный запрос суммарно на всю пачку.
+  let settingsReadCalls = 0;
+  const settingsStore = { async read() { settingsReadCalls += 1; return baseSettings; } };
+  const calls = { updates: [] };
+
+  const deps = {
+    reportsStore: {
+      async getById(id) { return { id, reportItemId: 77, status: 'in_progress', diskFolderId: 555 }; },
+      async listPhotos() { return []; }
+    },
+    settingsStore,
+    authContextStore: {
+      async getLastAdminContext() { return null; },
+      async getLastAdminContextForPortal() { return null; }, // ни у одного job нет admin-контекста
+      async getContextByKey() { return null; }
+    },
+    bitrixClient: {
+      async updateReportItem(args) { calls.updates.push(args); return { id: 77 }; },
+      async getCrmItem() { return { UF_FOLDER: '555' }; }
+    },
+    logger: { warn() {}, info() {}, error() {} }
+  };
+
+  const runSync = buildCrmSyncRunner(deps);
+  await runSync(makeJobPayload(20));
+  await runSync(makeJobPayload(21));
+  await runSync(makeJobPayload(22));
+
+  assert.equal(calls.updates.length, 0, 'ни один из трёх job не должен был дойти до updateReportItem — контекста нет ни у одного');
+  assert.equal(settingsReadCalls, 1,
+    'до фикса это были бы 3 неоплаченных запроса (по одному на job); с кэшем — ровно 1 на всю пачку, независимо от её размера');
+});
+
+test('I1/раунд2: кэш настроек перечитывает после истечения TTL, но не раньше (граница, не просто "кэш есть")', async () => {
+  let settingsReadCalls = 0;
+  const settingsStore = { async read() { settingsReadCalls += 1; return baseSettings; } };
+  let clock = 0;
+
+  const runSync = buildCrmSyncRunner({
+    ...makeSingleAdminDeps({ settingsStore }),
+    settingsCacheTtlMs: 1000,
+    now: () => clock
+  });
+
+  await runSync(makeJobPayload(30));
+  assert.equal(settingsReadCalls, 1);
+
+  clock += 500; // внутри TTL
+  await runSync(makeJobPayload(31));
+  assert.equal(settingsReadCalls, 1, 'вызов внутри TTL не должен перечитывать настройки');
+
+  clock += 600; // суммарно 1100 — за пределами TTL=1000
+  await runSync(makeJobPayload(32));
+  assert.equal(settingsReadCalls, 2, 'вызов после истечения TTL обязан перечитать настройки');
+});
+
+test('I1/раунд2: buildCrmSyncRunner БЕЗ явного settingsCacheTtlMs/now — использует дефолты и не ломается (обратная совместимость)', async () => {
+  let settingsReadCalls = 0;
+  const settingsStore = { async read() { settingsReadCalls += 1; return baseSettings; } };
+  const runSync = buildCrmSyncRunner(makeSingleAdminDeps({ settingsStore }));
+  await runSync(makeJobPayload(40));
+  assert.equal(settingsReadCalls, 1);
+});

@@ -81,6 +81,7 @@ export const classifyPublishError = (error) => {
 // ---------------------------------------------------------------------------
 
 import { ensureRootFolder, uploadPhoto } from '../disk/diskService.js';
+import { createSettingsCache } from '../shared/settingsCache.js';
 
 class ReportSlotKeyError extends Error {
   constructor(slotKey) {
@@ -185,38 +186,16 @@ const wrapDiskApiWithLimiter = (diskApi, limiter) => {
 // поднявшихся после простоя), обязаны дождаться ОДНОГО read() и разделить его
 // результат, а не каждый сделать свой — иначе кэш не спасает именно в момент
 // всплеска нагрузки, ради которого он и нужен.
+//
+// createSettingsCache — раунд правок 2 (финальное ревью ветки, I1): вынесена
+// в src/shared/settingsCache.js — тот же приём понадобился ВТОРОМУ
+// потребителю (buildCrmSyncRunner, reportsRoutes.js) по той же причине; сам
+// код теперь общий, инстанс (см. ниже) — по-прежнему свой, приватный, только
+// для этого publisher'а.
 const DEFAULT_SETTINGS_CACHE_TTL_MS = (() => {
   const parsed = Number(process.env.PHOTO_PUBLISHER_SETTINGS_CACHE_TTL_MS);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 5 * 60 * 1000;
 })();
-
-const createSettingsCache = ({ settingsStore, ttlMs, now }) => {
-  let cached;
-  let expiresAt = 0;
-  let inFlight = null;
-
-  return {
-    async read() {
-      if (cached !== undefined && now() < expiresAt) {
-        return cached;
-      }
-      if (inFlight) {
-        return inFlight;
-      }
-      inFlight = (async () => {
-        try {
-          const settings = await settingsStore.read();
-          cached = settings;
-          expiresAt = now() + ttlMs;
-          return settings;
-        } finally {
-          inFlight = null;
-        }
-      })();
-      return inFlight;
-    }
-  };
-};
 
 /**
  * @param {object} deps
