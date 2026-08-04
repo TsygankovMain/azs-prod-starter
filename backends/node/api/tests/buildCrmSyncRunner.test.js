@@ -423,3 +423,80 @@ test('FIX-3 legacy warn: runner emits crm_sync_legacy_unscoped_context when cont
   assert.equal(calls.updates.length, 1, 'CRM update must still happen on single-portal legacy path');
   assert.equal(calls.updates[0].context.authId, 'solo-tok', 'must use the unscoped admin token');
 });
+
+// ---------------------------------------------------------------------------
+// I1 (финальное ревью ветки, "CRM-синк идёт мимо ограничителя, и это создала
+// именно эта ветка") — до этой правки ни один реальный вызов Битрикса внутри
+// runSync (updateReportItem, getCrmItem внутри verifyCrmFolderSync, а на
+// status='done' ещё и до 40 downloadFileContent) не проходил через общий
+// ограничитель темпа. crmSyncWorker.drain() крутит tick() без пауз — на
+// сливе бэклога парка это ~5900 неограниченных запросов одновременно с
+// аккуратным потоком публикации фото (1.4/с). Ниже — доказательство, что
+// buildCrmSyncRunner({..., limiter}) реально прогоняет через него КАЖДЫЙ
+// такой вызов, а не только часть.
+// ---------------------------------------------------------------------------
+
+test('I1: buildCrmSyncRunner с limiter берёт токен на КАЖДЫЙ реальный вызов Битрикса (updateReportItem + getCrmItem verifyCrmFolderSync)', async () => {
+  const acquireCalls = [];
+  const limiter = { async acquire() { acquireCalls.push(Date.now()); } };
+
+  const reportsStore = {
+    async getById(id) { return { id, reportItemId: 77, status: 'in_progress', diskFolderId: 555 }; },
+    async listPhotos() { return []; }
+  };
+  const settingsStore = { async read() { return baseSettings; } };
+  const singleAdmin = { key: 'mX:solo.bitrix24.ru:1', context: { authId: 'solo-admin-tok', domain: 'solo.bitrix24.ru', memberId: 'mX', isAdmin: true } };
+  const authContextStore = {
+    async getLastAdminContext() { return singleAdmin; },
+    async getLastAdminContextForPortal({ domain, memberId }) {
+      return (domain === 'solo.bitrix24.ru' && memberId === 'mX') ? singleAdmin : null;
+    },
+    async getContextByKey() { return null; }
+  };
+  const bitrixClient = {
+    async updateReportItem() { return { id: 77 }; },
+    // Отдаёт значение, совпадающее с diskFolderId=555 из payload — иначе
+    // verifyCrmFolderSync бросит ДО того, как runSync успеет вернуть
+    // управление, и тест не увидит оба acquire().
+    async getCrmItem() { return { UF_FOLDER: '555' }; }
+  };
+
+  const runSync = buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore, limiter });
+  await runSync({
+    report_id: 10,
+    payload: JSON.stringify({ status: 'in_progress', diskFolderId: 555, contextKey: 'mX:solo.bitrix24.ru:1', domain: 'solo.bitrix24.ru', memberId: 'mX' })
+  });
+
+  // updateReportItem (1) + getCrmItem внутри verifyCrmFolderSync (1) = 2.
+  // status='in_progress' — фото не проверяются (photos пуст), поэтому
+  // downloadFileContent здесь не участвует.
+  assert.equal(acquireCalls.length, 2,
+    'лимитер обязан быть взят и на updateReportItem, и на getCrmItem verifyCrmFolderSync — оба реальных похода к порталу');
+});
+
+test('I1: buildCrmSyncRunner БЕЗ limiter (не передан) работает как раньше — обратная совместимость', async () => {
+  const reportsStore = {
+    async getById(id) { return { id, reportItemId: 77, status: 'in_progress', diskFolderId: 555 }; },
+    async listPhotos() { return []; }
+  };
+  const settingsStore = { async read() { return baseSettings; } };
+  const singleAdmin = { key: 'mX:solo.bitrix24.ru:1', context: { authId: 'solo-admin-tok', domain: 'solo.bitrix24.ru', memberId: 'mX', isAdmin: true } };
+  const authContextStore = {
+    async getLastAdminContext() { return singleAdmin; },
+    async getLastAdminContextForPortal() { return singleAdmin; },
+    async getContextByKey() { return null; }
+  };
+  const calls = { updates: [] };
+  const bitrixClient = {
+    async updateReportItem(args) { calls.updates.push(args); return { id: 77 }; },
+    async getCrmItem() { return { UF_FOLDER: '555' }; }
+  };
+
+  // limiter НЕ передан — не должно ни бросать, ни как-либо иначе ломаться.
+  const runSync = buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore });
+  await runSync({
+    report_id: 11,
+    payload: JSON.stringify({ status: 'in_progress', diskFolderId: 555, contextKey: 'mX:solo.bitrix24.ru:1', domain: 'solo.bitrix24.ru', memberId: 'mX' })
+  });
+  assert.equal(calls.updates.length, 1);
+});

@@ -404,3 +404,68 @@ test('updateReportCrmItem on done with NO photo loss emits no warn/error and set
   assert.equal(logger.calls.warn.length, 0, 'no warn when no loss');
   assert.equal(logger.calls.error.length, 0, 'no error when no loss');
 });
+
+// ---------------------------------------------------------------------------
+// I1 (финальное ревью ветки) — limiter опционален, но при передаче ОБЯЗАН
+// реально ограничивать КАЖДЫЙ поход к Битриксу на этом пути: до 40 вызовов
+// downloadFileContent (по одному на фото) плюс финальный updateReportItem.
+// До этой правки ни один из них не проходил через общий ограничитель темпа
+// вообще — весь путь до портала не был ограничен ничем, кроме скорости сети.
+// ---------------------------------------------------------------------------
+
+const makeFakeLimiter = () => {
+  const calls = [];
+  return { calls, async acquire() { calls.push(Date.now()); } };
+};
+
+test('I1: buildReportPhotoFieldValue берёт токен лимитера перед КАЖДЫМ downloadFileContent', async () => {
+  const limiter = makeFakeLimiter();
+  const diskApi = {
+    async downloadFileContent(id) { return { base64: `b64_${id}`, name: `n${id}.jpg` }; }
+  };
+  const photos = [
+    { diskObjectId: 1, fileName: 'a.jpg' },
+    { diskObjectId: 2, fileName: 'b.jpg' },
+    { diskObjectId: 3, fileName: 'c.jpg' }
+  ];
+  const result = await buildReportPhotoFieldValue({ photos, diskApi, limiter });
+  assert.equal(result.length, 3, 'тест бессмыслен, если не все фото реально обработаны');
+  assert.equal(limiter.calls.length, 3, 'ровно один acquire() на каждый реальный вызов downloadFileContent — не 1 на всю пачку и не 0');
+});
+
+test('I1: buildReportPhotoFieldValue без limiter (не передан) работает как раньше — обратная совместимость', async () => {
+  const diskApi = { async downloadFileContent(id) { return { base64: `b64_${id}`, name: `n${id}.jpg` }; } };
+  const result = await buildReportPhotoFieldValue({ photos: [{ diskObjectId: 1, fileName: 'a.jpg' }], diskApi });
+  assert.equal(result.length, 1, 'timeoutWatcher.js и прочие вызывающие без limiter не должны сломаться');
+});
+
+test('I1: updateReportCrmItem передаёт limiter в buildReportPhotoFieldValue И берёт токен перед финальным updateReportItem', async () => {
+  const limiter = makeFakeLimiter();
+  const updateCalls = [];
+  const bitrixClient = {
+    diskApi: { async downloadFileContent(id) { return { base64: `b64_${id}`, name: `n${id}.jpg` }; } },
+    async updateReportItem(payload) { updateCalls.push(payload); return { ok: true }; }
+  };
+  const photos = [{ diskObjectId: 1, fileName: 'a.jpg' }, { diskObjectId: 2, fileName: 'b.jpg' }];
+
+  await updateReportCrmItem({
+    bitrixClient,
+    settings,
+    report: { reportItemId: 9020 },
+    status: 'done',
+    photos,
+    limiter
+  });
+
+  assert.equal(updateCalls.length, 1, 'тест бессмыслен, если updateReportItem не был реально вызван');
+  // 2 фото (2 acquire в buildReportPhotoFieldValue) + 1 acquire перед самим updateReportItem = 3.
+  assert.equal(limiter.calls.length, 3,
+    'лимитер обязан быть взят и на каждое скачивание фото, и на финальный updateReportItem — не только на одно из двух');
+});
+
+test('I1: updateReportCrmItem без limiter — ни одного вызова acquire нигде, но функция всё равно работает (обратная совместимость с timeoutWatcher.js)', async () => {
+  const updateCalls = [];
+  const bitrixClient = { async updateReportItem(payload) { updateCalls.push(payload); return { ok: true }; } };
+  await updateReportCrmItem({ bitrixClient, settings, report: { reportItemId: 9021 }, status: 'expired' });
+  assert.equal(updateCalls.length, 1);
+});

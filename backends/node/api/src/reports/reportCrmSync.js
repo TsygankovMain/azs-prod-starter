@@ -46,12 +46,24 @@ export const buildReportCrmUpdateFields = ({
  * `file`-type user field written via crm.item.update.
  *
  * Photos without a diskObjectId are silently skipped.
+ *
+ * I1 (финальное ревью ветки) — limiter — тот же приём, что и publishOne в
+ * photoPublisher.js: КАЖДЫЙ реальный поход к Битриксу берёт токен сам,
+ * непосредственно перед вызовом, а не полагается на то, что его вызвал уже
+ * "оплаченный" код снаружи. На отчёте из 40 фото это до 40 обращений
+ * disk.file.get подряд (по одному на каждое downloadFileContent) — без
+ * лимитера цикл идёт со скоростью сети, а не со скоростью, которую портал
+ * согласился терпеть. Опционален и по умолчанию отсутствует (не ломает
+ * существующих вызывающих без лимитера, например timeoutWatcher.js — см.
+ * комментарий над updateReportCrmItem ниже, почему это осознанная граница,
+ * а не дыра).
  */
-export const buildReportPhotoFieldValue = async ({ photos = [], diskApi, context = {} }) => {
+export const buildReportPhotoFieldValue = async ({ photos = [], diskApi, context = {}, limiter = null }) => {
   if (!diskApi || typeof diskApi.downloadFileContent !== 'function') return [];
   const withDisk = photos.filter((p) => Number(p?.diskObjectId) > 0);
   const pairs = [];
   for (const photo of withDisk) {
+    if (limiter) await limiter.acquire();
     const { base64, name } = await diskApi.downloadFileContent(Number(photo.diskObjectId), context);
     const fileName = String(photo.fileName || name || `photo_${photo.diskObjectId}`);
     pairs.push([fileName, base64]);
@@ -59,6 +71,32 @@ export const buildReportPhotoFieldValue = async ({ photos = [], diskApi, context
   return pairs;
 };
 
+// I1 (финальное ревью ветки, "CRM-синк идёт мимо ограничителя, и это создала
+// именно эта ветка") — limiter здесь и в buildReportPhotoFieldValue выше —
+// НОВЫЙ, опциональный параметр. До этой правки ни один реальный вызов
+// Битрикса на этом пути (downloadFileContent на каждое фото, финальный
+// updateReportItem, verifyCrmFolderSync.getCrmItem в reportsRoutes.js) не
+// проходил через photoRateLimiter вообще — crmSyncWorker.drain() (см. её
+// заголовок, а также rateLimiter.js:5-7 — приём, который явно назван
+// "нельзя копировать") крутит tick() без пауз, и единственной защитой
+// оставался темп самой сети. На отчёте из 40 фото это ~83 обращения к
+// порталу за один тик; слив бэклога всего парка после инцидента —
+// ~5900 таких запросов ОДНОВРЕМЕННО с нашим аккуратным потоком 1.4/с —
+// то есть повторение того же перегруза, ради лечения которого вся эта
+// ветка написана, только с другой стороны.
+//
+// Опционален (default null, `if (limiter) await limiter.acquire()`), а НЕ
+// обязателен — намеренно: src/dispatch/timeoutWatcher.js тоже зовёт эту
+// функцию (отдельный, гораздо более редкий путь — плановая проверка
+// просроченных отчётов, не бэклог парка, ветка status==='done' с фото у
+// него никогда не исполняется — photos туда не передаются), и требовать
+// limiter у ВСЕХ вызывающих значило бы либо ломать этот вызов, либо тащить
+// photoRateLimiter в server.js в код, который сегодня о нём не знает и не
+// должен. buildCrmSyncRunner (reportsRoutes.js) — ЕДИНСТВЕННЫЙ вызывающий,
+// который реально передаёт limiter (проводка — server.js, тот же общий
+// photoRateLimiter, что и у photoPublisher/photoPublishWorker). Это
+// осознанная, узкая граница, а не тихо забытый путь — см. также I2/I3 в
+// отчёте задачи.
 export const updateReportCrmItem = async ({
   bitrixClient,
   settings,
@@ -68,7 +106,8 @@ export const updateReportCrmItem = async ({
   diskFolderId = null,
   requireReportItem = false,
   context = {},
-  logger = console
+  logger = console,
+  limiter = null
 }) => {
   const entityTypeId = Number(settings?.report?.entityTypeId || 0);
   const reportItemId = Number(report?.reportItemId || 0);
@@ -101,7 +140,8 @@ export const updateReportCrmItem = async ({
       const pairs = await buildReportPhotoFieldValue({
         photos,
         diskApi: bitrixClient.diskApi,
-        context
+        context,
+        limiter
       });
       if (pairs.length < photos.length) {
         logger.warn('crm_photos_dropped', {
@@ -130,6 +170,7 @@ export const updateReportCrmItem = async ({
     return null;
   }
 
+  if (limiter) await limiter.acquire();
   return bitrixClient.updateReportItem({
     entityTypeId,
     id: reportItemId,

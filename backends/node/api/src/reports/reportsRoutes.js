@@ -710,14 +710,20 @@ export const resolveAdminCrmSyncContext = async ({ authContextStore, requestCont
 };
 
 
+// I1 (финальное ревью ветки) — limiter опционален, тот же приём и то же
+// обоснование, что и у updateReportCrmItem в reportCrmSync.js: getCrmItem
+// здесь — ЕЩЁ один реальный поход к Битриксу на каждый успешный sync,
+// который до этой правки тоже шёл мимо ограничителя.
 const verifyCrmFolderSync = async ({
   bitrixClient,
   settings,
   report,
   folderFieldCode,
   expectedFolderId,
-  context = {}
+  context = {},
+  limiter = null
 }) => {
+  if (limiter) await limiter.acquire();
   const syncedCrmItem = await bitrixClient.getCrmItem({
     entityTypeId: Number(settings.report?.entityTypeId || 0),
     id: Number(report.reportItemId || 0),
@@ -732,6 +738,12 @@ const verifyCrmFolderSync = async ({
   }
 };
 
+// I1 — limiter опционален, прокидывается насквозь в updateReportCrmItem
+// (который прокидывает его дальше в buildReportPhotoFieldValue — до 40
+// вызовов downloadFileContent на отчёт) и в verifyCrmFolderSync ниже.
+// Единственный вызывающий, который реально передаёт limiter, —
+// buildCrmSyncRunner ниже (получает его из server.js, тот же общий
+// photoRateLimiter, что у photoPublisher/photoPublishWorker).
 const syncReportCrmStrict = async ({
   bitrixClient,
   settings,
@@ -741,7 +753,8 @@ const syncReportCrmStrict = async ({
   diskFolderId,
   folderFieldCode,
   context = {},
-  logger = console
+  logger = console,
+  limiter = null
 }) => {
   await updateReportCrmItem({
     bitrixClient,
@@ -752,7 +765,8 @@ const syncReportCrmStrict = async ({
     diskFolderId,
     requireReportItem: true,
     context,
-    logger
+    logger,
+    limiter
   });
 
   await verifyCrmFolderSync({
@@ -760,6 +774,7 @@ const syncReportCrmStrict = async ({
     settings,
     report,
     folderFieldCode,
+    limiter,
     expectedFolderId: diskFolderId,
     context
   });
@@ -780,7 +795,21 @@ const parsePortalFromContextKey = (contextKey) => {
   return { domain, memberId };
 };
 
-export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, authContextStore, logger = console }) => async (job) => {
+// I1 (финальное ревью ветки, "CRM-синк идёт мимо ограничителя, и это создала
+// именно эта ветка") — limiter опционален (default null), тот же общий
+// ограничитель темпа портала, что и у photoPublisher/photoPublishWorker
+// (проводка — server.js: createCrmSyncWorker({..., runSync: buildCrmSyncRunner
+// ({..., limiter: photoRateLimiter})})). Не оборачиваем limiter вокруг самого
+// crmSyncWorker.drain()/tick() (её цикл while(worked) как был без пауз, так и
+// остался) — пейсинг живёт здесь, на уровне ФАКТИЧЕСКИХ вызовов Битрикса
+// (syncReportCrmStrict -> updateReportCrmItem/verifyCrmFolderSync), тем же
+// приёмом, что photoPublisher.publishOne уже делает для photoPublishWorker:
+// воркер сам ограничитель не трогает, инъецированная работа берёт токен
+// перед каждым реальным обращением. Гейтить ЕЩЁ и цикл поверх этого значило
+// бы либо тратить токен на пустой "старт задачи" (лишний расход сверх
+// реальных вызовов), либо дублировать защиту, которая уже есть на уровне,
+// где она физически имеет смысл — на самих HTTP-обращениях.
+export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, authContextStore, logger = console, limiter = null }) => async (job) => {
   const reportId = Number(job.report_id ?? job.reportId);
   const payload = typeof job.payload === 'string' ? JSON.parse(job.payload || '{}') : (job.payload || {});
   const report = await reportsStore.getById(reportId);
@@ -851,7 +880,8 @@ export const buildCrmSyncRunner = ({ reportsStore, settingsStore, bitrixClient, 
     photos,
     diskFolderId,
     folderFieldCode,
-    context
+    context,
+    limiter
   });
 };
 

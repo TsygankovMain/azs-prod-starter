@@ -1224,35 +1224,26 @@ scheduler.start().catch((error) => {
   console.error('Failed to start scheduler', error);
 });
 
-const crmSyncWorker = createCrmSyncWorker({
-  store: crmSyncJobStore,
-  runSync: buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore }),
-  backoffMs: [800, 1600, 3200],
-  pollIntervalMs: Number(process.env.CRM_SYNC_POLL_MS || 1000),
-  isRetryable: (error) => RETRYABLE_TRANSIENT_ERROR_PATTERN.test(String(error?.message || error || ''))
-});
-if (String(process.env.CRM_SYNC_WORKER_ENABLED || 'true').toLowerCase() === 'true') {
-  // Crash recovery first: re-queue any 'running' jobs orphaned by a previous
-  // process that died mid-run, otherwise their reports never sync again.
-  crmSyncWorker.recover()
-    .then((n) => { if (n) console.log(`crm_sync reclaimed ${n} stale running job(s)`); })
-    .catch((error) => console.error('crm_sync reclaim failed', error))
-    .finally(() => {
-      crmSyncWorker.start();
-      console.log('crm_sync worker started');
-    });
-}
-
 // ---------------------------------------------------------------------------
-// Очередь публикации фото — воркер, ограничитель темпа, сторож (Task 11).
+// Общий ограничитель темпа портала (Task 11 + I1, финальное ревью ветки).
 //
-// ОДИН ограничитель на процесс — общий и для publishOne (реальные вызовы
-// Bitrix Disk через photoPublisher ниже), и для photoPublishWorker
-// (penalize() на Retry-After от портала). Отдельный экземпляр на
+// ОДИН на процесс — общий для publishOne (реальные вызовы Bitrix Disk через
+// photoPublisher ниже), photoPublishWorker (penalize() на Retry-After от
+// портала) И, с I1, для buildCrmSyncRunner ниже (реальные вызовы
+// updateReportItem/getCrmItem/downloadFileContent, которые он делает через
+// syncReportCrmStrict в reportsRoutes.js). Отдельный экземпляр на
 // потребителя означал бы несколько независимых бюджетов вместо одного
 // общего — то есть кратно превышенный предел портала (2 запроса в секунду
 // на всю компанию), ровно тот инцидент (31 июля — ~4200 упавших фото,
 // 3 августа — 2420 отказов подряд), который вся эта задача лечит.
+//
+// I1: до этой правки crmSyncWorker.drain() (её цикл while(worked) без пауз,
+// см. заголовок crmSyncWorker.js и rateLimiter.js:5-7 — приём, названный
+// там "нельзя копировать") гонял РЕАЛЬНЫЕ обращения к порталу совсем мимо
+// этого лимитера. На отчёте из 40 фото — ~83 обращения за один тик; слив
+// бэклога всего парка после инцидента — ~5900 таких запросов ОДНОВРЕМЕННО с
+// аккуратным потоком публикации фото. Объявлен ВЫШЕ crmSyncWorker именно
+// поэтому — buildCrmSyncRunner ниже получает его как зависимость.
 //
 // Значения окружения валидируются ДО конструктора (readPhotoPublishNumberEnv,
 // photoPublishBoot.js): createRateLimiter бросает при ratePerSec<=0 или
@@ -1274,6 +1265,31 @@ const photoRateLimiter = createRateLimiter({
     name: 'PHOTO_PUBLISH_BURST'
   })
 });
+
+const crmSyncWorker = createCrmSyncWorker({
+  store: crmSyncJobStore,
+  // I1: limiter — тот же общий photoRateLimiter, объявленный чуть выше
+  // именно ради этого. Не оборачиваем им сам crmSyncWorker.drain()/tick()
+  // (её цикл как был без пауз, так и остался) — пейсинг живёт на уровне
+  // РЕАЛЬНЫХ вызовов Битрикса внутри buildCrmSyncRunner (см. её заголовочный
+  // комментарий в reportsRoutes.js), тем же приёмом, что photoPublisher уже
+  // применяет для photoPublishWorker.
+  runSync: buildCrmSyncRunner({ reportsStore, settingsStore, bitrixClient, authContextStore, limiter: photoRateLimiter }),
+  backoffMs: [800, 1600, 3200],
+  pollIntervalMs: Number(process.env.CRM_SYNC_POLL_MS || 1000),
+  isRetryable: (error) => RETRYABLE_TRANSIENT_ERROR_PATTERN.test(String(error?.message || error || ''))
+});
+if (String(process.env.CRM_SYNC_WORKER_ENABLED || 'true').toLowerCase() === 'true') {
+  // Crash recovery first: re-queue any 'running' jobs orphaned by a previous
+  // process that died mid-run, otherwise their reports never sync again.
+  crmSyncWorker.recover()
+    .then((n) => { if (n) console.log(`crm_sync reclaimed ${n} stale running job(s)`); })
+    .catch((error) => console.error('crm_sync reclaim failed', error))
+    .finally(() => {
+      crmSyncWorker.start();
+      console.log('crm_sync worker started');
+    });
+}
 
 // Тот же приём, что getBackgroundContext у createReportsRouter выше и
 // scheduler.getRuntimeContext ниже: webhook-контекст, если настроен, иначе
