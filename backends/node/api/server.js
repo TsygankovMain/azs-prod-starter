@@ -1481,6 +1481,36 @@ if (diagStore && String(process.env.SCHEDULER_ENABLED || 'true') !== 'false') {
   });
 }
 
+// Ежесуточная чистка байтов ОПУБЛИКОВАННЫХ фото старше PHOTO_BLOB_RETENTION_DAYS
+// (7 дней по умолчанию) — тот же приём, что и очистка диаг-бандлов выше.
+// Байты удаляются через N дней ПОСЛЕ успешной публикации, не сразу: пока файл
+// свежий, возможность переслать его повторно без участия оператора (см.
+// markPublished в photoQueueStore.js — публикация НЕ удаляет байты) стоит
+// дороже места на диске. Сама deletion-логика (условие publish_state =
+// 'published' — гарантия того, что accepted/failed никогда не задеваются, для
+// них байты в нашей базе единственная копия) живёт и проверена в
+// photoQueueStore.purgePublishedBlobs — см. tests/photoBlobRetention.test.js.
+//
+// Гвард — photoQueueRuntime.enabled, а НЕ просто photoQueueStore (тот всегда
+// truthy — на выключенной очереди это photoPublishBoot.createPhotoQueueUnavailableStore,
+// заглушка вообще без purgePublishedBlobs; вызов на ней просто бросал бы
+// каждый день без дела). enabled===false — эфемерная БД (EMBEDDED_POSTGRES=true)
+// или отказ создания стора (см. buildPhotoQueueRuntime, photoPublishBoot.js):
+// в обоих случаях чистить нечего и нечем.
+if (photoQueueRuntime.enabled && String(process.env.SCHEDULER_ENABLED || 'true') !== 'false') {
+  cron.schedule(process.env.PHOTO_BLOB_RETENTION_CRON || '15 4 * * *', async () => {
+    try {
+      const retentionDays = Number(process.env.PHOTO_BLOB_RETENTION_DAYS || 7);
+      const removed = await photoQueueStore.purgePublishedBlobs({
+        olderThanMs: retentionDays * 24 * 3600 * 1000
+      });
+      console.log(JSON.stringify({ event: 'photo_blob_retention_cleanup', removed, retentionDays }));
+    } catch (error) {
+      console.error(JSON.stringify({ event: 'photo_blob_retention_failed', message: error.message }));
+    }
+  });
+}
+
 // Startup seed: if composite mode and DB is empty, migrate file → DB once.
 // This ensures a server that was previously file-only doesn't lose its admin
 // context on the first deploy after upgrading to composite mode.
