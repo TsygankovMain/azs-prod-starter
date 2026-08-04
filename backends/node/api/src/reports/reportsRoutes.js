@@ -1391,6 +1391,71 @@ export const createReportsRouter = ({
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // C4 (финальное ревью ветки) — рычаг возврата из publish_state='failed'.
+  //
+  // Без этого маршрута штатного способа восстановления после длительного
+  // простоя портала (QUERY_LIMIT_EXCEEDED обоих реальных инцидентов уводит
+  // фото в failed за ~43 минуты непрерывного отказа — см. photoQueueStore.js:
+  // markFailed/handleError в photoPublishWorker.js) не существовало вовсе:
+  // claimBatch эти строки не видит, reclaimStale намеренно фильтрует только
+  // 'accepted'. Единственной альтернативой был ручной UPDATE в проде.
+  //
+  // HTTP-роут, а не консольный скрипт — осознанный выбор, а не default:
+  //   - в проекте уже есть ровно такой прецедент того же класса действия
+  //     ("оператор вручную дёргает повтор синхронизации застрявшего отчёта")
+  //     — POST /:id/resync чуть выше по файлу, за той же самой проверкой
+  //     canUseReviewerTools;
+  //   - у приложения нет задокументированного пути прод-shell/cron для
+  //     разового обслуживающего скрипта (Timeweb, деплой контейнером) — роут
+  //     доступен немедленно тому, у кого уже есть доступ дежурного/ревьюера,
+  //     без нового деплоя или доступа к консоли контейнера;
+  //   - "кто и когда дёрнул" естественно берётся из уже существующей
+  //     auth-цепочки запроса (verifyToken -> req.user, attachAccessContext ->
+  //     req.accessContext) — скрипту эту личность взять неоткуда без
+  //     отдельного своего способа аутентификации.
+  //
+  // Избирательность — см. normalizeRecoverFailedSelector в photoQueueStore.js:
+  // ровно один из reportId (весь отчёт) или ids (конкретный список строк, в
+  // том числе из разных отчётов). Отсутствие обоих или оба сразу -> стор
+  // бросает RangeError -> здесь это 400, а не 500 (ошибка вызывающего, не
+  // сервера).
+  router.post('/photos/recover-failed', async (req, res) => {
+    if (!canUseReviewerTools(req)) {
+      return res.status(403).json({ error: 'forbidden', message: 'Reviewer access is required' });
+    }
+    try {
+      const rawReportId = req.body?.reportId;
+      const rawIds = req.body?.ids;
+      const reportId = rawReportId !== undefined && rawReportId !== null ? Number(rawReportId) : undefined;
+      const ids = Array.isArray(rawIds) ? rawIds.map((value) => Number(value)) : undefined;
+
+      const recovered = await photoQueueStore.recoverFailed({ reportId, ids });
+      const recoveredIds = recovered.map((row) => Number(row.id));
+
+      // "Кто и когда" — структурированный лог, тот же приём аудита, что и у
+      // остальных административных действий этого файла (в проекте нет
+      // отдельной таблицы аудита ни для одного из них — см. комментарий над
+      // recoverFailed в photoQueueStore.js за полным обоснованием).
+      console.log(JSON.stringify({
+        event: 'photo_publish_failed_recovered',
+        actorUserId: extractUserId(req.user) || null,
+        actorName: String(req.user?.name || req.user?.NAME || '').trim() || null,
+        selector: reportId !== undefined ? { reportId } : { ids },
+        recoveredCount: recoveredIds.length,
+        recoveredIds,
+        at: new Date().toISOString()
+      }));
+
+      return res.json({ ok: true, recoveredCount: recoveredIds.length, recoveredIds });
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return res.status(400).json({ error: 'invalid_selector', message: error.message });
+      }
+      return res.status(500).json({ error: 'recover_failed_error', message: error.message });
+    }
+  });
+
   router.get('/my-active', async (req, res) => {
     if (!canUseAdminReportTools(req)) {
       return res.status(403).json({

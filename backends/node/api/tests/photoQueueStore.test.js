@@ -350,6 +350,66 @@ test('reclaimStale — граница: ровно MIN_RECLAIM_STALE_MS прох�
   await assert.rejects(badStore.reclaimStale({ staleMs: MIN_RECLAIM_STALE_MS - 1 }));
 });
 
+// ---------------------------------------------------------------------------
+// C4 (финальное ревью ветки) — рычаг возврата из publish_state='failed'.
+// Поведенческое доказательство (реальная база, реально забуксовавший потом
+// снова взятый claimBatch'ем ряд) — tests/photoQueueRecoverFailedLive.test.js.
+// Здесь — форма SQL и обязательная избирательность.
+// ---------------------------------------------------------------------------
+
+test('recoverFailed({reportId}): переводит failed обратно в accepted, сбрасывает попытки и next_attempt_at, только для этого отчёта', async () => {
+  const pool = makeFakePool([{ rows: [{ id: 1, report_id: 501, photo_code: 'FRONT' }] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  const rows = await store.recoverFailed({ reportId: 501 });
+  assert.deepEqual(rows, [{ id: 1, report_id: 501, photo_code: 'FRONT' }]);
+  const { sql, params } = pool.calls[0];
+  assert.match(sql, /publish_state = 'failed'/, 'обязан трогать ТОЛЬКО failed-строки, не любые незавершённые');
+  assert.match(sql, /publish_state = 'accepted'/);
+  assert.match(sql, /publish_attempts = 0/,
+    'без сброса первая же попытка после возврата немедленно уткнётся в maxAttempts и уйдёт обратно в failed');
+  assert.match(sql, /next_attempt_at = NULL/);
+  assert.match(sql, /report_id = \$1/);
+  assert.doesNotMatch(sql, /uploaded_at/, 'uploaded_at не трогаем — иначе застрявшая повторно строка не попадёт под критерий возраста сторожа');
+  assert.deepEqual(params, [501]);
+});
+
+test('recoverFailed({ids}): избирательный список строк, может охватывать несколько отчётов', async () => {
+  const pool = makeFakePool([{ rows: [{ id: 7, report_id: 1 }, { id: 9, report_id: 2 }] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  const rows = await store.recoverFailed({ ids: [7, 9] });
+  assert.equal(rows.length, 2);
+  const { sql, params } = pool.calls[0];
+  assert.match(sql, /id = ANY\(\$1::bigint\[\]\)/);
+  assert.match(sql, /publish_state = 'failed'/);
+  assert.deepEqual(params, [[7, 9]]);
+});
+
+test('recoverFailed: и reportId, и ids одновременно — бросает, не делает запрос (неоднозначный вызов)', async () => {
+  const pool = makeFakePool();
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await assert.rejects(store.recoverFailed({ reportId: 1, ids: [2, 3] }), RangeError);
+  assert.equal(pool.calls.length, 0);
+});
+
+test('recoverFailed: ни reportId, ни ids — бросает, не делает запрос (глобальный возврат без выбора запрещён)', async () => {
+  const pool = makeFakePool();
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await assert.rejects(store.recoverFailed({}), RangeError);
+  await assert.rejects(store.recoverFailed(), RangeError);
+  await assert.rejects(store.recoverFailed({ ids: [] }), RangeError, 'пустой список ids — тоже отсутствие выбора');
+  assert.equal(pool.calls.length, 0);
+});
+
+test('recoverFailed: некорректные значения в ids/reportId отклоняются до запроса', async () => {
+  const pool = makeFakePool();
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await assert.rejects(store.recoverFailed({ reportId: -5 }), RangeError);
+  await assert.rejects(store.recoverFailed({ reportId: 'abc' }), RangeError);
+  await assert.rejects(store.recoverFailed({ ids: [1, -2, 3] }), RangeError);
+  await assert.rejects(store.recoverFailed({ ids: ['x'] }), RangeError);
+  assert.equal(pool.calls.length, 0);
+});
+
 test('countByState группирует фото по состоянию публикации', async () => {
   const pool = makeFakePool([{ rows: [{ publish_state: 'accepted', count: '3' }, { publish_state: 'published', count: '40' }] }]);
   const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
@@ -592,6 +652,49 @@ test('MySQL: reclaimStale — граница: ровно MIN_RECLAIM_STALE_MS п
   const badPool = makeFakeMysqlPool([[{ affectedRows: 0 }]]);
   const badStore = createPhotoQueueStore({ pool: badPool, dbType: 'mysql' });
   await assert.rejects(badStore.reclaimStale({ staleMs: MIN_RECLAIM_STALE_MS - 1 }));
+});
+
+// ---------------------------------------------------------------------------
+// C4 — MySQL: тот же контракт, три запроса (кандидаты -> UPDATE -> финальный
+// SELECT), тот же приём, что и у MySQL-версии claimBatch.
+// ---------------------------------------------------------------------------
+
+test('MySQL: recoverFailed({reportId}) — кандидаты, UPDATE, финальный SELECT, в этом порядке', async () => {
+  const pool = makeFakeMysqlPool([
+    [[{ id: 5 }, { id: 6 }]],                 // кандидаты (failed, этот отчёт)
+    [{ affectedRows: 2 }],                    // UPDATE
+    [[{ id: 5, report_id: 501, photo_code: 'A' }, { id: 6, report_id: 501, photo_code: 'B' }]] // финальный SELECT
+  ]);
+  const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
+  const rows = await store.recoverFailed({ reportId: 501 });
+  assert.equal(rows.length, 2);
+
+  assert.match(pool.calls[0].sql, /publish_state = 'failed'/);
+  assert.match(pool.calls[0].sql, /report_id = \?/);
+
+  assert.match(pool.calls[1].sql, /publish_state = 'accepted'/);
+  assert.match(pool.calls[1].sql, /publish_attempts = 0/);
+  assert.match(pool.calls[1].sql, /next_attempt_at = NULL/);
+  assert.match(pool.calls[1].sql, /WHERE id IN \(\?, \?\)/);
+  assert.match(pool.calls[1].sql, /AND publish_state = 'failed'/,
+    'UPDATE обязан перепроверять publish_state=failed — защита от гонки с конкурентным изменением между SELECT и UPDATE');
+  assert.deepEqual(pool.calls[1].params, [5, 6]);
+});
+
+test('MySQL: recoverFailed — пустая выборка кандидатов не порождает лишние UPDATE/SELECT', async () => {
+  const pool = makeFakeMysqlPool([[[]]]);
+  const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
+  const rows = await store.recoverFailed({ reportId: 501 });
+  assert.deepEqual(rows, []);
+  assert.equal(pool.calls.length, 1);
+});
+
+test('MySQL: recoverFailed — и reportId, и ids одновременно, или ни одного — бросает, не делает запрос', async () => {
+  const pool = makeFakeMysqlPool();
+  const store = createPhotoQueueStore({ pool, dbType: 'mysql' });
+  await assert.rejects(store.recoverFailed({ reportId: 1, ids: [2] }), RangeError);
+  await assert.rejects(store.recoverFailed({}), RangeError);
+  assert.equal(pool.calls.length, 0);
 });
 
 test('MySQL: countByState группирует по состоянию', async () => {

@@ -60,6 +60,45 @@ const assertSafeReclaimStaleMs = (staleMs) => {
   return ms;
 };
 
+// C4 (финальное ревью ветки) — рычаг возврата из publish_state='failed'.
+// Без него у сценария, ради которого построена вся эта очередь (портал лёг
+// надолго — те самые QUERY_LIMIT_EXCEEDED обоих инцидентов), нет штатного
+// выхода: markFailed — окончательный отказ ПО КОНСТРУКЦИИ (см. её
+// комментарий выше), claimBatch эти строки не видит вовсе, а reclaimStale
+// намеренно фильтрует только 'accepted' (см. её же комментарий) — 'failed'
+// трогать не должна, это другой, куда более редкий и куда более осознанный
+// жест. Единственный путь назад без этого метода — ручной UPDATE в проде.
+//
+// Избирательность — ОБЯЗАТЕЛЬНАЯ, а не удобство: ровно один из двух
+// признаков (reportId — весь отчёт, ids — конкретный список строк, в том
+// числе из нескольких отчётов сразу). Оба сразу или ни одного — бросает.
+// "Восстановить вообще все failed-строки одним вызовом без выбора" здесь
+// намеренно недостижимо — тот же принцип, что у минимального порога
+// reclaimStale: чем шире жест восстановления, тем дороже цена его ошибки.
+const normalizeRecoverFailedSelector = ({ reportId, ids }) => {
+  const hasReportId = reportId !== undefined && reportId !== null;
+  const hasIds = Array.isArray(ids) && ids.length > 0;
+  if (hasReportId === hasIds) {
+    throw new RangeError(
+      'recoverFailed: обязан быть задан РОВНО ОДИН избирательный признак — либо reportId ' +
+      '(весь отчёт), либо непустой ids (конкретный список строк), не оба сразу и не ни одного ' +
+      '(глобальный возврат без выбора запрещён намеренно — см. заголовочный комментарий).'
+    );
+  }
+  if (hasReportId) {
+    const id = Number(reportId);
+    if (!Number.isFinite(id) || id <= 0) {
+      throw new RangeError(`recoverFailed: reportId=${reportId} должен быть положительным числом`);
+    }
+    return { mode: 'report', reportId: id };
+  }
+  const normalizedIds = ids.map((value) => Number(value));
+  if (normalizedIds.some((value) => !Number.isFinite(value) || value <= 0)) {
+    throw new RangeError('recoverFailed: все элементы ids должны быть положительными числами');
+  }
+  return { mode: 'ids', ids: normalizedIds };
+};
+
 // ---------------------------------------------------------------------------
 // PostgreSQL store
 // ---------------------------------------------------------------------------
@@ -284,6 +323,53 @@ const createPostgresStore = (pool) => ({
       [cutoff]
     );
     return result.rowCount ?? 0;
+  },
+
+  // C4 — см. заголовочный комментарий normalizeRecoverFailedSelector выше
+  // по файлу. publish_attempts сбрасывается в 0: строка ушла в failed,
+  // ИСЧЕРПАВ maxAttempts воркера (см. handleError в photoPublishWorker.js;
+  // markFailed вызывается и на permanent-ошибку, и на исчерпание попыток) —
+  // без сброса первая же попытка после возврата (даже разок споткнувшийся,
+  // но в целом здоровый портал) немедленно уткнётся в attempts+1>=maxAttempts
+  // и уйдёт обратно в failed, а не получит полный новый круг ретраев.
+  // uploaded_at НЕ трогаем: если строка снова забуксует, она обязана сразу
+  // попасть под критерий возраста сторожа (listStuck), а не выглядеть свежей.
+  // last_publish_error НЕ трогаем: текст прежнего отказа — полезный
+  // диагностический след до первого реального нового исхода (markPublished
+  // очистит его, reschedule перезапишет).
+  //
+  // "Кто и когда дёрнул" — не колонка этой таблицы: в проекте нет отдельной
+  // таблицы аудита ни для одного административного действия, весь аудит
+  // живёт в структурированных логах (см. любой из console.log(JSON.stringify(
+  // {event: ...})) по всему server.js/*Routes.js) — актёра и время пишет
+  // вызывающий код (reportsRoutes.js, POST /photos/recover-failed), а не сам
+  // стор: стору незачем знать про HTTP-запрос или личность оператора.
+  async recoverFailed({ reportId, ids } = {}) {
+    const selector = normalizeRecoverFailedSelector({ reportId, ids });
+    const result = selector.mode === 'report'
+      ? await pool.query(
+          `UPDATE report_photo
+              SET publish_state = 'accepted',
+                  publish_attempts = 0,
+                  next_attempt_at = NULL,
+                  updated_at = NOW()
+            WHERE publish_state = 'failed'
+              AND report_id = $1
+           RETURNING id, report_id, photo_code`,
+          [selector.reportId]
+        )
+      : await pool.query(
+          `UPDATE report_photo
+              SET publish_state = 'accepted',
+                  publish_attempts = 0,
+                  next_attempt_at = NULL,
+                  updated_at = NOW()
+            WHERE publish_state = 'failed'
+              AND id = ANY($1::bigint[])
+           RETURNING id, report_id, photo_code`,
+          [selector.ids]
+        );
+    return result.rows;
   },
 
   // reportId — опционален. Без него поведение прежнее: глобальная сводка по
@@ -533,6 +619,47 @@ const createMysqlStore = (pool) => ({
       [cutoffSql]
     );
     return result?.affectedRows ?? 0;
+  },
+
+  // C4 — см. заголовочный комментарий normalizeRecoverFailedSelector и
+  // PostgreSQL-версию recoverFailed выше по файлу: тот же контракт
+  // (избирательность обязательна, publish_attempts сбрасывается, uploaded_at
+  // и last_publish_error не трогаются, "кто и когда" пишет вызывающий код).
+  // MySQL не умеет RETURNING на UPDATE — тот же трёхшаговый приём
+  // (кандидаты -> UPDATE по id -> финальный SELECT), что уже есть у
+  // MySQL-версии claimBatch выше.
+  async recoverFailed({ reportId, ids } = {}) {
+    const selector = normalizeRecoverFailedSelector({ reportId, ids });
+
+    const [candidates] = selector.mode === 'report'
+      ? await pool.execute(
+          `SELECT id FROM report_photo WHERE publish_state = 'failed' AND report_id = ?`,
+          [selector.reportId]
+        )
+      : await pool.execute(
+          `SELECT id FROM report_photo WHERE publish_state = 'failed' AND id IN (${selector.ids.map(() => '?').join(', ')})`,
+          selector.ids
+        );
+    if (!candidates.length) return [];
+
+    const candidateIds = candidates.map((row) => row.id);
+    const placeholders = candidateIds.map(() => '?').join(', ');
+    await pool.execute(
+      `UPDATE report_photo
+          SET publish_state = 'accepted',
+              publish_attempts = 0,
+              next_attempt_at = NULL,
+              updated_at = CURRENT_TIMESTAMP
+        WHERE id IN (${placeholders})
+          AND publish_state = 'failed'`,
+      candidateIds
+    );
+
+    const [rows] = await pool.execute(
+      `SELECT id, report_id, photo_code FROM report_photo WHERE id IN (${placeholders})`,
+      candidateIds
+    );
+    return rows;
   },
 
   // См. комментарий у PostgreSQL-версии countByState выше — тот же контракт:
