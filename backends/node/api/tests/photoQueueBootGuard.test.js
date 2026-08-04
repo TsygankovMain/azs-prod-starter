@@ -12,6 +12,7 @@ import { createPhotoPublisher } from '../src/reports/photoPublisher.js';
 import { createPhotoPublishWorker } from '../src/reports/photoPublishWorker.js';
 import { createPhotoPublishWatchdog } from '../src/reports/photoPublishWatchdog.js';
 import { createReportsRouter } from '../src/reports/reportsRoutes.js';
+import { createFolderIdCache } from '../src/disk/folderIdCache.js';
 
 // ---------------------------------------------------------------------------
 // Task 11 — проводка server.js. Модуль photoPublishBoot.js вынесен из
@@ -368,6 +369,87 @@ test('ДЕМОНСТРАЦИЯ ОШИБКИ: раздельные лимитер
   const sleepsBefore = h.sleeps.length;
   await limiterForWorker.acquire();
   assert.equal(h.sleeps.length, sleepsBefore, 'с раздельными лимитерами второй потребитель НЕ ждёт — ровно та ошибка проводки, которую нельзя допустить в server.js');
+});
+
+// ---------------------------------------------------------------------------
+// Task 13 — folderIdCache подключён к createPhotoPublisher в server.js.
+//
+// folderIdCache.js существовал и был полностью протестирован в изоляции
+// (tests/folderIdCache.test.js, tests/diskService.test.js), но НЕ передавался
+// в createPhotoPublisher в server.js — прогон на плановом объёме (Task 12,
+// 2840 фото, живой Postgres) нашёл это: 0 упоминаний folderIdCache в
+// server.js. Следствие — вдвое больше обращений к порталу на весь парк
+// (~17336 вместо ~8806) и почти вдвое дольше слив застрявшего бэклога.
+//
+// Тот же приём, что и в пункте 3 выше (общий лимитер): поведенческое
+// доказательство через РЕАЛЬНЫЕ createPhotoPublisher/createFolderIdCache,
+// сконструированные ровно так, как их конструирует server.js (тот же
+// closure-инстанс на несколько publishOne(), как несколько воркеров
+// PHOTO_PUBLISH_WORKERS делят один и тот же photoPublisher.publishOne) — а
+// не переписанная в теле теста копия логики диска (см. заголовок файла).
+// server.js сам не импортируется тестами (см. заголовок файла) — этот тест
+// не может поймать порчу именно строки server.js, где вызывается
+// createPhotoPublisher; он доказывает, что ЕСЛИ server.js передаёт туда
+// folderIdCache (как он теперь делает — см. правку Task 13), эффект из
+// брифа реален, а не только «параметр принят и проигнорирован». Контекст
+// с явным memberId/domain — намеренно: пустой context (как в тестах пункта 3
+// выше) сделал бы portalKey пустым и кэш всегда бездействующим независимо от
+// того, передан ли folderIdCache, — это замаскировало бы именно то, что
+// нужно доказать.
+// ---------------------------------------------------------------------------
+
+test('folderIdCache подключён: вторая публикация фото той же АЗС в тот же день не резолвит путь заново', async () => {
+  const diskApi = makeFakeDiskApi();
+  const folderIdCache = createFolderIdCache();
+
+  const publisher = createPhotoPublisher({
+    bitrixClient: { diskApi },
+    settingsStore: baseSettingsStore,
+    reportsStore: baseReportsStore,
+    folderIdCache,
+    limiter: { acquire: async () => {}, penalize() {} },
+    resolveContext: () => ({ memberId: '1', domain: 'portal.bitrix24.ru' })
+  });
+
+  await publisher.publishOne(baseTask());
+  const folderCallsAfterFirst = diskApi.calls.filter((call) => call === 'findChildFolder' || call === 'createFolder').length;
+  assert.ok(folderCallsAfterFirst > 0, 'тест бессмыслен, если первая публикация не резолвила путь вовсе');
+
+  // Второе фото ТОЙ ЖЕ АЗС в ТОТ ЖЕ день — baseReportsStore.getById отдаёт
+  // одинаковый azsId/slotKey независимо от reportId, ровно как второй снимок
+  // той же станции в тот же день в проде. Другой report/photoCode — чтобы
+  // исключить тривиальное "второй вызов ничего не сделал".
+  await publisher.publishOne({ ...baseTask(), reportId: 2, photoCode: 'photo2' });
+
+  const folderCallsAfterSecond = diskApi.calls.filter((call) => call === 'findChildFolder' || call === 'createFolder').length;
+  assert.equal(folderCallsAfterSecond, folderCallsAfterFirst,
+    'вторая публикация обязана взять folderId из кэша — ни одного нового findChildFolder/createFolder');
+
+  const uploadCalls = diskApi.calls.filter((call) => call === 'uploadFile').length;
+  assert.equal(uploadCalls, 2, 'обе публикации обязаны были реально дойти до загрузки файла, а не просто рано выйти');
+});
+
+test('ДЕМОНСТРАЦИЯ ОШИБКИ: та же проводка БЕЗ folderIdCache (ровно баг, который чинит Task 13) — вторая публикация повторяет весь путь резолвинга', async () => {
+  const diskApi = makeFakeDiskApi();
+
+  const publisher = createPhotoPublisher({
+    bitrixClient: { diskApi },
+    settingsStore: baseSettingsStore,
+    reportsStore: baseReportsStore,
+    // folderIdCache не передан — ровно тот вызов createPhotoPublisher,
+    // который был в server.js до этой задачи.
+    limiter: { acquire: async () => {}, penalize() {} },
+    resolveContext: () => ({ memberId: '1', domain: 'portal.bitrix24.ru' })
+  });
+
+  await publisher.publishOne(baseTask());
+  const folderCallsAfterFirst = diskApi.calls.filter((call) => call === 'findChildFolder' || call === 'createFolder').length;
+
+  await publisher.publishOne({ ...baseTask(), reportId: 2, photoCode: 'photo2' });
+  const folderCallsAfterSecond = diskApi.calls.filter((call) => call === 'findChildFolder' || call === 'createFolder').length;
+
+  assert.equal(folderCallsAfterSecond, folderCallsAfterFirst * 2,
+    'без кэша вторая публикация той же АЗС в тот же день целиком повторяет findChildFolder/createFolder — именно эта лишняя нагрузка на портал и есть цена бага, который чинит Task 13');
 });
 
 // ---------------------------------------------------------------------------

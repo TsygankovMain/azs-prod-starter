@@ -27,6 +27,7 @@ import createCrmSyncJobStore from './src/reports/crmSyncJobStore.js';
 import { createCrmSyncWorker } from './src/reports/crmSyncWorker.js';
 import { createPhotoQueueStore } from './src/reports/photoQueueStore.js';
 import { createPhotoPublisher } from './src/reports/photoPublisher.js';
+import { createFolderIdCache } from './src/disk/folderIdCache.js';
 import { createPhotoPublishWorker } from './src/reports/photoPublishWorker.js';
 import { createPhotoPublishWatchdog } from './src/reports/photoPublishWatchdog.js';
 import { syncReportToCrmIfComplete } from './src/reports/photoPublishCompletion.js';
@@ -1313,11 +1314,28 @@ if (photoPublishWorkerSupported) {
   // (photoQueueStore.accept(), уже проверен и работает выше) не должен
   // зависеть от этого: воркер и сторож просто останутся null.
   try {
+    // Кэш id папок Диска (Task 13) — та же логика и тот же образец «один
+    // инстанс на процесс», что и у photoFolderIdCache в reportsRoutes.js до
+    // Task 5 (см. git-историю: c720244 добавил его в тогдашний синхронный
+    // обработчик загрузки, f09d713 убрал обработчик вместе с публикацией —
+    // сам кэш при этом переезде в очередь потерялся и НЕ передавался сюда).
+    // Этот try-блок выполняется РОВНО ОДИН РАЗ при старте процесса (как и
+    // photoRateLimiter выше), поэтому createFolderIdCache() здесь — это один
+    // общий кэш на все воркеры публикации (PHOTO_PUBLISH_WORKERS), а не по
+    // экземпляру на публикацию: пересоздание кэша на каждый publishOne()
+    // сделало бы его всегда пустым и бессмысленным.
+    // portalKey (memberId+domain из resolveContext) не даёт кэшу отдать id
+    // чужого портала — см. заголовочный комментарий folderIdCache.js; при
+    // неопознанном портале кэш сам вырождается в отсутствие кэширования
+    // (diskService.js: portalKey = folderIdCache ? buildPortalKey(context) : '').
+    const photoFolderIdCache = createFolderIdCache();
+
     const photoPublisher = createPhotoPublisher({
       bitrixClient,
       settingsStore,
       reportsStore,
       brandStore,
+      folderIdCache: photoFolderIdCache,
       limiter: photoRateLimiter,
       resolveContext: getPhotoPublishBackgroundContext
     });
