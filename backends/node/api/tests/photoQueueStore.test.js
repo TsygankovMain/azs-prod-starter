@@ -5,8 +5,16 @@ import { createPhotoQueueStore, CLAIM_LEASE_MS, MIN_RECLAIM_STALE_MS } from '../
 // ---------------------------------------------------------------------------
 // PostgreSQL: минимальный фейк pg.Pool — запоминает SQL и параметры, отдаёт
 // заранее заготовленные ответы по порядку вызовов. Тесты ниже проверяют форму
-// SQL (regex), а не эмулируют реальную базу — так же, как в брифе: мутации,
-// которые обязаны ловиться этим файлом, все ломают именно текст SQL.
+// SQL (regex) — быстро, без инфраструктуры, но СЛЕПО к семантике (порядок
+// операций, реальный результат JOIN/LIMIT). C1 (финальное ревью ветки) было
+// именно такой слепотой: JOIN стоял ПОСЛЕ LIMIT вместо ДО, а форма
+// "JOIN report_photo_blob где-то в тексте" была неотличима от правильной —
+// строки без байтов останавливали publikацию всего парка навсегда, и все
+// тесты здесь были зелёными. claimBatch — единственный метод, где этот файл
+// теперь СОЗНАТЕЛЬНО дублируется на форме SQL (порядок JOIN/LIMIT, SET-часть
+// UPDATE) — это быстрый companion, а не замена поведенческой проверке:
+// см. tests/photoQueueClaimBatchLive.test.js — тот файл вызывает claimBatch
+// по-настоящему, на живом Postgres, и именно он решает, чинит ли SQL C1.
 // ---------------------------------------------------------------------------
 const makeFakePool = (responses = []) => {
   const calls = [];
@@ -20,12 +28,14 @@ const makeFakePool = (responses = []) => {
   };
 };
 
-test('claimBatch берёт задачи через SKIP LOCKED — два экземпляра не возьмут одну', async () => {
+test('claimBatch берёт задачи через SKIP LOCKED (только report_photo, C1) — два экземпляра не возьмут одну', async () => {
   const pool = makeFakePool([{ rows: [{ id: 1 }] }]);
   const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
   await store.claimBatch({ limit: 3, now: new Date(0) });
   const sql = pool.calls[0].sql;
-  assert.match(sql, /FOR UPDATE SKIP LOCKED/);
+  // OF rp — C1: лочим только report_photo, а не и report_photo_blob заодно
+  // (теперь в CTE due участвуют обе таблицы через JOIN).
+  assert.match(sql, /FOR UPDATE OF rp SKIP LOCKED/);
   assert.match(sql, /publish_state = 'accepted'/);
 });
 
@@ -36,11 +46,76 @@ test('claimBatch отдаёт байты вместе с задачей — во
   assert.match(pool.calls[0].sql, /JOIN report_photo_blob/);
 });
 
+// ---------------------------------------------------------------------------
+// C1 (финальное ревью ветки) — регрессионный тест на САМ ДЕФЕКТ, а не только
+// на его симптом. Поведенческое доказательство (реальный Postgres, реальные
+// строки без байтов) живёт в tests/photoQueueClaimBatchLive.test.js — оно
+// единственное по-настоящему решает вопрос "чинит ли этот SQL C1". Тест ниже
+// — быстрый, синхронный companion на форму SQL, нужен по отдельной причине:
+// координатор мутационного прогона финального ревью нашёл, что мутация
+// "JOIN -> LEFT JOIN" внутри due проходит ЗЕЛЁНОЙ на исходном regex-тесте
+// выше (":36", `/JOIN report_photo_blob/`) — LEFT JOIN тоже содержит эту
+// подстроку. Ниже — ИМЕННО то различение, которого не хватало.
+// ---------------------------------------------------------------------------
+test('claimBatch: JOIN на report_photo_blob стоит ВНУТРИ CTE due, ДО LIMIT — не только в финальном UPDATE (C1)', async () => {
+  const pool = makeFakePool([{ rows: [] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await store.claimBatch({ limit: 3, now: new Date(0) });
+  const sql = pool.calls[0].sql;
+
+  // C1 дословно: до фикса JOIN стоял ТОЛЬКО в финальном UPDATE, ПОСЛЕ LIMIT —
+  // строка без байтов всё равно занимала слот окна выборки due и вымывалась
+  // только из РЕЗУЛЬТАТА, но не из окна (см. заголовочный комментарий
+  // claimBatch в photoQueueStore.js). "JOIN где-то в тексте" эту разницу не
+  // видит — здесь явно проверяется ПОРЯДОК: подстрока ДО первого LIMIT уже
+  // обязана содержать JOIN.
+  const beforeLimit = sql.slice(0, sql.indexOf('LIMIT'));
+  assert.match(beforeLimit, /JOIN report_photo_blob/,
+    'JOIN обязан стоять внутри CTE due, ДО LIMIT — иначе дефектная строка без байтов всё равно займёт слот окна выборки и заблокирует здоровые строки позади себя (C1)');
+
+  // Мутационная защита: LEFT JOIN тоже содержит подстроку "JOIN
+  // report_photo_blob" и тоже прошёл бы проверку выше (строка без байтов
+  // всё ещё попадёт в due, просто с NULL-полями блоба) — то есть заново
+  // открыл бы C1. Явно требуем отсутствие LEFT JOIN где бы то ни было в
+  // ЭТОМ запросе: единственный уместный здесь JOIN — обычный (INNER), в
+  // обоих местах (due и финальный UPDATE).
+  assert.doesNotMatch(sql, /LEFT JOIN/,
+    'claimBatch не имеет права видеть строки без байтов вообще — LEFT JOIN втащил бы их обратно в due (C1)');
+});
+
+test('claimBatch: порядок выборки — сначала САМЫЕ СТАРЫЕ (ORDER BY uploaded_at ASC)', async () => {
+  const pool = makeFakePool([{ rows: [] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await store.claimBatch({ limit: 3, now: new Date(0) });
+  assert.match(pool.calls[0].sql, /ORDER BY rp\.uploaded_at ASC/,
+    'DESC отдавал бы недавно принятые фото раньше давно застрявших — противоречит FIFO и усиливает голодание старых строк');
+});
+
+// Координатор, мутационный прогон финального ревью: "снятие аренды в
+// claimBatch — сдвига next_attempt_at на пять минут — проходит зелёным.
+// Теста нет вовсе." Без сдвига next_attempt_at забранная строка немедленно
+// снова видна следующему claimBatch — двойная публикация (то, против чего
+// построен весь стор). Поведенческое доказательство (реальная база, второй
+// вызов сразу за первым не перезабирает те же строки, next_attempt_at
+// проверен напрямую) — tests/photoQueueClaimBatchLive.test.js. Здесь —
+// быстрый companion на форму SQL: UPDATE обязан реально присваивать
+// next_attempt_at новое значение, а не просто содержать эту подстроку
+// где-то в тексте (WHERE-условие тоже содержит "next_attempt_at").
+test('claimBatch: аренда — UPDATE реально сдвигает next_attempt_at вперёд (SET-часть, не просто присутствие в тексте)', async () => {
+  const pool = makeFakePool([{ rows: [] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await store.claimBatch({ limit: 3, now: new Date(0) });
+  const sql = pool.calls[0].sql;
+  const setClause = sql.slice(sql.indexOf('UPDATE report_photo'), sql.indexOf('FROM due'));
+  assert.match(setClause, /SET next_attempt_at = \$1 \+ INTERVAL '5 minutes'/,
+    'без сдвига next_attempt_at забранная строка немедленно снова готова к claim — двойная публикация');
+});
+
 test('claimBatch не берёт задачи, чей срок ещё не наступил', async () => {
   const pool = makeFakePool([{ rows: [] }]);
   const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
   await store.claimBatch({ limit: 1, now: new Date(1234) });
-  assert.match(pool.calls[0].sql, /next_attempt_at IS NULL OR next_attempt_at <= /);
+  assert.match(pool.calls[0].sql, /rp\.next_attempt_at IS NULL OR rp\.next_attempt_at <= /);
 });
 
 test('markPublished проставляет published_at и не трогает байты', async () => {
@@ -162,6 +237,38 @@ test('accept проставляет slot_verified=false явным параме�
   assert.match(pool.calls[0].sql, /slot_verified/,
     'INSERT обязан явно проставлять slot_verified — полагаться на DEFAULT колонки нельзя: ретейк идёт через ON CONFLICT DO UPDATE, а не INSERT');
   assert.deepEqual(pool.calls[0].params, [1, 'FRONT', 7, null, false]);
+});
+
+// ---------------------------------------------------------------------------
+// Координатор, мутационный прогон финального ревью: две находки на ветку
+// ПОВТОРНОЙ загрузки (ON CONFLICT DO UPDATE), обе проходили зелёными без
+// теста, который различает "колонка есть в SQL где-то" от "ветка ОБНОВЛЕНИЯ
+// её реально переприсваивает":
+//   - slot_verified выброшен из ветки обновления — тест ":229" выше
+//     проверяет только присутствие подстроки "slot_verified", которая
+//     совпадает и со списком колонок INSERT, слепа к самой SET-части UPDATE;
+//   - uploaded_at не обновляется при повторной загрузке — теста не было
+//     вовсе. От него зависят и порог сторожа (listStuck сравнивает
+//     uploaded_at с olderThanMs), и порядок выборки claimBatch (ORDER BY
+//     uploaded_at ASC) — переснятое фото без обновления uploaded_at выглядело
+//     бы мгновенно застрявшим и уходило бы в конец очереди публикации вместо
+//     начала.
+// ---------------------------------------------------------------------------
+test('accept: ветка ПОВТОРНОЙ загрузки (ON CONFLICT DO UPDATE) реально переприсваивает slot_verified и uploaded_at', async () => {
+  const pool = makeFakePool([{ rows: [{ id: 1 }] }, { rows: [] }]);
+  const store = createPhotoQueueStore({ pool, dbType: 'postgres' });
+  await store.accept({
+    reportId: 1, photoCode: 'FRONT', uploadedBy: 7, exifAt: null,
+    content: Buffer.from('x'), mimeType: 'image/jpeg', originalName: null,
+    slotVerified: false
+  });
+  const sql = pool.calls[0].sql;
+  const updateBranch = sql.slice(sql.indexOf('DO UPDATE'));
+
+  assert.match(updateBranch, /slot_verified = EXCLUDED\.slot_verified/,
+    'ветка ОБНОВЛЕНИЯ обязана переприсваивать slot_verified — иначе повторная загрузка того же кода молча оставит старое значение слота из первой попытки');
+  assert.match(updateBranch, /uploaded_at = NOW\(\)/,
+    'ветка ОБНОВЛЕНИЯ обязана переприсваивать uploaded_at — от него зависят порог сторожа (listStuck) и порядок claimBatch (ORDER BY uploaded_at ASC); без этого переснятое фото выглядело бы мгновенно застрявшим');
 });
 
 test('accept по умолчанию (slotVerified не передан) считает слот проверенным', async () => {
@@ -341,6 +448,15 @@ test('MySQL: claimBatch запрашивает кандидатов JOIN’ом 
   assert.equal(pool.calls.length, 1, 'пустая выборка кандидатов не должна порождать лишние UPDATE/SELECT');
   assert.match(pool.calls[0].sql, /JOIN report_photo_blob/);
   assert.match(pool.calls[0].sql, /publish_state = 'accepted'/);
+  // Мутационная защита (координатор, финальный мутационный прогон): та же
+  // находка, что и в PostgreSQL-варианте выше — "JOIN где-то в тексте" не
+  // отличает обычный JOIN от LEFT JOIN. Здесь JOIN уже стоит в выборке
+  // кандидатов ДО LIMIT (в отличие от исходного PostgreSQL-дефекта C1), но
+  // LEFT JOIN пропустил бы строки без байтов дальше по цепочке точно так же.
+  assert.doesNotMatch(pool.calls[0].sql, /LEFT JOIN/,
+    'кандидатом на claim не имеет права стать строка без байтов — LEFT JOIN пропустил бы её в выборку');
+  assert.match(pool.calls[0].sql, /ORDER BY rp\.uploaded_at ASC/,
+    'DESC отдавал бы недавно принятые фото раньше давно застрявших — противоречит FIFO');
 });
 
 test('MySQL: claimBatch пропускает фото, которое увёл конкурентный воркер (affectedRows=0) — двойного взятия нет', async () => {
@@ -359,6 +475,12 @@ test('MySQL: claimBatch пропускает фото, которое увёл �
   // без транзакции это единственное, что не даёт забрать фото дважды.
   assert.match(pool.calls[2].sql, /publish_state = 'accepted'/);
   assert.match(pool.calls[2].sql, /next_attempt_at IS NULL OR next_attempt_at <= /);
+  // Координатор, мутационный прогон: аренда — тот же per-row UPDATE обязан
+  // реально сдвигать next_attempt_at вперёд, не только перепроверять его в
+  // WHERE. Без этого забранная строка немедленно снова видна следующему
+  // claimBatch (двойная публикация).
+  assert.match(pool.calls[2].sql, /SET next_attempt_at = DATE_ADD\(\?, INTERVAL 5 MINUTE\)/,
+    'без сдвига next_attempt_at забранная строка немедленно снова готова к claim — двойная публикация');
 
   const finalSelectParams = pool.calls[3].params;
   assert.deepEqual(finalSelectParams, [20], 'в финальный SELECT должен попасть только реально забранный id');
@@ -390,6 +512,16 @@ test('MySQL: accept передаёт slot_verified=0 явным параметр
   assert.match(pool.calls[0].sql, /slot_verified/);
   assert.deepEqual(pool.calls[0].params, [3, 'BACK', 2, null, 0],
     'MySQL BOOLEAN — алиас TINYINT(1): false обязан попасть в параметры как 0, а не как JS false');
+
+  // Координатор, мутационный прогон: та же находка, что и в PostgreSQL-
+  // варианте — "slot_verified где-то в SQL" совпадает и со списком колонок
+  // INSERT, слепа к ветке ОБНОВЛЕНИЯ (ON DUPLICATE KEY UPDATE). Явно
+  // проверяем именно её, плюс uploaded_at (порог сторожа, порядок claimBatch).
+  const updateBranch = pool.calls[0].sql.slice(pool.calls[0].sql.indexOf('ON DUPLICATE KEY UPDATE'));
+  assert.match(updateBranch, /slot_verified = VALUES\(slot_verified\)/,
+    'ветка ОБНОВЛЕНИЯ обязана переприсваивать slot_verified — иначе повторная загрузка молча оставит старое значение слота');
+  assert.match(updateBranch, /uploaded_at = CURRENT_TIMESTAMP/,
+    'ветка ОБНОВЛЕНИЯ обязана переприсваивать uploaded_at — иначе переснятое фото выглядело бы мгновенно застрявшим');
 });
 
 test('MySQL: accept по умолчанию (slotVerified не передан) считает слот проверенным', async () => {
