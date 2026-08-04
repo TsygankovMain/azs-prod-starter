@@ -90,6 +90,26 @@ export const createPhotoQueueUnavailableStore = (reason) => ({
  * @param {object} [deps.logger] — по умолчанию console; используется только .error()
  * @returns {{ store: object, enabled: boolean, reason: string|null }}
  */
+// createPhotoPublishWorker (photoPublishWorker.js) требует pool.connect() —
+// это НЕ формальность, а прямое следствие того, как там реализован
+// advisory-лок: pg_try_advisory_lock/pg_advisory_unlock — лок УРОВНЯ СЕССИИ
+// одного физического соединения, специфичный для Postgres SQL-синтаксис, и
+// у него нет реализованного эквивалента для MySQL в этом файле (в отличие
+// от photoQueueStore.js, где у КАЖДОГО метода есть вариант для обеих СУБД —
+// см. заголовочный комментарий photoPublishWorker.js: там везде "Postgres",
+// ни разу "MySQL"). mysql2/promise.Pool не предоставляет .connect() вовсе
+// (у него .getConnection() — другой метод, другая форма клиента).
+//
+// Без этой проверки ДО конструктора: на DB_TYPE=mysql с
+// EMBEDDED_POSTGRES=false очередь была бы включена (photoQueueStore.accept/
+// claimBatch полностью поддерживают MySQL), но createPhotoPublishWorker({
+// pool, ... }) бросил бы синхронно ('pool with connect() is required') — и
+// уронил бы ВЕСЬ процесс, а не только публикацию. Это строго хуже, чем
+// просто "не работает публикация": приём фото (не завязанный на
+// advisory-лок вообще) тоже перестал бы работать, хотя мог бы.
+export const isPhotoPublishWorkerSupported = ({ pool }) =>
+  Boolean(pool) && typeof pool.connect === 'function';
+
 export const buildPhotoQueueRuntime = ({ isEmbeddedPostgres, createStore, logger = console }) => {
   if (isEmbeddedPostgres) {
     const reason = 'EMBEDDED_POSTGRES=true: embedded DB is wiped on redeploy — the queue would silently lose accepted-but-unpublished photos';

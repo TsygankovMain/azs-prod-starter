@@ -4,7 +4,8 @@ import {
   isEmbeddedPostgresEnabled,
   readPhotoPublishNumberEnv,
   createPhotoQueueUnavailableStore,
-  buildPhotoQueueRuntime
+  buildPhotoQueueRuntime,
+  isPhotoPublishWorkerSupported
 } from '../src/reports/photoPublishBoot.js';
 import { createRateLimiter } from '../src/shared/rateLimiter.js';
 import { createPhotoPublisher } from '../src/reports/photoPublisher.js';
@@ -186,6 +187,54 @@ test('buildPhotoQueueRuntime: заглушка при отказе создан�
     logger: { error: () => {} }
   });
   await assert.rejects(() => runtime.store.accept({}), /boom/);
+});
+
+// ---------------------------------------------------------------------------
+// НАХОДКА при само-ревью (не входит в исходные 9 пунктов, но их прямое
+// следствие): photoQueueStore.js полностью поддерживает MySQL, а
+// photoPublishWorker.js — НЕТ. Его advisory-лок — Postgres-специфичный SQL
+// (pg_try_advisory_lock/pg_advisory_unlock) и его конструктор требует
+// pool.connect(), которого у mysql2/promise.Pool попросту не существует
+// (там .getConnection(), другой метод и другая форма клиента — см.
+// tests/photoPublishWorker.test.js и заголовок photoPublishWorker.js: там
+// везде "Postgres", ни слова про MySQL). Без этой проверки на DB_TYPE=mysql
+// с EMBEDDED_POSTGRES=false (очередь ВКЛЮЧЕНА — photoQueueStore это
+// поддерживает) createPhotoPublishWorker({pool, ...}) бросил бы синхронно
+// и уронил бы ВЕСЬ процесс — гораздо хуже, чем просто невозможность
+// опубликовать фото: приём фото (не завязанный на advisory-лок) тоже
+// перестал бы работать, хотя мог бы.
+// ---------------------------------------------------------------------------
+
+test('isPhotoPublishWorkerSupported: pg.Pool-подобный объект (с connect()) — поддерживается', () => {
+  assert.equal(isPhotoPublishWorkerSupported({ pool: { connect: async () => {} } }), true);
+});
+
+test('isPhotoPublishWorkerSupported: mysql2-подобный пул (getConnection(), без connect()) — НЕ поддерживается', () => {
+  assert.equal(isPhotoPublishWorkerSupported({ pool: { getConnection: async () => {}, query: async () => {} } }), false);
+});
+
+test('isPhotoPublishWorkerSupported: пустой/отсутствующий pool — НЕ поддерживается, не бросает', () => {
+  assert.equal(isPhotoPublishWorkerSupported({ pool: null }), false);
+  assert.equal(isPhotoPublishWorkerSupported({}), false);
+});
+
+// Замыкает цикл: проверяет саму ПРЕДПОСЫЛКУ, на которой стоит guard выше —
+// против НАСТОЯЩЕГО createPhotoPublishWorker, а не только против
+// собственного предположения об его контракте. Если photoPublishWorker.js
+// когда-нибудь научится работать без pool.connect() (например, добавит
+// поддержку .getConnection()), этот тест первым покраснеет и укажет, что
+// guard в server.js можно ослаблять.
+test('РЕАЛЬНЫЙ createPhotoPublishWorker бросает на mysql2-подобном пуле (без connect()) — подтверждает, почему guard обязателен', () => {
+  const mysqlLikePool = { async getConnection() { return {}; }, async query() { return [[]]; } };
+  assert.throws(
+    () => createPhotoPublishWorker({
+      store: { async claimBatch() { return []; } },
+      publishOne: async () => ({}),
+      limiter: { acquire: async () => {}, penalize() {} },
+      pool: mysqlLikePool
+    }),
+    /connect/
+  );
 });
 
 // ---------------------------------------------------------------------------

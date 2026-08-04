@@ -18,13 +18,25 @@ import createTimeoutWatcher from './src/dispatch/timeoutWatcher.js';
 import { readDispatchCandidates } from './src/dispatch/dispatchCandidatesFileStore.js';
 import createReportsStore from './src/reports/reportsStore.js';
 import { createAnalyticsStore } from './src/reports/analyticsStore.js';
-import createReportsRouter, { buildCrmSyncRunner } from './src/reports/reportsRoutes.js';
+import createReportsRouter, { buildCrmSyncRunner, readRequiredPhotos } from './src/reports/reportsRoutes.js';
 import createDispatchPlanStore from './src/reports/dispatchPlanStore.js';
 import { generateDailyPlan } from './src/dispatch/dispatchPlanGenerator.js';
 import createDispatchPlanMirror from './src/reports/dispatchPlanMirror.js';
 import { buildWebhookContext } from './src/auth/webhookContext.js';
 import createCrmSyncJobStore from './src/reports/crmSyncJobStore.js';
 import { createCrmSyncWorker } from './src/reports/crmSyncWorker.js';
+import { createPhotoQueueStore } from './src/reports/photoQueueStore.js';
+import { createPhotoPublisher } from './src/reports/photoPublisher.js';
+import { createPhotoPublishWorker } from './src/reports/photoPublishWorker.js';
+import { createPhotoPublishWatchdog } from './src/reports/photoPublishWatchdog.js';
+import { syncReportToCrmIfComplete } from './src/reports/photoPublishCompletion.js';
+import { createRateLimiter } from './src/shared/rateLimiter.js';
+import {
+  isEmbeddedPostgresEnabled,
+  readPhotoPublishNumberEnv,
+  buildPhotoQueueRuntime,
+  isPhotoPublishWorkerSupported
+} from './src/reports/photoPublishBoot.js';
 import { ensureAppPlacements } from './src/bitrix/placementBinder.js';
 import createNotificationService from './src/notifications/notificationService.js';
 import createBotRegistryService from './src/notifications/botRegistryService.js';
@@ -177,6 +189,28 @@ try {
     dbType
   }));
 }
+
+// Очередь публикации фото (Task 11 — проводка) — защита загрузки, пункты 5 и
+// 6 ревью. buildPhotoQueueRuntime (src/reports/photoPublishBoot.js) — единая
+// точка решения:
+//   - EMBEDDED_POSTGRES в истинном значении (строго 'true', см.
+//     isEmbeddedPostgresEnabled — строка 'false' truthy в JS, наивная
+//     проверка включила бы предохранитель ровно наоборот) -> очередь не
+//     включается ВООБЩЕ: на встроенной в контейнер, эфемерной БД редеплой
+//     стёр бы принятые, но не опубликованные фото — очередь, задуманная как
+//     защита от потери, сама стала бы механизмом потери, и молча;
+//   - создание стора бросило (например, недоступен pool) -> то же самое
+//     правило, что и у diagStore выше: приложение обязано подняться целиком.
+// В обоих случаях photoQueueStore ВСЕГДА truthy-объект с работающим (пусть и
+// намеренно бросающим понятную ошибку) .accept() — createReportsRouter ниже
+// требует его как обязательный параметр конструктора (пункт 7), и заглушка
+// не даёт этому требованию погасить ВЕСЬ /api/reports ради проблемы, которая
+// касается только фото.
+const photoQueueRuntime = buildPhotoQueueRuntime({
+  isEmbeddedPostgres: isEmbeddedPostgresEnabled(process.env.EMBEDDED_POSTGRES),
+  createStore: () => createPhotoQueueStore({ pool, dbType })
+});
+const photoQueueStore = photoQueueRuntime.store;
 const authContextStoreType = String(process.env.AUTH_CONTEXT_STORE || 'composite').trim().toLowerCase();
 const authContextStore = (() => {
   if (authContextStoreType === 'database') {
@@ -568,6 +602,7 @@ app.use('/api/reports', verifyToken, attachAccessContext, createReportsRouter({
     return entry?.context ? { key: entry.key, ...entry.context } : {};
   },
   brandStore,
+  photoQueueStore,
 }));
 
 app.use('/api/reports/photos', verifyToken, attachAccessContext, createPhotoFeedRouter({
@@ -1086,7 +1121,14 @@ settingsStore.ensureSchema()
     console.error('Failed to prepare app_settings schema', error);
   });
 
-reportsStore.ensurePhotoSchema()
+// Named (не анонимная цепочка) — Task 11 ниже (проводка воркера/сторожа
+// публикации фото) вешает СВОЙ .then()/.catch() на этот же промис вместо
+// повторного вызова ensurePhotoSchema(): сам метод идемпотентен и второй
+// вызов был бы безопасен, но незачем повторно гонять DDL/information_schema
+// проверки при каждом старте процесса, когда один и тот же результат можно
+// разделить между двумя независимыми подписчиками.
+const reportPhotoSchemaReady = reportsStore.ensurePhotoSchema();
+reportPhotoSchemaReady
   .then(() => {
     console.log('report_photo schema is ready');
   })
@@ -1200,6 +1242,223 @@ if (String(process.env.CRM_SYNC_WORKER_ENABLED || 'true').toLowerCase() === 'tru
     });
 }
 
+// ---------------------------------------------------------------------------
+// Очередь публикации фото — воркер, ограничитель темпа, сторож (Task 11).
+//
+// ОДИН ограничитель на процесс — общий и для publishOne (реальные вызовы
+// Bitrix Disk через photoPublisher ниже), и для photoPublishWorker
+// (penalize() на Retry-After от портала). Отдельный экземпляр на
+// потребителя означал бы несколько независимых бюджетов вместо одного
+// общего — то есть кратно превышенный предел портала (2 запроса в секунду
+// на всю компанию), ровно тот инцидент (31 июля — ~4200 упавших фото,
+// 3 августа — 2420 отказов подряд), который вся эта задача лечит.
+//
+// Значения окружения валидируются ДО конструктора (readPhotoPublishNumberEnv,
+// photoPublishBoot.js): createRateLimiter бросает при ratePerSec<=0 или
+// burst<1, createPhotoPublishWorker бросает при workers<1 — кривая или
+// нечисловая переменная окружения не имеет права уронить старт процесса
+// (приём фото не имеет права упасть из-за проводки).
+// ---------------------------------------------------------------------------
+const photoRateLimiter = createRateLimiter({
+  ratePerSec: readPhotoPublishNumberEnv({
+    rawValue: process.env.PHOTO_PUBLISH_RATE_PER_SEC,
+    fallback: 1.4,
+    isValid: (n) => n > 0,
+    name: 'PHOTO_PUBLISH_RATE_PER_SEC'
+  }),
+  burst: readPhotoPublishNumberEnv({
+    rawValue: process.env.PHOTO_PUBLISH_BURST,
+    fallback: 3,
+    isValid: (n) => n >= 1,
+    name: 'PHOTO_PUBLISH_BURST'
+  })
+});
+
+// Тот же приём, что getBackgroundContext у createReportsRouter выше и
+// scheduler.getRuntimeContext ниже: webhook-контекст, если настроен, иначе
+// последний известный admin-контекст. Отдельная копия, а не общая функция —
+// намеренно: обе существующие инлайновые версии уже дублируют друг друга
+// без общей функции, а факторинг третьей копии в рамках этой задачи означал
+// бы трогать неродственный код (роутер отчётов, шедулер), который эта
+// задача не меняет.
+const getPhotoPublishBackgroundContext = async () => {
+  if (webhookBackgroundContext) {
+    return webhookBackgroundContext;
+  }
+  const entry = await authContextStore.getLastAdminContext();
+  return entry?.context ? { key: entry.key, ...entry.context } : {};
+};
+
+let photoPublishWorker = null;
+let photoPublishWatchdog = null;
+
+// isPhotoPublishWorkerSupported (photoPublishBoot.js): photoQueueStore.js
+// поддерживает и Postgres, и MySQL (у каждого метода есть оба варианта), но
+// advisory-лок photoPublishWorker.js — Postgres-специфичный SQL
+// (pg_try_advisory_lock/pg_advisory_unlock), требует pool.connect(), а у
+// mysql2/promise.Pool такого метода нет (только .getConnection()). Без этой
+// проверки на DB_TYPE=mysql с включённой очередью createPhotoPublishWorker
+// бросил бы синхронно и уронил бы ВЕСЬ процесс — приём фото (который на
+// MySQL работает штатно) тоже перестал бы работать, хотя мог бы. Приём фото
+// остаётся полностью доступен в любом случае: этот флаг решает только,
+// стартует ли ПУБЛИКАЦИЯ.
+const photoPublishWorkerSupported = photoQueueRuntime.enabled && isPhotoPublishWorkerSupported({ pool });
+
+if (photoPublishWorkerSupported) {
+  // try/catch вокруг ВСЕЙ синхронной сборки — защита загрузки в глубину.
+  // Ни один из этих четырёх конструкторов не должен быть способен уронить
+  // процесс (все их собственные обязательные проверки параметров уже
+  // выполнены аргументами, которые собраны здесь и должны быть корректны),
+  // но если что-то непредвиденное всё же бросит — приём фото
+  // (photoQueueStore.accept(), уже проверен и работает выше) не должен
+  // зависеть от этого: воркер и сторож просто останутся null.
+  try {
+    const photoPublisher = createPhotoPublisher({
+      bitrixClient,
+      settingsStore,
+      reportsStore,
+      brandStore,
+      limiter: photoRateLimiter,
+      resolveContext: getPhotoPublishBackgroundContext
+    });
+
+    // Отложенная проверка слота (slot_verified=false, см. заголовочный
+    // комментарий photoPublishWorker.js) — конкретная привязка к Битриксу
+    // (bitrixClient/settingsStore/reportsStore.getById для azsId) собирается
+    // ЗДЕСЬ, проводкой server.js, а не внутри самого воркера: тот остаётся
+    // чистой DI-функцией, проверяемой без реального Битрикса.
+    const resolvePhotoPublishRequiredCodes = async (task) => {
+      const report = await reportsStore.getById(task.report_id);
+      if (!report) return [];
+      const context = await getPhotoPublishBackgroundContext();
+      const settings = await settingsStore.read({ context });
+      const requiredPhotos = await readRequiredPhotos({
+        bitrixClient,
+        settings,
+        azsId: report.azsId,
+        context
+      });
+      return requiredPhotos.map((photo) => photo.code);
+    };
+
+    // syncReportToCrmIfComplete (photoPublishCompletion.js) зовётся воркером
+    // СРАЗУ после каждого успешного markPublished — см. finishPublished в
+    // photoPublishWorker.js. task (второй, необязательный аргумент воркера)
+    // здесь не нужен: reportId достаточно, остальной контекст проверка
+    // добирает сама через reportsStore/photoQueueStore/crmSyncJobStore.
+    const syncPhotoReportToCrmIfComplete = async (reportId) => {
+      const context = await getPhotoPublishBackgroundContext();
+      return syncReportToCrmIfComplete({
+        reportId,
+        reportsStore,
+        photoQueueStore,
+        crmSyncJobStore,
+        context
+      });
+    };
+
+    photoPublishWorker = createPhotoPublishWorker({
+      store: photoQueueStore,
+      publishOne: photoPublisher.publishOne,
+      limiter: photoRateLimiter,
+      pool,
+      workers: readPhotoPublishNumberEnv({
+        rawValue: process.env.PHOTO_PUBLISH_WORKERS,
+        fallback: 3,
+        isValid: (n) => n >= 1,
+        name: 'PHOTO_PUBLISH_WORKERS'
+      }),
+      resolveRequiredPhotoCodes: resolvePhotoPublishRequiredCodes,
+      reportsStore,
+      syncCrmIfComplete: syncPhotoReportToCrmIfComplete
+    });
+
+    // Сторож застрявших фото (Task 10) — обязан работать под тем же ведущим
+    // экземпляром, что и воркер: его собственная защита от повторных
+    // уведомлений живёт в памяти ЭТОГО процесса, и при нескольких экземплярах
+    // приложения на Timeweb несколько независимых сторожей дали бы несколько
+    // независимых потоков уведомлений в один чат. Не заводим второй механизм
+    // лидерства — переиспользуем advisory-лок воркера через isLeader().
+    //
+    // "Не настроено" (пустой PHOTO_WATCHDOG_CHAT_ID и DIAG_CHAT_ID) — тихий
+    // no-op, тот же контракт, что и enabled=false в diagChatNotifier.js:
+    // фича осознанно выключена, а не сломана.
+    //
+    // "Не лидер" — БРОСАЕТ, а не тихо резолвится. Антиспам-память сторожа
+    // (lastSignature/lastNotifiedAtMs в photoPublishWatchdog.js) обновляется
+    // ТОЛЬКО на успешный notify(). Если follower тихо "успешно" ничего не
+    // отправит, его собственная память всё равно отметится как "уже
+    // предупредили" — и после смены лидерства (прежний лидер упал или его
+    // передеплоили) новый лидер унаследует чужую, никогда не доставленную
+    // память и промолчит про уже известную проблему до истечения
+    // reminderIntervalMs. Throw здесь ловится try/catch внутри самого
+    // photoPublishWatchdog.js (runOnce) — тик не падает, просто ничего не
+    // отправляется, и следующая попытка (в том числе от нового лидера) не
+    // подавлена чужой памятью.
+    const notifyPhotoPublishWatchdog = async ({ text }) => {
+      const dialogId = String(process.env.PHOTO_WATCHDOG_CHAT_ID || process.env.DIAG_CHAT_ID || '').trim();
+      if (!dialogId) {
+        return;
+      }
+      if (!photoPublishWorker.isLeader()) {
+        throw new Error('photo_publish_watchdog_not_leader');
+      }
+      const context = await getPhotoPublishBackgroundContext();
+      const botId = await resolveBotIdViaRegistry(context);
+      if (!botId) {
+        throw new Error('photo_publish_watchdog_no_bot_id');
+      }
+      await bitrixClient.callMethod('imbot.v2.Chat.Message.send', {
+        botId,
+        dialogId,
+        fields: { message: text, urlPreview: false }
+      }, context);
+    };
+
+    photoPublishWatchdog = createPhotoPublishWatchdog({
+      store: photoQueueStore,
+      notify: notifyPhotoPublishWatchdog
+    });
+
+    // Старт — ПОСЛЕ готовности схемы (report_photo.slot_verified,
+    // report_photo_blob, индексы — reportPhotoSchemaReady определён выше),
+    // тем же приёмом .then()/.catch() без top-level await, что и остальная
+    // проводка стартов в этом файле. Отказ схемы (например, недостаточные
+    // права DDL) не должен ронять процесс — воркер и сторож просто не
+    // стартуют; приём фото (photoQueueStore.accept()) от этого не зависит.
+    reportPhotoSchemaReady
+      .then(() => {
+        photoPublishWorker.start();
+        photoPublishWatchdog.start();
+        console.log(JSON.stringify({ event: 'photo_publish_queue_started' }));
+      })
+      .catch((error) => {
+        console.error(JSON.stringify({
+          event: 'photo_publish_queue_start_failed',
+          reason: error.message
+        }));
+      });
+  } catch (error) {
+    // Защита загрузки в глубину (см. комментарий выше try): если сборка
+    // всё-таки бросила, откатываем обе ссылки на null — shutdown() и
+    // остальной код ниже проверяют их через ?. и не должны увидеть
+    // наполовину собранный воркер без сторожа или наоборот.
+    photoPublishWorker = null;
+    photoPublishWatchdog = null;
+    console.error(JSON.stringify({
+      event: 'photo_publish_workers_disabled',
+      reason: error.message
+    }));
+  }
+} else {
+  console.log(JSON.stringify({
+    event: 'photo_publish_queue_workers_skipped',
+    reason: photoQueueRuntime.enabled
+      ? 'pool does not support advisory-lock session affinity (pool.connect() missing — see photoPublishBoot.js: isPhotoPublishWorkerSupported); photo intake keeps working via photoQueueStore.accept(), publishing will not run'
+      : photoQueueRuntime.reason
+  }));
+}
+
 const tokenRefreshScheduler = createTokenRefreshScheduler({
   authContextStore,
   bitrixClient,
@@ -1268,6 +1527,21 @@ async function shutdown(signal) {
     scheduler.stop?.();
     tokenRefreshScheduler.stop?.();
     crmSyncWorker.stop?.();
+    // photoPublishWatchdog.stop() — синхронный, как и остальные .stop?.()
+    // выше (просто снимает setInterval); может быть null, если очередь
+    // публикации выключена (эфемерная БД или отказ создания стора — Task 11).
+    photoPublishWatchdog?.stop?.();
+    // photoPublishWorker.stop() — ОБЯЗАН быть awaited и ОБЯЗАН завершиться
+    // строго ДО шага 4 (pool.end()) ниже. Пока лидер, воркер держит
+    // выделенный, чек-аутнутый из pool клиент (advisory-лок Postgres) всю
+    // жизнь процесса (см. заголовочный комментарий photoPublishWorker.js) —
+    // pool.end() ждёт возврата ВСЕХ чек-аутнутых клиентов и без
+    // предварительного await stop() подвиснет НАВСЕГДА (проверено на живом
+    // Postgres). stop() сам снимает лок (если был лидером) и возвращает
+    // клиента пулу — после этого, и только после этого, pool.end() может
+    // закрыть пул целиком. Может быть null, если очередь выключена — тогда
+    // это просто no-op (Promise.resolve(undefined) через optional chaining).
+    await photoPublishWorker?.stop?.();
 
     // 3. Flush any in-flight auth-context writes so the refresh token is not lost.
     await authContextStore.flush();
