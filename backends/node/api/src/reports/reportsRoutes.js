@@ -1771,9 +1771,11 @@ export const createReportsRouter = ({
 
       const currentUserId = ensureCurrentUserOwnsReport({ req, report });
 
-      if (!photoQueueStore || typeof photoQueueStore.accept !== 'function') {
-        throw new ReportConfigError('photoQueueStore is not configured', 'photo_queue_store_not_configured');
-      }
+      // photoQueueStore гарантированно валиден здесь (не null, с рабочим
+      // .accept()) — обязательная проверка в конструкторе createReportsRouter
+      // (см. выше по файлу) уже не даёт роутеру собраться без него, поэтому
+      // повторная проверка на этом пути недостижима и была удалена (раунд
+      // правок 1, Minor 2).
 
       // Список требуемых фото — ЛОКАЛЬНО, без единого обращения к Битриксу
       // (см. resolveRequiredPhotoSlotLocally выше). Именно это и делает
