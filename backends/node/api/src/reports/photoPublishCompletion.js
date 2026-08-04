@@ -52,6 +52,32 @@ export const syncReportToCrmIfComplete = async ({
   // отчёте.
   const requiredCodes = await reportsStore.getRequiredPhotoCodes(reportId);
   if (!Array.isArray(requiredCodes) || requiredCodes.length === 0) {
+    // I4 (финальное ревью ветки) — "неизвестен список" САМ ПО СЕБЕ норма:
+    // отчёт может быть ещё не весь принят (карточку не открывали, кэш пуст).
+    // Опасен ДРУГОЙ, более узкий случай: ВСЕ уже принятые фото этого отчёта
+    // уже 'published' — очередь публикации считает свою работу полностью
+    // сделанной, а без списка мы никогда не узнаем, был ли принятый комплект
+    // действительно полным. Эта функция вызывается ТОЛЬКО из завершения
+    // публикации (finishPublished, photoPublishWorker.js) — если публиковать
+    // больше нечего, для этого отчёта БОЛЬШЕ НЕ БУДЕТ события, которое
+    // повторило бы проверку (достижимо, когда падает backfill в
+    // reportsRoutes.js: resolveRequiredPhotoSlotLocally оборачивает запись
+    // required_photo_codes в .catch(() => {}) — намеренно, чтобы не блокировать
+    // приём, но следом ничто не замечает и не повторяет саму запись).
+    // Тихий return ниже в ЭТОМ случае и есть тот отказ, который весь план
+    // запрещает: фото уже в Битриксе, карточка CRM не обновлена, и никто не
+    // узнает — поэтому громкий, отдельный лог именно здесь, а не молчание.
+    const states = await photoQueueStore.listPhotoStates({ reportId });
+    const allPublished = states.length > 0 && states.every((row) => row.publishState === 'published');
+    if (allPublished) {
+      console.error(JSON.stringify({
+        event: 'photo_report_crm_sync_orphaned',
+        reportId,
+        publishedCount: states.length,
+        reason: 'all accepted photos are published, but required_photo_codes is unknown — ' +
+          'this report will NOT retry sync on its own (no more photos will publish to re-trigger this check)'
+      }));
+    }
     return { synced: false, reason: 'required_codes_unknown' };
   }
 

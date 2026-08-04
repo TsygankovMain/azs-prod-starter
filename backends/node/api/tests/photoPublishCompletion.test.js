@@ -471,6 +471,134 @@ test('syncReportToCrmIfComplete: список обязательных кодо�
 });
 
 // ---------------------------------------------------------------------------
+// Координатор, мутационный прогон финального ревью: "пустой массив требуемых
+// кодов трактуется как полный комплект — сравнение «ноль больше либо равно
+// нулю» даёт ложный успех... Тесты при этом всегда возвращают null и никогда
+// пустой массив." Тест выше действительно всегда использует null — код уже
+// защищён (`!Array.isArray(requiredCodes) || requiredCodes.length === 0`),
+// но ветка requiredCodes.length===0 (в отличие от !Array.isArray) не была
+// проверена НИ РАЗУ. Ниже — именно она, отдельно от null.
+// ---------------------------------------------------------------------------
+
+test('syncReportToCrmIfComplete: ПУСТОЙ МАССИВ (не null) требуемых кодов -> тоже required_codes_unknown, а не ложный успех "0 >= 0"', async () => {
+  const reportId = 940204;
+  const reportsStore = {
+    async getRequiredPhotoCodes() { return []; }, // пустой массив — НЕ null
+    async listPhotos() { return []; }
+  };
+  const crmSyncJobStore = makeCrmSyncJobStoreFake();
+  const result = await syncReportToCrmIfComplete({
+    reportId,
+    reportsStore,
+    photoQueueStore: { async listPhotoStates() { return []; } },
+    crmSyncJobStore
+  });
+  assert.equal(result.synced, false, 'пустой список требуемых кодов не должен трактоваться как "ноль из нуля — комплект полон"');
+  assert.equal(result.reason, 'required_codes_unknown');
+  assert.equal(crmSyncJobStore.jobs.length, 0, 'задача в CRM не должна была быть поставлена');
+});
+
+// ---------------------------------------------------------------------------
+// I4 (финальное ревью ветки) — "готовый отчёт может молча не доехать до CRM".
+// Опасный случай — требуемые коды неизвестны, НО все уже принятые фото уже
+// published: очередь публикации считает работу сделанной, а без списка
+// требуемых кодов мы никогда не узнаем, был ли комплект действительно
+// полным. Эта функция вызывается ТОЛЬКО из завершения публикации — если
+// публиковать больше нечего, для этого отчёта больше не будет события,
+// которое повторило бы проверку. Молчать здесь недопустимо — обязан быть
+// громкий, отдельный сигнал (event: photo_report_crm_sync_orphaned).
+// ---------------------------------------------------------------------------
+
+const withCapturedConsoleError = async (fn) => {
+  const original = console.error;
+  const logged = [];
+  console.error = (...args) => { logged.push(args); };
+  try {
+    await fn();
+  } finally {
+    console.error = original;
+  }
+  return logged;
+};
+
+test('I4: все принятые фото уже published, но required_photo_codes неизвестен -> громкий лог photo_report_crm_sync_orphaned', async () => {
+  const reportId = 940301;
+  const reportsStore = {
+    async getRequiredPhotoCodes() { return null; }, // backfill молча не удался (reportsRoutes.js .catch(() => {}))
+    async listPhotos() { return []; }
+  };
+  const photoQueueStore = {
+    async listPhotoStates() {
+      return [
+        { photoCode: '1', publishState: 'published' },
+        { photoCode: '2', publishState: 'published' },
+        { photoCode: '3', publishState: 'published' }
+      ];
+    }
+  };
+  const crmSyncJobStore = makeCrmSyncJobStoreFake();
+
+  const logged = await withCapturedConsoleError(async () => {
+    const result = await syncReportToCrmIfComplete({ reportId, reportsStore, photoQueueStore, crmSyncJobStore });
+    assert.equal(result.synced, false);
+    assert.equal(result.reason, 'required_codes_unknown');
+  });
+
+  const orphanLine = logged.map((args) => args[0]).find((line) => {
+    try { return JSON.parse(line).event === 'photo_report_crm_sync_orphaned'; } catch { return false; }
+  });
+  assert.ok(orphanLine, 'обязан быть залогирован event photo_report_crm_sync_orphaned — иначе фото в Битриксе, карточка не обновлена, и никто не узнает');
+  const parsed = JSON.parse(orphanLine);
+  assert.equal(parsed.reportId, reportId);
+  assert.equal(parsed.publishedCount, 3);
+});
+
+test('I4: НЕ все фото published (отчёт ещё не завершён) -> НЕТ громкого лога — это нормальное, ожидаемое состояние', async () => {
+  const reportId = 940302;
+  const reportsStore = {
+    async getRequiredPhotoCodes() { return null; },
+    async listPhotos() { return []; }
+  };
+  const photoQueueStore = {
+    async listPhotoStates() {
+      return [
+        { photoCode: '1', publishState: 'published' },
+        { photoCode: '2', publishState: 'accepted' } // всё ещё в очереди — рано, не опасно
+      ];
+    }
+  };
+  const crmSyncJobStore = makeCrmSyncJobStoreFake();
+
+  const logged = await withCapturedConsoleError(async () => {
+    await syncReportToCrmIfComplete({ reportId, reportsStore, photoQueueStore, crmSyncJobStore });
+  });
+
+  const orphanLine = logged.map((args) => args[0]).find((line) => {
+    try { return JSON.parse(line).event === 'photo_report_crm_sync_orphaned'; } catch { return false; }
+  });
+  assert.equal(orphanLine, undefined, 'отчёт ещё не весь опубликован — это норма, громкий лог здесь был бы ложной тревогой');
+});
+
+test('I4: у отчёта вообще нет строк report_photo -> НЕТ громкого лога (нечего публиковать, не "потеряно")', async () => {
+  const reportId = 940303;
+  const reportsStore = {
+    async getRequiredPhotoCodes() { return null; },
+    async listPhotos() { return []; }
+  };
+  const photoQueueStore = { async listPhotoStates() { return []; } };
+  const crmSyncJobStore = makeCrmSyncJobStoreFake();
+
+  const logged = await withCapturedConsoleError(async () => {
+    await syncReportToCrmIfComplete({ reportId, reportsStore, photoQueueStore, crmSyncJobStore });
+  });
+
+  const orphanLine = logged.map((args) => args[0]).find((line) => {
+    try { return JSON.parse(line).event === 'photo_report_crm_sync_orphaned'; } catch { return false; }
+  });
+  assert.equal(orphanLine, undefined, 'пустой список фото — это не "все опубликованы", тревога здесь была бы бессмысленной');
+});
+
+// ---------------------------------------------------------------------------
 // Important 3 (раунд правок 1): агрегат (было — countByState, count >=
 // requiredCodes.length) недостаточен — количество может совпасть, а
 // КОНКРЕТНЫЕ коды не совпасть. Оба сценария ниже — реальные пробои агрегата,
