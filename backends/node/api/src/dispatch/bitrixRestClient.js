@@ -263,7 +263,26 @@ export const createBitrixRestClient = ({
       ? { ...params, auth: resolvedAuth }
       : params;
 
-    const response = await fetchWithTimeout(`${runtime.endpoint}/${method}.json`, {
+    const requestUrl = `${runtime.endpoint}/${method}.json`;
+
+    // ВРЕМЕННАЯ ДИАГНОСТИКА (2026-08-05). Убрать, когда причина найдена.
+    //
+    // Зачем: разбор «фото не публикуются» упёрся в расхождение между тем, что
+    // видно в коде, и тем, что происходит в проде. Тот же вызов, выполненный
+    // руками через адрес вебхука, возвращает содержимое папки; приложение на
+    // нём же получает ERROR_METHOD_NOT_FOUND. Значит уходит НЕ ТОТ адрес — а
+    // какой именно, из кода не выводится. Шесть гипотез подряд оказались
+    // неверными, поэтому дальше только факт.
+    //
+    // Адрес попадает в текст ошибки намеренно: он оседает в
+    // report_photo.last_publish_error, то есть читается обычным SELECT, без
+    // выгрузки логов контейнера.
+    //
+    // Секрет вебхука вырезается: путь /rest/<цифры>/<код> -> /rest/<цифры>/***
+    const safeUrl = requestUrl.replace(/(\/rest\/\d+\/)[^/]+/i, '$1***');
+    const via = runtime.isWebhook ? 'webhook' : (resolvedAuth ? 'oauth' : 'no-auth');
+
+    const response = await fetchWithTimeout(requestUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -273,7 +292,7 @@ export const createBitrixRestClient = ({
 
     if (!response.ok) {
       const errorBody = await response.text().catch(() => '');
-      const err = new Error(`Bitrix REST ${method} failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`);
+      const err = new Error(`Bitrix REST ${method} failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''} [диагностика: via=${via} url=${safeUrl}]`);
       const retryAfterHeader = response.headers?.get('retry-after');
       const retryAfterSeconds = Number(retryAfterHeader);
       if (retryAfterHeader !== null && retryAfterHeader !== undefined && Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
@@ -284,7 +303,8 @@ export const createBitrixRestClient = ({
 
     const responsePayload = await response.json();
     if (responsePayload.error) {
-      throw new Error(`Bitrix REST ${method} error: ${responsePayload.error} ${responsePayload.error_description || ''}`.trim());
+      // ВРЕМЕННАЯ ДИАГНОСТИКА (2026-08-05), см. комментарий выше.
+      throw new Error(`Bitrix REST ${method} error: ${responsePayload.error} ${responsePayload.error_description || ''} [диагностика: via=${via} url=${safeUrl}]`.trim());
     }
 
     return responsePayload.result ?? responsePayload;
