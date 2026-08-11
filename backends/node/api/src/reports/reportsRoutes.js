@@ -1633,6 +1633,18 @@ export const createReportsRouter = ({
 
       ensureCurrentUserOwnsReport({ req, report });
 
+      // Просроченный отчёт закрыт для сдачи: setReportStatus не обновляет строки
+      // со статусом 'expired', поэтому без этой проверки ответ был бы 200 с
+      // status 'done', хотя в базе отчёт остался бы несданным.
+      if (report.status === 'expired') {
+        return res.status(409).json({
+          error: 'report_expired',
+          errorCode: 'report_expired',
+          meta: { reportId, deadlineAt: report.deadlineAt || null },
+          message: 'Срок сдачи отчёта истёк — отчёт закрыт как несданный'
+        });
+      }
+
       const settings = await settingsStore.read();
       ensureFolderFieldMapping(settings); // guard: throws if folder field not configured
       const requiredPhotos = await readRequiredPhotos({
