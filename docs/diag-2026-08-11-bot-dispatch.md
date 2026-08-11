@@ -119,8 +119,8 @@ LIMIT 100;
 SELECT metric AS "метрика", value AS "значение" FROM (
   SELECT 1 ord,'ALERT: админский OAuth-контекст (0 = проблема)' metric, count(*) FILTER (WHERE is_admin) value FROM auth_context
   UNION ALL SELECT 2,'ALERT: план просрочен >10 мин', count(*) FROM dispatch_plan WHERE status='planned' AND execute_at < now()-interval '10 minutes'
-  UNION ALL SELECT 3,'ALERT: отчёты зависли в reserved >1 ч', count(*) FROM dispatch_log WHERE status='reserved' AND created_at < now()-interval '1 hour'
-  UNION ALL SELECT 4,'ALERT: дедлайн прошёл, отчёт не закрыт', count(*) FROM dispatch_log WHERE deadline_at IS NOT NULL AND deadline_at < now() AND status NOT IN ('done','expired','failed')
+  UNION ALL SELECT 3,'ALERT: отчёты зависли в reserved >1 ч', count(*) FROM dispatch_log WHERE status='reserved' AND slot_key NOT LIKE '%:reminder:%' AND created_at < now()-interval '1 hour'
+  UNION ALL SELECT 4,'ALERT: дедлайн прошёл, отчёт не закрыт', count(*) FROM dispatch_log WHERE deadline_at IS NOT NULL AND deadline_at < now() AND status NOT IN ('done','expired','failed','cancelled')
   UNION ALL SELECT 20,'info: отчётов done за сутки', count(*) FROM dispatch_log WHERE status='done' AND updated_at > now()-interval '24 hours'
   UNION ALL SELECT 23,'info: запланировано на сегодня', count(*) FROM dispatch_plan WHERE plan_date = to_char(now() AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD')
 ) s ORDER BY ord;
