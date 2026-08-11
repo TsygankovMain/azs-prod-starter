@@ -74,8 +74,16 @@ const ACTIVE_STATUS_ORDER_SQL = `CASE status
   WHEN 'in_progress' THEN 0
   WHEN 'new' THEN 1
   WHEN 'reserved' THEN 2
+  WHEN 'expired' THEN 3
   ELSE 9
 END`;
+
+// Экран оператора: активные отчёты плюс свежий просроченный (чтобы человек
+// видел, что именно он пропустил, а не пустой список). Строки напоминаний
+// (slot_key вида '%:reminder:%') сюда не попадают: у них нет карточки
+// смарт-процесса и они навсегда остаются в статусе 'reserved'.
+const ACTIVE_STATUSES_SQL = `'new', 'in_progress', 'reserved', 'expired'`;
+const EXPIRED_WINDOW_HOURS = 24;
 
 const createPostgresStore = (pool) => ({
   async ensurePhotoSchema() {
@@ -343,7 +351,12 @@ const createPostgresStore = (pool) => ({
       SELECT *
       FROM dispatch_log
       WHERE admin_user_id = $1
-        AND status IN ('new', 'in_progress', 'reserved')
+        AND status IN (${ACTIVE_STATUSES_SQL})
+        AND slot_key NOT LIKE '%:reminder:%'
+        AND (
+          status <> 'expired'
+          OR deadline_at > NOW() - INTERVAL '${EXPIRED_WINDOW_HOURS} hours'
+        )
       ORDER BY
         ${ACTIVE_STATUS_ORDER_SQL},
         deadline_at ASC NULLS LAST,
@@ -986,7 +999,12 @@ const createMysqlStore = (pool) => ({
       `SELECT *
        FROM dispatch_log
        WHERE admin_user_id = ?
-         AND status IN ('new', 'in_progress', 'reserved')
+         AND status IN (${ACTIVE_STATUSES_SQL})
+         AND slot_key NOT LIKE '%:reminder:%'
+         AND (
+           status <> 'expired'
+           OR deadline_at > NOW() - INTERVAL ${EXPIRED_WINDOW_HOURS} HOUR
+         )
        ORDER BY
          ${ACTIVE_STATUS_ORDER_SQL},
          (deadline_at IS NULL) ASC,

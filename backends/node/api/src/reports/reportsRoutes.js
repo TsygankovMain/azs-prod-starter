@@ -2052,6 +2052,18 @@ export const createReportsRouter = ({
 
       ensureCurrentUserOwnsReport({ req, report });
 
+      // Просроченный отчёт закрыт для сдачи: setReportStatus не обновляет строки
+      // со статусом 'expired', поэтому без этой проверки ответ был бы 200 с
+      // status 'done', хотя в базе отчёт остался бы несданным.
+      if (report.status === 'expired') {
+        return res.status(409).json({
+          error: 'report_expired',
+          errorCode: 'report_expired',
+          meta: { reportId, deadlineAt: report.deadlineAt || null },
+          message: 'Срок сдачи отчёта истёк — отчёт закрыт как несданный'
+        });
+      }
+
       // Important 1 (раунд правок 1): список обязательных фото — ЛОКАЛЬНО,
       // тем же путём, что и приём (см. resolveRequiredPhotoSlotLocally выше,
       // POST /:id/photo). Раньше здесь стоял readRequiredPhotos(), который
