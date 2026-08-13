@@ -136,6 +136,25 @@ const createPostgresStore = (pool) => {
       );
     },
 
+    /**
+     * Закрыть служебную строку напоминания после обработки.
+     *
+     * Строку нельзя удалять: она держит идемпотентность — reserve() по тому же
+     * slot_key должен не пройти, иначе напоминание уйдёт повторно. Поэтому
+     * переводим её в терминальный 'cancelled', чтобы она не висела в 'reserved'
+     * и не попадала ни в алерты, ни на экран оператора.
+     */
+    async markCancelled({ id }) {
+      if (!id) return;
+      await query(
+        `UPDATE dispatch_log
+         SET status = $1,
+             updated_at = NOW()
+         WHERE id = $2`,
+        ['cancelled', id]
+      );
+    },
+
     async appendErrorText({ id, reportId, errorText }) {
       const rowId = id ?? reportId;
       if (!rowId || !String(errorText || '').trim()) return;
@@ -251,6 +270,17 @@ const createMysqlStore = (pool) => {
              error_text = ?
          WHERE id = ?`,
         ['failed', trimErrorText(errorText), id]
+      );
+    },
+
+    /** См. комментарий в postgres-ветке: строка напоминания закрывается, а не удаляется. */
+    async markCancelled({ id }) {
+      if (!id) return;
+      await query(
+        `UPDATE dispatch_log
+         SET status = ?
+         WHERE id = ?`,
+        ['cancelled', id]
       );
     },
 

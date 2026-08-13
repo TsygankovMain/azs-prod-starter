@@ -481,12 +481,30 @@ export const createDispatchScheduler = ({
           }
         }
 
+        // Служебная строка напоминания закрывается в терминальный статус: без
+        // этого она навсегда оставалась в 'reserved'. Такие строки копились
+        // (336 на 70 АЗС за шесть дней), попадали оператору на экран вместо его
+        // отчёта и портили алерт «отчёты зависли в reserved». Удалять нельзя —
+        // строка держит идемпотентность reserve() по slot_key.
+        const closeReminderRow = async () => {
+          if (!dispatchLogStore || typeof dispatchLogStore.markCancelled !== 'function') return;
+          if (!reminderReserve?.id) return;
+          try {
+            await dispatchLogStore.markCancelled({ id: reminderReserve.id });
+          } catch (err) {
+            logger.warn('dispatchScheduler: reminder row close failed', {
+              id: row.id, rowId: reminderReserve.id, message: err.message
+            });
+          }
+        };
+
         // Сданный статус (done или submitted) → пропускаем напоминание
         const isSubmitted = reportStatus === 'done' || reportStatus === 'submitted';
         if (isSubmitted) {
           logger.info('dispatchScheduler: reminder skipped — report already submitted', {
             id: row.id, azsId: row.azs_id, planDate: row.plan_date, reportStatus
           });
+          await closeReminderRow();
           await dispatchPlanStore.markDispatched({ id: row.id, reportItemId: null });
           executed += 1; // считаем как обработанную (skipped)
           continue;
@@ -504,12 +522,22 @@ export const createDispatchScheduler = ({
               context
             });
           }
+          await closeReminderRow();
           await dispatchPlanStore.markDispatched({ id: row.id, reportItemId: null });
           executed += 1;
         } catch (err) {
           logger.warn('dispatchScheduler: reminder notify failed', {
             id: row.id, azsId: row.azs_id, message: err.message
           });
+          // Строку журнала тоже закрываем, но как failed с текстом ошибки:
+          // повторной отправки всё равно не будет (slot_key уже занят), а
+          // висящий 'reserved' был бы неотличим от настоящего зависшего отчёта.
+          if (dispatchLogStore && typeof dispatchLogStore.markFailed === 'function' && reminderReserve?.id) {
+            await dispatchLogStore.markFailed({
+              id: reminderReserve.id,
+              errorText: `reminder notify failed: ${err.message || String(err)}`
+            }).catch(() => {});
+          }
           await dispatchPlanStore.markFailed({ id: row.id, error: err.message || 'reminder notify failed' });
           failed += 1;
         }
