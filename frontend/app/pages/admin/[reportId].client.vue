@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { B24Frame } from '@bitrix24/b24jssdk'
 import { buildQueueSnapshot, buildUploadErrorEntry, buildUploadSuccessEntry, extractUploadHttpStatus } from '~/utils/diag/uploadDiag'
+import { isRetryableUploadIssue } from '~/utils/uploadRetry'
 // Fix round (ревью, BLOCKING 1): composables/diag/ — вложенная папка,
 // Nuxt авто-импортирует только верхний уровень app/composables/.
 import { useDiagCollector } from '~/composables/diag/useDiagCollector'
@@ -297,25 +298,11 @@ const resetUploadWorker = () => {
   uploadQueue.splice(0, uploadQueue.length)
 }
 
-const isRetryableUploadIssue = ({
-  errorCode,
-  message
-}: {
-  errorCode?: string
-  message?: string
-} = {}): boolean => {
-  if (String(errorCode || '').trim().toLowerCase() === 'bitrix_retryable') {
-    return true
-  }
-  return /(OPERATION_TIME_LIMIT|QUERY_LIMIT_EXCEEDED|HTTP 429|HTTP 504|too many requests|gateway timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|network error|timeout)/i
-    .test(String(message || ''))
-}
-
 const enableLowConcurrencyMode = () => {
   if (uploadWorker.maxConcurrency !== 1) {
     uploadWorker.maxConcurrency = 1
     uploadWorker.lowModeSuccessStreak = 0
-    saveSuccess.value = 'Включён бережный режим загрузки (x1) из-за временной перегрузки Bitrix24.'
+    saveSuccess.value = 'Включён бережный режим загрузки (x1): грузим по одному фото — так надёжнее при слабой связи.'
   }
 }
 
@@ -450,7 +437,8 @@ const runUploadTask = async (task: UploadTask) => {
       : ''
     const retryable = isRetryableUploadIssue({
       errorCode: responseData?.errorCode,
-      message: responseData?.message || responseData?.error
+      message: responseData?.message || responseData?.error,
+      error
     })
     const humanText = errorText(error, 'Не удалось загрузить фото')
     slot.error = `${humanText}${accessDetails}`

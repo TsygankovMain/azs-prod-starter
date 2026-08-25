@@ -11,7 +11,7 @@
     "preview": "nuxt preview",
     "lint": "eslint .",
     "lint:fix": "eslint --fix .",
-    "test:unit": "node --test \"app/utils/diag/**/*.test.ts\"",
+    "test:unit": "node --test \"app/utils/**/*.test.ts\"",
     "translate-ui": "tsx tools/translate.ui.ts"
   },
   "dependencies": {

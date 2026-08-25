@@ -318,7 +318,12 @@ export const useApiStore = defineStore(
     // a normal, retryable error — the existing catch block in runUploadTask
     // already flips the slot to 'error' and frees uploadWorker.activeCount via
     // its `finally`, so no other UI change is needed for the slot to recover.
-    const UPLOAD_TIMEOUT_MS = 55_000
+    // На части АЗС реальная отдача канала — 10–20 кбит/с (браузер при этом
+    // рапортует «4g, ~10 Мбит»). Фото весит около 100 КБ, то есть уходит
+    // 45–80 секунд: прежние 55 секунд обрывали такую загрузку гарантированно.
+    // Приём фото на сервере асинхронный и отвечает быстро, поэтому длинный
+    // таймаут ждёт именно передачу тела запроса, а не работу бэкенда.
+    const UPLOAD_TIMEOUT_MS = 120_000
 
     const uploadReportPhoto = async ({
       reportId,
@@ -335,7 +340,7 @@ export const useApiStore = defineStore(
 
       const controller = new AbortController()
       const timeoutId = setTimeout(() => {
-        controller.abort(new Error('Загрузка фото прервана: сервер не ответил вовремя. Попробуйте ещё раз.'))
+        controller.abort(new Error('Загрузка фото прервана: связь слишком медленная. Попробуйте ещё раз или подойдите ближе к точке уверенного приёма.'))
       }, UPLOAD_TIMEOUT_MS)
 
       try {
