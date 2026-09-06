@@ -4,7 +4,8 @@ import exifr from 'exifr';
 import { isSupportedPhotoUpload } from '../disk/diskService.js';
 import { buildPortalKey } from '../disk/folderIdCache.js';
 import { createRequiredPhotosCache } from './requiredPhotosCache.js';
-import { updateReportCrmItem } from './reportCrmSync.js';
+import { updateReportCrmItem, resolveReportStageId } from './reportCrmSync.js';
+import { syncReportToCrmIfComplete } from './photoPublishCompletion.js';
 import { createSettingsCache } from '../shared/settingsCache.js';
 import { generateDailyPlan } from '../dispatch/dispatchPlanGenerator.js';
 import { reissueToday } from './reissueTodayService.js';
@@ -715,12 +716,18 @@ export const resolveAdminCrmSyncContext = async ({ authContextStore, requestCont
 // обоснование, что и у updateReportCrmItem в reportCrmSync.js: getCrmItem
 // здесь — ЕЩЁ один реальный поход к Битриксу на каждый успешный sync,
 // который до этой правки тоже шёл мимо ограничителя.
-const verifyCrmFolderSync = async ({
+// BUG-8709: один чтение-запрос проверяет обе записи — и папку, и СТАДИЮ.
+// Раньше сверялась только папка, а стадия принималась на веру по коду ответа
+// crm.item.update. Битрикс на такой ответ полагаться не даёт: stageId вне
+// категории элемента (или закрытый правами) молча игнорируется, HTTP при этом
+// 200. Именно поэтому «перевод не сработал» не оставлял в логах ни строчки.
+const verifyCrmSync = async ({
   bitrixClient,
   settings,
   report,
   folderFieldCode,
   expectedFolderId,
+  expectedStageId = null,
   context = {},
   limiter = null
 }) => {
@@ -730,6 +737,23 @@ const verifyCrmFolderSync = async ({
     id: Number(report.reportItemId || 0),
     context
   });
+
+  // Стадию проверяем ПЕРВОЙ и отдельной ошибкой: она — то, по чему клиент
+  // строит отчётность, а папка — вспомогательная ссылка. Если упасть на
+  // папке раньше, реальная причина («стадия не переведена») никогда не
+  // доедет до текста ошибки в crm_sync_jobs.last_error.
+  if (expectedStageId) {
+    const syncedStageId = String(
+      syncedCrmItem?.stageId ?? syncedCrmItem?.STAGE_ID ?? syncedCrmItem?.stageID ?? ''
+    ).trim();
+    if (syncedStageId !== String(expectedStageId)) {
+      throw new ReportSyncError(
+        `Report CRM stage was not synced. Expected "${String(expectedStageId)}", got "${syncedStageId || '<empty>'}" (entityTypeId=${Number(settings.report?.entityTypeId || 0)}, itemId=${Number(report.reportItemId || 0)})`,
+        'report_stage_sync_failed'
+      );
+    }
+  }
+
   const syncedFolderId = String(getFieldValue(syncedCrmItem, folderFieldCode) ?? '').trim();
   if (syncedFolderId !== String(expectedFolderId)) {
     throw new ReportSyncError(
@@ -757,6 +781,22 @@ const syncReportCrmStrict = async ({
   logger = console,
   limiter = null
 }) => {
+  const expectedStageId = resolveReportStageId({ settings, status });
+
+  // BUG-8709: статус, для которого стадия не настроена, раньше уходил в
+  // Битрикс без stageId и без единого следа. Для 'cancelled'/'failed' стадии
+  // нет по замыслу, но 'done' без настроенной стадии — это ровно тот отказ,
+  // который приложение обязано кричать, а не проглатывать.
+  if (!expectedStageId && (status === 'done' || status === 'expired')) {
+    logger.error('crm_stage_not_configured', {
+      event: 'crm_stage_not_configured',
+      reportId: report?.id,
+      reportItemId: Number(report?.reportItemId || 0),
+      status,
+      message: `report.stages не содержит стадию для статуса "${status}" — карточка останется в прежней стадии`
+    });
+  }
+
   await updateReportCrmItem({
     bitrixClient,
     settings,
@@ -770,13 +810,14 @@ const syncReportCrmStrict = async ({
     limiter
   });
 
-  await verifyCrmFolderSync({
+  await verifyCrmSync({
     bitrixClient,
     settings,
     report,
     folderFieldCode,
     limiter,
     expectedFolderId: diskFolderId,
+    expectedStageId,
     context
   });
 };
@@ -924,7 +965,11 @@ export const buildCrmSyncRunner = ({
     diskFolderId,
     folderFieldCode,
     context,
-    limiter
+    limiter,
+    // BUG-8709: раньше logger сюда не доезжал, и весь диагностический вывод
+    // синка (в т.ч. новый crm_stage_not_configured) уходил в console мимо
+    // логгера воркера.
+    logger
   });
   };
 };
@@ -2158,12 +2203,48 @@ export const createReportsRouter = ({
         status: 'done'
       });
 
-      // CRM-синк здесь БОЛЬШЕ НЕ ставится. Перевод отчёта в CRM — отдельный
-      // факт с отдельным моментом: он произойдёт, когда ВСЕ обязательные фото
-      // будут реально ОПУБЛИКОВАНЫ (см. photoPublishCompletion.js,
-      // syncReportToCrmIfComplete — её вызывает воркер публикации после
-      // каждого успешного markPublished). Путать сдачу смены и публикацию в
-      // CRM — ровно то, что сломало Task 5.
+      // BUG-8709. Прямой вызов updateReportCrmItem здесь по-прежнему
+      // запрещён (путать сдачу смены и публикацию фото — то, что сломало
+      // Task 5), но ПРОВЕРКУ КОМПЛЕКТА позвать обязаны именно отсюда.
+      //
+      // Публикация фото почти всегда заканчивается РАНЬШЕ, чем оператор жмёт
+      // «сдать» (на проде — 1326 задач из 1464 поставлены до сдачи). Значит
+      // «все обязательные фото опубликованы» уже случилось, и события,
+      // которое позвало бы проверку ещё раз, БОЛЬШЕ НЕ БУДЕТ: публиковать
+      // нечего. Карточка навсегда оставалась в стадии «в работе», хотя смена
+      // сдана. Смена статуса отчёта — это второй, равноправный триггер
+      // перевода стадии, и он живёт здесь.
+      //
+      // Условия перевода при этом НЕ ослабляются: сама
+      // syncReportToCrmIfComplete по-прежнему ставит задачу, только если все
+      // обязательные фото реально опубликованы. Если публикация ещё идёт —
+      // проверка вернёт 'incomplete', а задачу поставит воркер публикации,
+      // когда доедет последний файл (и увидит уже статус 'done').
+      //
+      // Best-effort: сдача смены уже состоялась (setReportStatus выше), сбой
+      // постановки задачи не имеет права превратить её в ошибку оператору.
+      try {
+        const syncResult = await syncReportToCrmIfComplete({
+          reportId,
+          reportsStore,
+          photoQueueStore,
+          crmSyncJobStore,
+          context: req.bitrixContext || {}
+        });
+        if (!syncResult?.synced) {
+          console.log('report_submit_crm_sync_deferred', {
+            reportId,
+            reason: syncResult?.reason || 'unknown',
+            missingCodes: syncResult?.missingCodes || undefined
+          });
+        }
+      } catch (syncError) {
+        console.error('report_submit_crm_sync_enqueue_failed', {
+          reportId,
+          message: String(syncError?.message || syncError || '')
+        });
+      }
+
       //
       // Уведомление проверяющего — необязательный побочный эффект, не
       // условие сдачи. settingsStore.read() (единственное оставшееся место в

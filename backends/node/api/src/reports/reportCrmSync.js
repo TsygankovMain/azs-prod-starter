@@ -1,3 +1,27 @@
+/**
+ * Единственное место, где локальный статус отчёта (dispatch_log.status)
+ * превращается в идентификатор стадии смарт-процесса. Вынесено из
+ * buildReportCrmUpdateFields, потому что тем же соответствием обязана
+ * пользоваться ПРОВЕРКА записи (verifyCrmStageSync в reportsRoutes.js):
+ * иначе «какую стадию ждали» и «какую записали» считались бы по двум разным
+ * копиям одной таблицы и разъехались бы при первой же правке.
+ *
+ * Возвращает null, если для статуса стадия не настроена ('cancelled',
+ * 'failed' — у них стадии нет по замыслу) или маппинг вообще пуст.
+ */
+export const resolveReportStageId = ({ settings, status }) => {
+  const stages = settings?.report?.stages || {};
+  const stageId = {
+    new: stages.new,
+    in_progress: stages.inProgress,
+    done: stages.done,
+    expired: stages.expired,
+    rejected: stages.rejected
+  }[status];
+  const normalized = String(stageId ?? '').trim();
+  return normalized || null;
+};
+
 export const buildReportCrmUpdateFields = ({
   settings,
   status,
@@ -9,16 +33,9 @@ export const buildReportCrmUpdateFields = ({
 }) => {
   const reportSettings = settings?.report || {};
   const fieldsMap = reportSettings.fields || {};
-  const stages = reportSettings.stages || {};
   const fields = {};
 
-  const stageId = {
-    new: stages.new,
-    in_progress: stages.inProgress,
-    done: stages.done,
-    expired: stages.expired,
-    rejected: stages.rejected
-  }[status];
+  const stageId = resolveReportStageId({ settings, status });
 
   if (stageId) {
     fields.stageId = stageId;

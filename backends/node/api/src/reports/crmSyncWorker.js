@@ -66,6 +66,18 @@ export const createCrmSyncWorker = ({
         nextAttemptAt: new Date(now() + wait),
         error: errorMsg,
       });
+      // BUG-8709: промежуточная неудача раньше оседала только в колонке
+      // last_error, то есть была видна лишь тому, кто заранее знал, куда
+      // смотреть в БД. Отказ Битрикса обязан быть в логе с текстом — warn,
+      // а не error: попытки ещё есть, будить дежурного рано.
+      logger.warn('crm_sync_job_retry', {
+        jobId: job.id,
+        reportId: job.report_id,
+        attempt: attempts + 1,
+        maxAttempts,
+        retryInMs: wait,
+        message: errorMsg,
+      });
     } else {
       await store.markFailed({ id: job.id, error: errorMsg });
       logger.error('crm_sync_job_failed', {

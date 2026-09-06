@@ -24,12 +24,45 @@
 // если для отчёта уже есть хотя бы одна поставленная задача, повторный вызов
 // этой проверки (например, если её дёрнут дважды подряд для одного и того же
 // уже полного комплекта) не создаёт вторую.
+//
+// BUG-8709 (сентябрь 2026). Раньше эта проверка была ЕДИНСТВЕННЫМ триггером
+// перевода карточки в CRM, и её идемпотентность звучала как «для отчёта уже
+// есть задача с непустой папкой — значит уже синкнуто». Оба утверждения по
+// отдельности верны, вместе — теряют сдачу смены:
+//
+//   T+0  воркер публикует последнее обязательное фото -> эта проверка ->
+//        задача поставлена. report.status ещё 'in_progress' (оператор жмёт
+//        «сдать» на секунду-две позже), buildCrmSyncRunner читает статус в
+//        момент выполнения и пишет стадию «в работе» — корректно на тот миг;
+//   T+2  POST /:id/submit ставит dispatch_log.status='done' и НИЧЕГО не
+//        ставит в очередь (так задумано Task 8);
+//   ...  публиковать больше нечего -> этой проверки больше никто не позовёт,
+//        а если бы и позвал — «задача с папкой уже есть» вернуло бы
+//        already_queued.
+//
+// Итог: карточка навсегда остаётся в DT1116_44:PREPARATION при сданном
+// отчёте. На проде так залипло 212 из 276 сентябрьских сдач и 960 из 1301
+// августовских (1326 из 1464 задач поставлены РАНЬШЕ момента сдачи).
+//
+// Чинится двумя половинами, обе обязательны:
+//   1) /:id/submit теперь тоже зовёт эту проверку (второй триггер — «статус
+//      отчёта изменился», в дополнение к «фото доехали»);
+//   2) идемпотентность здесь считается ПО СТАТУСУ, ради которого задача
+//      ставилась (payload.triggerStatus): задача, поставленная под
+//      'in_progress', больше не считается закрывающей потребность в задаче
+//      под 'done'.
+//
+// payload.status здесь по-прежнему НЕ проставляется намеренно:
+// buildCrmSyncRunner читает dispatch_log.status заново в момент выполнения,
+// и это точнее, чем заморозка. triggerStatus — служебное поле ТОЛЬКО для
+// дедупликации, стадию по нему никто не пишет.
 export const syncReportToCrmIfComplete = async ({
   reportId,
   reportsStore,
   photoQueueStore,
   crmSyncJobStore,
-  context = {}
+  context = {},
+  logger = console
 }) => {
   if (!reportId) {
     throw new Error('reportId is required');
@@ -117,16 +150,37 @@ export const syncReportToCrmIfComplete = async ({
   // несёт непустой diskFolderId — она либо уже записала ссылку, либо вот-вот
   // запишет свежую (buildCrmSyncRunner теперь тоже пересчитывает его из
   // свежих photos на момент выполнения, а не берёт замороженный payload).
+  // BUG-8709: дедупликация — по СТАТУСУ, ради которого задача ставилась, а не
+  // по факту «задача с папкой есть». Статус берётся свежим прямо здесь: эту
+  // функцию зовут из двух мест (завершение публикации и /:id/submit), и в
+  // каждом он свой.
+  const report = typeof reportsStore.getById === 'function'
+    ? await reportsStore.getById(reportId)
+    : null;
+  const triggerStatus = String(report?.status ?? '').trim() || null;
+
   const existingJobs = await crmSyncJobStore.listByReport(reportId);
-  const hasJobWithFolder = existingJobs.some((job) => {
+  const hasJobForStatus = existingJobs.some((job) => {
     try {
       const payload = typeof job.payload === 'string' ? JSON.parse(job.payload || '{}') : (job.payload || {});
-      return Boolean(payload?.diskFolderId);
+      // Задача без настоящей папки не закрывает потребность ни при каком
+      // статусе (Important 2, ревью Task 8 — ручной /resync до публикации).
+      if (!payload?.diskFolderId) return false;
+      // Статус отчёта неизвестен (стор без getById — только в тестах/заглушках):
+      // ведём себя как раньше, любая задача с папкой блокирует. Хуже, чем
+      // сверка по статусу, но не хуже прежнего поведения.
+      if (!triggerStatus) return true;
+      const jobStatus = String(payload.triggerStatus ?? payload.status ?? '').trim();
+      // Задачи, поставленные до этой правки, triggerStatus не несут. Считать их
+      // закрывающими нельзя — именно они и залипли в «в работе»: пусть новый
+      // статус породит новую задачу.
+      if (!jobStatus) return false;
+      return jobStatus === triggerStatus;
     } catch {
       return false;
     }
   });
-  if (hasJobWithFolder) {
+  if (hasJobForStatus) {
     return { synced: false, reason: 'already_queued' };
   }
 
@@ -142,6 +196,7 @@ export const syncReportToCrmIfComplete = async ({
   await crmSyncJobStore.enqueue({
     reportId,
     payload: {
+      triggerStatus,
       diskFolderId,
       contextKey: context?.key || '',
       domain: context?.domain || '',
@@ -149,7 +204,19 @@ export const syncReportToCrmIfComplete = async ({
     }
   });
 
-  return { synced: true };
+  // Постановка задачи на перевод стадии — событие, которое обязано быть видно
+  // в логах: именно её отсутствие полгода никто не замечал (BUG-8709).
+  if (typeof logger?.log === 'function') {
+    logger.log(JSON.stringify({
+      event: 'report_crm_stage_sync_queued',
+      reportId,
+      triggerStatus,
+      diskFolderId,
+      requiredCount: requiredCodes.length
+    }));
+  }
+
+  return { synced: true, triggerStatus };
 };
 
 export default syncReportToCrmIfComplete;

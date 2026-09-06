@@ -183,10 +183,13 @@ test('submit проставляет operator_completed_at и возвращае�
     },
     authContextStore: makeAuthContextStore(),
     crmSyncJobStore,
-    // Task 11: photoQueueStore теперь обязательный параметр конструктора
-    // роутера (см. reportsRoutes.js) — POST /:id/submit его не трогает,
-    // поэтому нужна только валидная форма, а не рабочая реализация.
-    photoQueueStore: { async accept() {} }
+    // Task 11: photoQueueStore — обязательный параметр конструктора роутера.
+    // BUG-8709: /:id/submit теперь ЗОВЁТ проверку комплекта
+    // (syncReportToCrmIfComplete), поэтому нужна и listPhotoStates. Пустой
+    // список = ни одно фото ещё не опубликовано -> проверка вернёт
+    // 'incomplete' и задачу не поставит; enqueue ниже по-прежнему обязан
+    // остаться невызванным.
+    photoQueueStore: { async accept() {}, async listPhotoStates() { return []; } }
   });
 
   const handler = findHandler(router, 'post', '/:id/submit');
@@ -242,10 +245,13 @@ test('дедлайн считается по operator_completed_at, а не по
     authContextStore: makeAuthContextStore(),
     crmSyncJobStore,
     now: () => operatorCompletedAt,
-    // Task 11: photoQueueStore теперь обязательный параметр конструктора
-    // роутера (см. reportsRoutes.js) — POST /:id/submit его не трогает,
-    // поэтому нужна только валидная форма, а не рабочая реализация.
-    photoQueueStore: { async accept() {} }
+    // Task 11: photoQueueStore — обязательный параметр конструктора роутера.
+    // BUG-8709: /:id/submit теперь ЗОВЁТ проверку комплекта
+    // (syncReportToCrmIfComplete), поэтому нужна и listPhotoStates. Пустой
+    // список = ни одно фото ещё не опубликовано -> проверка вернёт
+    // 'incomplete' и задачу не поставит; enqueue ниже по-прежнему обязан
+    // остаться невызванным.
+    photoQueueStore: { async accept() {}, async listPhotoStates() { return []; } }
   });
 
   const handler = findHandler(router, 'post', '/:id/submit');
@@ -304,10 +310,13 @@ test('Important 1: список обязательных фото неизвес
       },
       authContextStore: makeAuthContextStore(),
       crmSyncJobStore,
-      // Task 11: photoQueueStore теперь обязательный параметр конструктора
-      // роутера (см. reportsRoutes.js) — POST /:id/submit его не трогает,
-      // поэтому нужна только валидная форма, а не рабочая реализация.
-      photoQueueStore: { async accept() {} }
+      // Task 11: photoQueueStore — обязательный параметр конструктора роутера.
+      // BUG-8709: /:id/submit теперь ЗОВЁТ проверку комплекта
+      // (syncReportToCrmIfComplete), поэтому нужна и listPhotoStates. Пустой
+      // список = ни одно фото ещё не опубликовано -> проверка вернёт
+      // 'incomplete' и задачу не поставит; enqueue ниже по-прежнему обязан
+      // остаться невызванным.
+      photoQueueStore: { async accept() {}, async listPhotoStates() { return []; } }
     });
 
     const handler = findHandler(router, 'post', '/:id/submit');
