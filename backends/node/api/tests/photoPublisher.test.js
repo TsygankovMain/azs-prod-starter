@@ -441,3 +441,223 @@ test('publishOne принимает snake_case-строку ровно в фор
   assert.equal(result.diskObjectId, 5001);
   assert.match(result.fileName, /\.jpg$/);
 });
+
+// ---------------------------------------------------------------------------
+// BUG-8733: настоящее имя АЗС и настоящее название категории в имени файла.
+//
+// До правки publishOne читал azsName/requiredTitle ТОЛЬКО из task, а очередь
+// публикации их не несёт (claimBatch отдаёт id/report_id/photo_code/exif_at/
+// slot_verified/байты) и никто в src/ их туда не клал — значит оба поля были
+// всегда пустыми, и в проде срабатывали запасные варианты: id элемента
+// смарт-процесса вместо номера станции (104 вместо 486) и «Фото_70» вместо
+// названия категории. Наблюдалось на живом файле от 06.09.2026:
+// «104_2026-09-06_0750_Фото_70.jpg».
+//
+// Фикстуры ниже — с боевого портала ОРТК: элемент 104 реестра АЗС
+// (entityTypeId=1054) озаглавлен «486», карточка 70 справочника типов фото
+// (entityTypeId=1112) — «35. Доска визуального управления», элемент 162 —
+// «АЗС 33249» (единственная запись парка с приставкой в заголовке).
+// ---------------------------------------------------------------------------
+
+const NAMING_SETTINGS = {
+  azs: { entityTypeId: 1054 },
+  photoType: { entityTypeId: 1112 },
+  disk: { rootFolderId: 100, folderNameTemplate: '{yyyy-mm}/{dd}/{azs}_{azs_name}' }
+};
+
+const namingSettingsStore = { async read() { return NAMING_SETTINGS; } };
+
+const namingReportsStore = {
+  async getById(id) {
+    return { id: Number(id), azsId: '104', slotKey: '2026-09-06:0750' };
+  }
+};
+
+const namingTask = () => ({
+  reportId: 1,
+  photoCode: '70',
+  content: Buffer.from('fake-bytes'),
+  mimeType: 'image/jpeg',
+  originalName: 'photo.jpg'
+});
+
+// Портал ОБЯЗАН быть опознан (memberId/domain), иначе кэш имён намеренно
+// вырождается в отсутствие кэширования — см. buildPortalKey в folderIdCache.js.
+const namingContext = () => ({ memberId: 'member-ortk', domain: 'ortk.bitrix24.ru' });
+
+const makeFakeBitrixClient = ({ diskApi, titles = {}, throwOnCrm = null }) => {
+  const crmCalls = [];
+  return {
+    diskApi,
+    crmCalls,
+    async getCrmItem({ entityTypeId, id }) {
+      crmCalls.push({ entityTypeId, id });
+      if (throwOnCrm) throw throwOnCrm();
+      const title = titles[`${entityTypeId}:${id}`];
+      return title === undefined ? null : { id, title };
+    }
+  };
+};
+
+const folderSegments = (diskApi) => diskApi.calls
+  .filter((call) => call.method === 'createFolder')
+  .map((call) => call.name);
+
+const uploadedFileName = (diskApi) => diskApi.calls.find((call) => call.method === 'uploadFile')?.fileName;
+
+test('BUG-8733: имя файла берёт НОМЕР АЗС из реестра и НАЗВАНИЕ категории из справочника, а не id и «Фото_N»', async () => {
+  const diskApi = makeFakeDiskApi();
+  const bitrixClient = makeFakeBitrixClient({
+    diskApi,
+    titles: { '1054:104': '486', '1112:70': '35. Доска визуального управления' }
+  });
+
+  const publisher = createPhotoPublisher({
+    bitrixClient,
+    settingsStore: namingSettingsStore,
+    reportsStore: namingReportsStore,
+    limiter: makeFakeLimiter(),
+    resolveContext: namingContext
+  });
+
+  const result = await publisher.publishOne(namingTask());
+
+  assert.equal(
+    result.fileName,
+    '486_2026-09-06_0750_Доска_визуального_управления.jpg',
+    'ровно то имя, которое просил клиент: [Код_АЗС]_[Дата]_[Время]_[Категория]'
+  );
+  assert.equal(uploadedFileName(diskApi), result.fileName, 'на Диск обязано уехать то же имя, что вернулось наружу');
+  assert.deepEqual(
+    folderSegments(diskApi),
+    ['2026-09', '06', '104_486'],
+    'сегмент {azs_name} в пути папки тоже обязан стать номером станции, а не запасным AZS_<id>'
+  );
+});
+
+test('BUG-8733: недоступный справочник НЕ роняет публикацию — имя откатывается к прежнему запасному варианту', async () => {
+  const diskApi = makeFakeDiskApi();
+  const bitrixClient = makeFakeBitrixClient({
+    diskApi,
+    throwOnCrm: () => new Error('Bitrix REST crm.item.get error: QUERY_LIMIT_EXCEEDED Too many requests')
+  });
+  // logger подменён: отказ обязан ОСТАВИТЬ СЛЕД, а не пройти молча, но и не
+  // засорять вывод теста.
+  const warnings = [];
+  const logger = { warn: (message, meta) => warnings.push({ message, meta }), error() {}, info() {}, debug() {} };
+
+  const publisher = createPhotoPublisher({
+    bitrixClient,
+    settingsStore: namingSettingsStore,
+    reportsStore: namingReportsStore,
+    limiter: makeFakeLimiter(),
+    resolveContext: namingContext,
+    logger
+  });
+
+  const result = await publisher.publishOne(namingTask());
+
+  assert.equal(
+    result.fileName,
+    '104_2026-09-06_0750_Фото_70.jpg',
+    'ровно прежнее поведение: id элемента и «Фото_<photoCode>» — сдача отчёта важнее красивого имени'
+  );
+  assert.deepEqual(folderSegments(diskApi), ['2026-09', '06', '104_AZS_104']);
+  assert.equal(warnings.length, 2, 'оба отказа справочника (АЗС и тип фото) обязаны попасть в лог');
+  assert.ok(warnings.some((entry) => entry.meta?.event === 'photo_naming_azs_lookup_failed'));
+  assert.ok(warnings.some((entry) => entry.meta?.event === 'photo_naming_type_lookup_failed'));
+});
+
+test('BUG-8733: приставка «АЗС » в заголовке карточки срезается — в имени остаётся только код станции', async () => {
+  const diskApi = makeFakeDiskApi();
+  const bitrixClient = makeFakeBitrixClient({
+    diskApi,
+    titles: { '1054:162': 'АЗС 33249', '1112:70': '35. Доска визуального управления' }
+  });
+
+  const publisher = createPhotoPublisher({
+    bitrixClient,
+    settingsStore: namingSettingsStore,
+    reportsStore: { async getById(id) { return { id: Number(id), azsId: '162', slotKey: '2026-09-06:0750' }; } },
+    limiter: makeFakeLimiter(),
+    resolveContext: namingContext
+  });
+
+  const result = await publisher.publishOne(namingTask());
+
+  assert.ok(result.fileName.startsWith('33249_'), `ожидали «33249_...», получили «${result.fileName}»`);
+  assert.deepEqual(folderSegments(diskApi), ['2026-09', '06', '162_33249']);
+});
+
+test('BUG-8733: тип фото, которого нет в справочнике, оставляет прежнюю категорию «Фото_N» и не мешает остальному имени', async () => {
+  const diskApi = makeFakeDiskApi();
+  // Карточка АЗС есть, карточки типа 70 — нет (getCrmItem вернёт null).
+  const bitrixClient = makeFakeBitrixClient({ diskApi, titles: { '1054:104': '486' } });
+
+  const publisher = createPhotoPublisher({
+    bitrixClient,
+    settingsStore: namingSettingsStore,
+    reportsStore: namingReportsStore,
+    limiter: makeFakeLimiter(),
+    resolveContext: namingContext
+  });
+
+  const result = await publisher.publishOne(namingTask());
+
+  assert.equal(
+    result.fileName,
+    '486_2026-09-06_0750_Фото_70.jpg',
+    'номер станции уже настоящий, категория — запасная: частичный отказ справочника не обесценивает то, что удалось узнать'
+  );
+});
+
+test('BUG-8733: имена справочников кэшируются — вторая публикация не ходит в Битрикс повторно', async () => {
+  const diskApi = makeFakeDiskApi();
+  const bitrixClient = makeFakeBitrixClient({
+    diskApi,
+    titles: { '1054:104': '486', '1112:70': '35. Доска визуального управления' }
+  });
+
+  const publisher = createPhotoPublisher({
+    bitrixClient,
+    settingsStore: namingSettingsStore,
+    reportsStore: namingReportsStore,
+    limiter: makeFakeLimiter(),
+    resolveContext: namingContext
+  });
+
+  const first = await publisher.publishOne(namingTask());
+  const second = await publisher.publishOne(namingTask());
+
+  assert.equal(first.fileName, second.fileName);
+  assert.deepEqual(
+    bitrixClient.crmCalls,
+    [{ entityTypeId: 1054, id: 104 }, { entityTypeId: 1112, id: 70 }],
+    'ровно два crm.item.get на две публикации: без кэша их было бы четыре, а на смене из 40 фото — восемьдесят'
+  );
+});
+
+test('BUG-8733: обращения к справочнику тоже оплачиваются токеном ограничителя темпа', async () => {
+  const diskApi = makeFakeDiskApi();
+  const limiter = makeFakeLimiter();
+  const bitrixClient = makeFakeBitrixClient({
+    diskApi,
+    titles: { '1054:104': '486', '1112:70': '35. Доска визуального управления' }
+  });
+
+  const publisher = createPhotoPublisher({
+    bitrixClient,
+    settingsStore: namingSettingsStore,
+    reportsStore: namingReportsStore,
+    limiter,
+    resolveContext: namingContext
+  });
+
+  await publisher.publishOne(namingTask());
+
+  assert.equal(
+    limiter.acquired,
+    diskApi.calls.length + bitrixClient.crmCalls.length,
+    'КАЖДОЕ обращение к порталу — и Диск, и crm.item.get — обязано быть предварено acquire()'
+  );
+});

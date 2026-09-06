@@ -82,6 +82,7 @@ export const classifyPublishError = (error) => {
 
 import { ensureRootFolder, uploadPhoto } from '../disk/diskService.js';
 import { createSettingsCache } from '../shared/settingsCache.js';
+import { createPhotoNamingResolver } from './photoNamingResolver.js';
 
 class ReportSlotKeyError extends Error {
   constructor(slotKey) {
@@ -208,6 +209,9 @@ const DEFAULT_SETTINGS_CACHE_TTL_MS = (() => {
  * @param {Function} [deps.resolveContext] — (task) => Promise<bitrixContext> | bitrixContext; по умолчанию {}
  * @param {number} [deps.settingsCacheTtlMs] — TTL кэша settingsStore.read(); см. createSettingsCache выше
  * @param {Function} [deps.now] — инжектируемые часы для теста TTL кэша настроек; по умолчанию Date.now
+ * @param {object} [deps.namingResolver] — createPhotoNamingResolver(...) из photoNamingResolver.js;
+ *   не передан -> собирается здесь же, ОДИН на publisher (то есть один на процесс, см. server.js)
+ * @param {object} [deps.logger] — куда пишутся дедуплицированные отказы справочника имён
  */
 export const createPhotoPublisher = ({
   bitrixClient,
@@ -218,7 +222,9 @@ export const createPhotoPublisher = ({
   limiter,
   resolveContext = () => ({}),
   settingsCacheTtlMs = DEFAULT_SETTINGS_CACHE_TTL_MS,
-  now = () => Date.now()
+  now = () => Date.now(),
+  namingResolver = null,
+  logger = console
 } = {}) => {
   if (!bitrixClient || !bitrixClient.diskApi) {
     throw new Error('bitrixClient with diskApi is required');
@@ -237,6 +243,23 @@ export const createPhotoPublisher = ({
   // между всеми воркерами уже на уровне лимитера, см. rateLimiter.js).
   const rateLimitedDiskApi = wrapDiskApiWithLimiter(bitrixClient.diskApi, limiter);
   const settingsCache = createSettingsCache({ settingsStore, ttlMs: settingsCacheTtlMs, now });
+
+  // BUG-8733. Резолвер человекочитаемых имён (номер АЗС и название категории
+  // фото) — ОДИН инстанс на publisher, а значит один на процесс: publisher
+  // собирается ровно один раз в server.js, а PHOTO_PUBLISH_WORKERS воркеров
+  // пользуются одним и тем же publishOne. Пересоздание резолвера на каждый
+  // publishOne сделало бы его кэш всегда пустым и бессмысленным — та же
+  // ошибка, от которой отдельно предостерегает проводка folderIdCache в
+  // server.js. Свой limiter резолвер берёт тот же общий (каждый его поход в
+  // Битрикс оплачивается токеном), а часы (now) — те же инжектируемые, что и
+  // у кэша настроек, чтобы TTL обоих кэшей был проверяем одним фейковым
+  // временем.
+  const naming = namingResolver || createPhotoNamingResolver({
+    bitrixClient,
+    limiter,
+    now,
+    logger
+  });
 
   const publishOne = async (task = {}) => {
     const reportId = firstDefined(task.reportId, task.report_id);
@@ -271,14 +294,38 @@ export const createPhotoPublisher = ({
       }
     }
 
-    const azsName = firstDefined(task.azsName, task.azs_name) || '';
-    const requiredTitle = firstDefined(task.requiredTitle, task.required_title) || '';
-
     const context = (await resolveContext(task)) || {};
     // Раунд правок 1: settingsStore.read() кэшируется с TTL — прод-стор ходит
     // в Bitrix (см. createSettingsCache выше). Не вызывать settingsStore.read()
     // напрямую здесь.
     const settings = await settingsCache.read();
+
+    // BUG-8733. Имя АЗС и название категории фото. Задача из очереди их не
+    // несёт (claimBatch отдаёт только id/report_id/photo_code/exif_at/
+    // slot_verified/байты) — поля task.azsName/task.requiredTitle остаются
+    // ради вызывающих, которые могут передать готовые значения (и ради
+    // тестов), но в проде оба всегда пусты, и настоящий источник — реестр
+    // АЗС и справочник типов фото в Битриксе через кэширующий резолвер.
+    //
+    // ПУСТАЯ СТРОКА — ШТАТНЫЙ ИСХОД, а не ошибка: справочник не настроен,
+    // портал не ответил, карточку удалили. Тогда buildPhotoFileName и
+    // buildFolderPath (diskService.js) сами вернутся к прежним запасным
+    // вариантам — id элемента и «Фото_N». Публикация от этого не страдает:
+    // сдача отчёта важнее красивого имени.
+    //
+    // Оба резолва параллельно: они независимы, а общий ограничитель темпа
+    // всё равно сериализует реальные обращения к порталу между собой.
+    const [resolvedAzsName, resolvedRequiredTitle] = await Promise.all([
+      hasValue(firstDefined(task.azsName, task.azs_name))
+        ? String(firstDefined(task.azsName, task.azs_name)).trim()
+        : naming.resolveAzsName({ settings, azsId, context }),
+      hasValue(firstDefined(task.requiredTitle, task.required_title))
+        ? String(firstDefined(task.requiredTitle, task.required_title)).trim()
+        : naming.resolvePhotoTypeTitle({ settings, photoCode, context })
+    ]);
+
+    const azsName = resolvedAzsName || '';
+    const requiredTitle = resolvedRequiredTitle || '';
 
     // Учёт папки бренда — та же логика, что была в обработчике: если АЗС
     // принадлежит бренду с настроенной папкой на Диске, она становится корнем
