@@ -774,6 +774,28 @@ export const createBitrixRestClient = ({
           const retried = await fetchInfo(refreshedContext);
           resp = await fetchWithDownloadTimeout(retried.url);
           name = retried.name;
+        } else if (resp.status === 403) {
+          // 403 от файлового сервера — это ПРОТУХШАЯ подписанная DOWNLOAD_URL, а
+          // не отказ в доступе: будь дело в токене, пришла бы 401. Ссылку выдаёт
+          // disk.file.get, живёт она недолго, а между выдачей и скачиванием у нас
+          // стоят лимитер и очередь фото — на отчёте в два десятка снимков зазор
+          // дорастает до времени жизни ссылки, и файл, который лежит на месте и
+          // доступен, отдаёт 403.
+          //
+          // Лечим тем же приёмом, что и 401 выше, но БЕЗ refreshAccessToken:
+          // токен жив, обновлять нечего. Повтор ровно один — если 403 придёт и по
+          // свежей ссылке, это настоящий отказ в доступе, и он обязан долететь до
+          // вызывающего, а не крутиться в цикле.
+          //
+          // Без этой ветки отчёт 60186 (07.09.2026) с 23 уже загруженными фото
+          // молча не доехал до карточки CRM: crm_sync_jobs упала при attempts=0,
+          // потому что 403 не входит в RETRYABLE_TRANSIENT_ERROR_PATTERN, по
+          // которому server.js решает, повторять ли задачу. Чинить надо здесь, а
+          // не в паттерне: тот общий для ВСЕХ вызовов Битрикса, и «403 = повторяй»
+          // в нём превратило бы честное «нет прав» в четыре бессмысленные попытки.
+          const retried = await fetchInfo(context);
+          resp = await fetchWithDownloadTimeout(retried.url);
+          name = retried.name;
         }
 
         if (!resp.ok) throw new Error(`Disk download failed HTTP ${resp.status}`);
