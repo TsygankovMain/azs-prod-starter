@@ -362,9 +362,14 @@ onMounted(async () => {
       return
     }
 
-    // IMMOBILE_CONTEXT_MENU placement: always open the reviewer dashboard.
+    // IMMOBILE_CONTEXT_MENU placement: дашборд проверяющего — только тем, у кого
+    // есть на него права. Кнопка «Порядок на АЗС» видна в чатах всем, и админы
+    // станций жмут её, чтобы сдать отчёт; без этой проверки они попадали на
+    // /reviewer и видели «Доступ запрещён» (АЗС 488, 22.09.2026). Остальные
+    // идут обычным путём ниже — к своему активному отчёту.
     const placementTitle = String(($b24 as any)?.placement?.title || route.query.PLACEMENT || '').trim()
-    if (placementTitle === 'IMMOBILE_CONTEXT_MENU') {
+    const canOpenReviewer = currentCapabilities.value.reviewer || currentCapabilities.value.settings
+    if (placementTitle === 'IMMOBILE_CONTEXT_MENU' && canOpenReviewer) {
       await navigateTo('/reviewer')
       return
     }
