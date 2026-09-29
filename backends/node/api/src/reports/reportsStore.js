@@ -1,3 +1,8 @@
+// Служебные строки напоминаний режима B (slot_key вида '%:reminder:%') живут в
+// dispatch_log только ради идемпотентности reserve(): карточки и отчёта у них
+// нет. В списках и сводке их считать нельзя — иначе АЗС в отчётах вдвое больше.
+const NOT_REMINDER_SQL = `slot_key NOT LIKE '%:reminder:%'`;
+
 const isMysql = (dbType) => String(dbType || '').toLowerCase() === 'mysql';
 
 // ---------------------------------------------------------------------------
@@ -279,7 +284,7 @@ const createPostgresStore = (pool) => ({
   },
 
   async list({ dateFrom, dateTo, status, azsId, azsIds = [], limit = 200 } = {}) {
-    const where = [];
+    const where = [NOT_REMINDER_SQL];
     const params = [];
     let idx = 1;
 
@@ -481,7 +486,7 @@ const createPostgresStore = (pool) => ({
   },
 
   async getSummary({ dateFrom, dateTo, azsId, azsIds = [], now = new Date() } = {}) {
-    const where = [];
+    const where = [NOT_REMINDER_SQL];
     const params = [];
     let idx = 1;
 
@@ -522,7 +527,8 @@ const createPostgresStore = (pool) => ({
     let total = 0;
     for (const row of statusResult.rows) {
       byStatus[row.status] = Number(row.count);
-      total += Number(row.count);
+      // Задание, снятое перевыпуском, заменено новым — в итог не входит.
+      if (row.status !== 'cancelled') total += Number(row.count);
     }
 
     const overdueWhere = [...where, `deadline_at IS NOT NULL`, `deadline_at < $${idx}`, `status NOT IN ('done', 'expired', 'cancelled')`];
@@ -933,7 +939,7 @@ const createMysqlStore = (pool) => ({
   },
 
   async list({ dateFrom, dateTo, status, azsId, azsIds = [], limit = 200 } = {}) {
-    const where = [];
+    const where = [NOT_REMINDER_SQL];
     const params = [];
 
     // BUG-014 fix: filter by updated_at (last status-change time) instead of
@@ -1142,7 +1148,7 @@ const createMysqlStore = (pool) => ({
   },
 
   async getSummary({ dateFrom, dateTo, azsId, azsIds = [], now = new Date() } = {}) {
-    const where = [];
+    const where = [NOT_REMINDER_SQL];
     const params = [];
 
     if (dateFrom) {
@@ -1178,7 +1184,8 @@ const createMysqlStore = (pool) => ({
     let total = 0;
     for (const row of statusRows) {
       byStatus[row.status] = Number(row.count);
-      total += Number(row.count);
+      // Задание, снятое перевыпуском, заменено новым — в итог не входит.
+      if (row.status !== 'cancelled') total += Number(row.count);
     }
 
     const dt = new Date(now);

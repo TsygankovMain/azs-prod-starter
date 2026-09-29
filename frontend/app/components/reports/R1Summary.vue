@@ -164,7 +164,7 @@ watch(period, load)
           <SvgRing :pct="pct" />
           <div>
             <div class="text-[12px] text-gray-400">Сдано вовремя</div>
-            <div class="font-bold text-[15px] mt-0.5">{{ summary.done }} из {{ summary.total }} АЗС</div>
+            <div class="font-bold text-[15px] mt-0.5">{{ summary.done }} из {{ summary.total }} отчётов</div>
             <div class="flex flex-col gap-1.5 mt-3 text-[12px] text-gray-500">
               <span><i class="inline-block w-2.5 h-2.5 rounded-sm bg-green-500 mr-1.5 align-[-1px]"/>Сдано</span>
               <span><i class="inline-block w-2.5 h-2.5 rounded-sm bg-yellow-400 mr-1.5 align-[-1px]"/>В работе</span>
