@@ -1,10 +1,16 @@
 // backends/node/api/src/reports/analyticsStore.js
 
+// Строки, которые считаются отчётами. Служебные строки напоминаний
+// (slot_key вида '%:reminder:%') — замок идемпотентности без карточки и без
+// отчёта, а 'cancelled' — задание, снятое перевыпуском. Без этого фильтра на
+// каждую АЗС в день приходилось по две строки, и рейтинг занижался вдвое.
+const REPORT_ROWS_ONLY = `slot_key NOT LIKE '%:reminder:%' AND status <> 'cancelled'`;
+
 const isMysql = (t) => String(t || '').toLowerCase() === 'mysql';
 
 const createPostgresStore = (pool) => ({
   async getRating({ dateFrom, dateTo, azsIds = [] } = {}) {
-    const where = [];
+    const where = [REPORT_ROWS_ONLY];
     const params = [];
     let idx = 1;
     if (dateFrom) { where.push(`created_at >= $${idx++}`); params.push(new Date(`${dateFrom}T00:00:00.000Z`)); }
@@ -45,7 +51,7 @@ const createPostgresStore = (pool) => ({
   },
 
   async getTrend({ dateFrom, dateTo, azsIds = [] } = {}) {
-    const where = [];
+    const where = [REPORT_ROWS_ONLY];
     const params = [];
     let idx = 1;
     if (dateFrom) { where.push(`created_at >= $${idx++}`); params.push(new Date(`${dateFrom}T00:00:00.000Z`)); }
@@ -127,7 +133,7 @@ const createPostgresStore = (pool) => ({
 
 const createMysqlStore = (pool) => ({
   async getRating({ dateFrom, dateTo, azsIds = [] } = {}) {
-    const where = [];
+    const where = [REPORT_ROWS_ONLY];
     const params = [];
     if (dateFrom) { where.push('created_at >= ?'); params.push(`${dateFrom} 00:00:00`); }
     if (dateTo)   { where.push('created_at <= ?'); params.push(`${dateTo} 23:59:59`); }
@@ -164,7 +170,7 @@ const createMysqlStore = (pool) => ({
   },
 
   async getTrend({ dateFrom, dateTo, azsIds = [] } = {}) {
-    const where = [];
+    const where = [REPORT_ROWS_ONLY];
     const params = [];
     if (dateFrom) { where.push('created_at >= ?'); params.push(`${dateFrom} 00:00:00`); }
     if (dateTo)   { where.push('created_at <= ?'); params.push(`${dateTo} 23:59:59`); }
