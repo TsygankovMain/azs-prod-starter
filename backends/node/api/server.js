@@ -43,6 +43,7 @@ import {
 import { ensureAppPlacements } from './src/bitrix/placementBinder.js';
 import createNotificationService from './src/notifications/notificationService.js';
 import createBotRegistryService from './src/notifications/botRegistryService.js';
+import { createBotIdResolver } from './src/notifications/botIdResolver.js';
 import { createAuthContextStore } from './src/auth/authContextStore.js';
 import { createDatabaseAuthContextStore } from './src/auth/databaseAuthContextStore.js';
 import { createCompositeAuthContextStore } from './src/auth/compositeAuthContextStore.js';
@@ -392,14 +393,9 @@ const botRegistryService = createBotRegistryService({ bitrixClient });
 // Один резолвер на botRegistryService, используется и notificationService,
 // и (ниже, Task 12) diagChatNotifier — чтобы не заводить вторую копию этой
 // логики и не создавать второй экземпляр реестра.
-const resolveBotIdViaRegistry = async (context = {}) => {
-  const authId = String(context?.authId || context?.auth_id || '').trim();
-  if (!authId) {
-    return 0;
-  }
-  const registration = await botRegistryService.ensureBot({ authId, context });
-  return registration.botId;
-};
+// Без authId в контексте (фоновая рассылка идёт через вебхук) резолвер сам
+// берёт контекст последнего администратора — см. botIdResolver.js.
+const resolveBotIdViaRegistry = createBotIdResolver({ botRegistryService, getAdminContext });
 const notificationService = createNotificationService({
   bitrixClient,
   adminUserIds: String(process.env.SYSTEM_ADMIN_USER_IDS || process.env.ADMIN_USER_IDS || '')
