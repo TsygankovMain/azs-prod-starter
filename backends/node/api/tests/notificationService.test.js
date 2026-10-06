@@ -523,3 +523,79 @@ test('NOTIF-BOT-ONLY: при сбое бота алерт админам идё�
   assert.match(adminMsg.payload.fields.message, /Не удалось доставить/);
   assert.match(adminMsg.payload.fields.message, /azs-42/);
 });
+
+const quietLogger = { info() {}, warn() {}, error() {} };
+
+test('фоновая отправка под вебхуком уходит под OAuth-контекстом приложения', async () => {
+  const calls = [];
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod(method, payload, context) {
+        calls.push({ method, context });
+        if (context?.isWebhook) {
+          throw new Error('BOT_TOKEN_NOT_SPECIFIED');
+        }
+        return { id: 1 };
+      }
+    },
+    botId: 948,
+    resolveBotContext: async () => ({ authId: 'admin-token', domain: 'portal' }),
+    logger: quietLogger
+  });
+
+  const result = await service.notify({
+    userId: 196,
+    message: 'Напоминание',
+    context: { isWebhook: true, endpoint: 'https://portal/rest/1/x' }
+  });
+
+  assert.equal(result.delivered, true);
+  assert.equal(result.channel, 'bot');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].context.authId, 'admin-token');
+});
+
+test('под вебхуком без сохранённого OAuth контекст не подменяется, отказ не роняет вызов', async () => {
+  const calls = [];
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod(method, payload, context) {
+        calls.push({ context });
+        throw new Error('BOT_TOKEN_NOT_SPECIFIED');
+      }
+    },
+    botId: 948,
+    resolveBotContext: async () => ({}),
+    logger: quietLogger
+  });
+
+  const result = await service.notify({
+    userId: 196,
+    message: 'Напоминание',
+    context: { isWebhook: true, endpoint: 'https://portal/rest/1/x' }
+  });
+
+  assert.equal(result.delivered, false);
+  assert.equal(calls[0].context.isWebhook, true);
+});
+
+test('OAuth-контекст запроса не подменяется', async () => {
+  const calls = [];
+  let asked = 0;
+  const service = createNotificationService({
+    bitrixClient: {
+      async callMethod(method, payload, context) {
+        calls.push({ context });
+        return { id: 1 };
+      }
+    },
+    botId: 948,
+    resolveBotContext: async () => { asked += 1; return { authId: 'admin-token' }; },
+    logger: quietLogger
+  });
+
+  await service.notify({ userId: 196, message: 'Задание', context: { authId: 'user-token' } });
+
+  assert.equal(asked, 0);
+  assert.equal(calls[0].context.authId, 'user-token');
+});

@@ -401,6 +401,7 @@ const notificationService = createNotificationService({
   adminUserIds: String(process.env.SYSTEM_ADMIN_USER_IDS || process.env.ADMIN_USER_IDS || '')
     .split(/[\s,]+/).map(Number).filter(Boolean),
   resolveBotId: resolveBotIdViaRegistry,
+  resolveBotContext: getAdminContext,
   ensureBot: async (context = {}) => {
     const authId = String(context?.authId || '').trim();
     if (!authId) return { botId: 0 };
@@ -1524,7 +1525,10 @@ try {
     getDialogId: () => process.env.PHOTO_WATCHDOG_CHAT_ID || process.env.DIAG_CHAT_ID || '',
     getWorker: () => photoPublishWorker,
     isWorkerStarted: () => photoPublishWorkerStarted,
-    getContext: getPhotoPublishBackgroundContext,
+    // Сообщение в чат шлёт бот, а под вебхуком он писать не может
+    // (BOT_TOKEN_NOT_SPECIFIED) — поэтому контекст администратора, как у
+    // diagChatNotifier, а не getPhotoPublishBackgroundContext.
+    getContext: getAdminContext,
     resolveBotId: resolveBotIdViaRegistry,
     sendChatMessage: ({ botId, dialogId, text, context }) => bitrixClient.callMethod('imbot.v2.Chat.Message.send', {
       botId,

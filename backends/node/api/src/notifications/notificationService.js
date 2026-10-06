@@ -78,6 +78,10 @@ export const createNotificationService = ({
   publicBaseUrl = process.env.APP_PUBLIC_BASE_URL || process.env.VIRTUAL_HOST || '',
   resolveBotId = null,
   ensureBot = null,
+  // Контекст приложения (OAuth) для отправки от бота. Фоновая рассылка приходит
+  // сюда с контекстом вебхука, а imbot.v2.* под вебхуком требует botToken,
+  // которого у бота OAuth-приложения нет: портал отвечает BOT_TOKEN_NOT_SPECIFIED.
+  resolveBotContext = null,
   logger = console
 }) => {
   if (!bitrixClient) {
@@ -102,6 +106,23 @@ export const createNotificationService = ({
       process.env.BITRIX_BOT_ID = String(currentBotId);
     }
     return currentBotId;
+  };
+
+  // Под вебхуком бот писать не может — подменяем контекст на OAuth приложения.
+  // Не нашли рабочий OAuth — оставляем исходный: отказ попадёт в лог как раньше.
+  const pickBotContext = async (context = {}) => {
+    if (!context?.isWebhook || typeof resolveBotContext !== 'function') {
+      return context;
+    }
+    try {
+      const botContext = await resolveBotContext(context);
+      if (String(botContext?.authId || '').trim()) {
+        return botContext;
+      }
+    } catch (error) {
+      logger.warn('bot_context_resolve_failed', { message: error?.message || String(error) });
+    }
+    return context;
   };
 
   const alertAdmins = async ({ botError, userId, azsId, context }) => {
@@ -149,6 +170,7 @@ export const createNotificationService = ({
     if (!String(message || '').trim()) {
       throw new Error('notify requires non-empty message');
     }
+    context = await pickBotContext(context);
 
     // NOTIF-1 диагностика: webhook-контекст не несёт OAuth `auth`; под ним бот-методы
     // требуют botToken (которого у OAuth-бота нет). transport фиксирует это в логе.
